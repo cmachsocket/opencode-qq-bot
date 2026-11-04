@@ -14,11 +14,21 @@ interface ToolDefinition {
 interface Harness {
   tools: Map<string, ToolDefinition>
   api: Record<string, ReturnType<typeof vi.fn>>
-  manager: { groupForSession: ReturnType<typeof vi.fn>; markMessageSent: ReturnType<typeof vi.fn> }
+  manager: {
+    groupForSession: ReturnType<typeof vi.fn>
+    markMessageSent: ReturnType<typeof vi.fn>
+    hasActiveTurn: ReturnType<typeof vi.fn>
+    rememberOutgoing: ReturnType<typeof vi.fn>
+    isOutgoing: ReturnType<typeof vi.fn>
+    isKnownMessage: ReturnType<typeof vi.fn>
+  }
   logger: Record<keyof Logger, ReturnType<typeof vi.fn>>
 }
 
-async function createHarness(groupId: number | null = 100): Promise<Harness> {
+async function createHarness(
+  groupId: number | null = 100,
+  configOverrides: Partial<QQBotConfig> = {},
+): Promise<Harness> {
   const tools = new Map<string, ToolDefinition>()
   const api = {
     sendGroupMessage: vi.fn(async () => ({})),
@@ -32,6 +42,10 @@ async function createHarness(groupId: number | null = 100): Promise<Harness> {
   const manager = {
     groupForSession: vi.fn(() => (groupId === null ? undefined : groupId)),
     markMessageSent: vi.fn(),
+    hasActiveTurn: vi.fn(() => true),
+    rememberOutgoing: vi.fn(),
+    isOutgoing: vi.fn(() => true),
+    isKnownMessage: vi.fn(() => true),
   }
   const logger = {
     debug: vi.fn(),
@@ -58,6 +72,7 @@ async function createHarness(groupId: number | null = 100): Promise<Harness> {
     napcat: { url: "ws://127.0.0.1:3001" },
     groups: [100],
     sendDelayMs: 0,
+    ...configOverrides,
   }
 
   await registerTools({
@@ -89,15 +104,14 @@ describe("registerTools", () => {
     ])
   })
 
-  it("sends the message split into lines", async () => {
+  it("keeps the message formatting in one send", async () => {
     const { tools, api } = await createHarness()
     const result = await tools
       .get(`${TOOL_NAMESPACE}_send_message`)
       ?.execute({ content: "第一行\n\n第二行" }, context)
     expect(result?.content).toBe("sent")
-    expect(api["sendGroupMessage"]).toHaveBeenCalledTimes(2)
-    expect(api["sendGroupMessage"]).toHaveBeenNthCalledWith(1, "100", "第一行")
-    expect(api["sendGroupMessage"]).toHaveBeenNthCalledWith(2, "100", "第二行")
+    expect(api["sendGroupMessage"]).toHaveBeenCalledTimes(1)
+    expect(api["sendGroupMessage"]).toHaveBeenCalledWith("100", "第一行\n\n第二行")
   })
 
   it("skips sending when the model chooses not to reply", async () => {
@@ -181,5 +195,70 @@ describe("registerTools", () => {
     const { tools } = await createHarness()
     const result = await tools.get(`${TOOL_NAMESPACE}_get_login_info`)?.execute({}, context)
     expect(result?.content).toContain("123")
+  })
+
+  it("marks media replies as sent", async () => {
+    const { tools, manager } = await createHarness()
+    await tools.get(`${TOOL_NAMESPACE}_send_image`)?.execute({ file: "a.png" }, context)
+    await tools.get(`${TOOL_NAMESPACE}_send_record`)?.execute({ file: "a.amr" }, context)
+    await tools.get(`${TOOL_NAMESPACE}_send_poke`)?.execute({ user_id: "200" }, context)
+    expect(manager.markMessageSent).toHaveBeenCalledTimes(3)
+  })
+
+  it("rejects deleting a message the bot did not send", async () => {
+    const { tools, api, manager } = await createHarness()
+    manager.isOutgoing.mockReturnValue(false)
+    const result = await tools
+      .get(`${TOOL_NAMESPACE}_delete_message`)
+      ?.execute({ message_id: "5" }, context)
+    expect(result?.content).toContain("error")
+    expect(api["deleteMessage"]).not.toHaveBeenCalled()
+  })
+
+  it("rejects tools for groups removed from the config", async () => {
+    const { tools, api } = await createHarness(100, { groups: [200] })
+    const result = await tools
+      .get(`${TOOL_NAMESPACE}_send_message`)
+      ?.execute({ content: "你好" }, context)
+    expect(result?.content).toContain("error")
+    expect(api["sendGroupMessage"]).not.toHaveBeenCalled()
+  })
+
+  it("rejects tools outside an active QQ turn", async () => {
+    const { tools, api, manager } = await createHarness()
+    manager.hasActiveTurn.mockReturnValue(false)
+    const result = await tools
+      .get(`${TOOL_NAMESPACE}_send_message`)
+      ?.execute({ content: "你好" }, context)
+    expect(result?.content).toContain("error")
+    expect(api["sendGroupMessage"]).not.toHaveBeenCalled()
+  })
+
+  it("rejects transcribing an unknown message", async () => {
+    const { tools, api, manager } = await createHarness()
+    manager.isKnownMessage.mockReturnValue(false)
+    const result = await tools
+      .get(`${TOOL_NAMESPACE}_fetch_ptt_text`)
+      ?.execute({ message_id: "5" }, context)
+    expect(result?.content).toContain("error")
+    expect(api["fetchPttText"]).not.toHaveBeenCalled()
+  })
+
+  it("rejects an invalid forward user id", async () => {
+    const { tools, api } = await createHarness()
+    const result = await tools
+      .get(`${TOOL_NAMESPACE}_send_forward`)
+      ?.execute({ nodes: [{ user_id: "abc", content: "内容" }] }, context)
+    expect(result?.content).toContain("error")
+    expect(api["sendGroupForwardMessage"]).not.toHaveBeenCalled()
+  })
+
+  it("accepts reply=false without content", async () => {
+    const { tools, manager } = await createHarness()
+    const result = await tools
+      .get(`${TOOL_NAMESPACE}_send_message`)
+      ?.execute({ reply: false }, context)
+    expect(result?.content).toBe("skipped")
+    expect(manager.markMessageSent).toHaveBeenCalledWith("session-1")
   })
 })

@@ -44,8 +44,47 @@ interface MessageIdInput {
   message_id?: number | string
 }
 
+/** QQ 单条消息的保守长度上限，超过时按段发送。 */
+export const MAX_MESSAGE_CHARS = 4000
+
 function text(value: string) {
   return { content: value }
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+/** 从 OneBot 发送结果里取出 message_id。 */
+function messageIdOf(response: unknown): string | undefined {
+  if (!response || typeof response !== "object") return undefined
+  const record = response as { message_id?: unknown; data?: { message_id?: unknown } }
+  const value = record.message_id ?? record.data?.message_id
+  return value === undefined || value === null ? undefined : String(value)
+}
+
+/** 按长度切分消息，保留原有换行与空行。 */
+export function splitMessage(content: string, max = MAX_MESSAGE_CHARS): string[] {
+  if (Array.from(content).length <= max) return [content]
+  const chunks: string[] = []
+  let current = ""
+  for (const line of content.split("\n")) {
+    const candidate = current ? `${current}\n${line}` : line
+    if (Array.from(candidate).length <= max) {
+      current = candidate
+      continue
+    }
+    if (current) chunks.push(current)
+    let rest = line
+    while (Array.from(rest).length > max) {
+      const part = Array.from(rest).slice(0, max).join("")
+      chunks.push(part)
+      rest = Array.from(rest).slice(max).join("")
+    }
+    current = rest
+  }
+  if (current) chunks.push(current)
+  return chunks.length > 0 ? chunks : [content]
 }
 
 /**
@@ -59,7 +98,16 @@ export async function registerTools(deps: ToolDeps): Promise<{ dispose(): Promis
 
   const requireGroup = (sessionID: string): string | undefined => {
     const groupId = manager.groupForSession(sessionID)
-    return groupId === undefined ? undefined : String(groupId)
+    if (groupId === undefined) return undefined
+    if (!config.groups.includes(groupId)) {
+      logger.warn(`群 ${groupId} 已不在配置中，拒绝工具调用`)
+      return undefined
+    }
+    if (!manager.hasActiveTurn(sessionID)) {
+      logger.warn(`会话 ${sessionID} 当前没有 QQ 消息轮次，拒绝工具调用`)
+      return undefined
+    }
+    return String(groupId)
   }
 
   return await ctx.tool.transform((editor) => {
@@ -72,15 +120,14 @@ export async function registerTools(deps: ToolDeps): Promise<{ dispose(): Promis
     editor.add({
       name: "send_message",
       description:
-        "向当前群聊发送一条消息。每轮必须调用一次。content: 要发送的文本；reply: true 表示发送，false 表示选择不发送（已读不回）；unlimit_length: 设为 true 可解除默认的长度告警限制。",
+        "向当前群聊发送一条消息。每轮必须调用一个发送工具。content: 要发送的文本；reply: true 表示发送，false 表示选择不发送（已读不回）；unlimit_length: 设为 true 可解除默认的长度告警限制。",
       input: {
         type: "object",
         properties: {
-          content: { type: "string", description: "要发送的文本内容" },
+          content: { type: "string", description: "要发送的文本内容；reply=false 时可省略" },
           reply: { type: "boolean", description: "true 表示发送，false 表示本轮不回复" },
           unlimit_length: { type: "boolean", description: "解除默认的消息长度限制" },
         },
-        required: ["content"],
         additionalProperties: false,
       },
       options: { namespace: TOOL_NAMESPACE },
@@ -105,13 +152,22 @@ export async function registerTools(deps: ToolDeps): Promise<{ dispose(): Promis
           logger.warn(`send_message 内容长度 ${content.length} 超过 ${config.warnLength}`)
         }
 
-        for (const line of content.split(/\r?\n/)) {
-          const trimmed = line.trim()
-          if (!trimmed) continue
-          await client.api.sendGroupMessage(groupId, trimmed)
-          if (config.sendDelayMs > 0) {
-            await Bun.sleep(config.sendDelayMs)
+        const chunks = splitMessage(content)
+        let sent = 0
+        try {
+          for (const [index, chunk] of chunks.entries()) {
+            const response = await client.api.sendGroupMessage(groupId, chunk)
+            const messageId = messageIdOf(response)
+            if (messageId) manager.rememberOutgoing(groupId, messageId)
+            sent += 1
+            if (index < chunks.length - 1 && config.sendDelayMs > 0) {
+              await delay(config.sendDelayMs)
+            }
           }
+        } catch (error) {
+          if (sent > 0) manager.markMessageSent(context.sessionID)
+          logger.error(`群 ${groupId} 发送消息失败，已发送 ${sent}/${chunks.length} 段`, error)
+          return text(`error: 消息只发送了 ${sent}/${chunks.length} 段`)
         }
         manager.markMessageSent(context.sessionID)
         logger.info(`群 ${groupId} 已发送 ${content.length} 字`)
@@ -138,7 +194,12 @@ export async function registerTools(deps: ToolDeps): Promise<{ dispose(): Promis
         if (!groupId) return text("error: 当前会话没有绑定 QQ 群")
         const file = input.file ?? (input.base64 ? `base64://${input.base64}` : undefined)
         if (!file) return text("error: 缺少 file 或 base64")
-        await client.api.sendGroupMessage(groupId, [{ type: "image", data: { file } }])
+        const response = await client.api.sendGroupMessage(groupId, [
+          { type: "image", data: { file } },
+        ])
+        const messageId = messageIdOf(response)
+        if (messageId) manager.rememberOutgoing(groupId, messageId)
+        manager.markMessageSent(context.sessionID)
         return text("sent")
       },
     })
@@ -159,7 +220,12 @@ export async function registerTools(deps: ToolDeps): Promise<{ dispose(): Promis
         const groupId = requireGroup(context.sessionID)
         if (!groupId) return text("error: 当前会话没有绑定 QQ 群")
         if (!input.file) return text("error: 缺少 file")
-        await client.api.sendGroupMessage(groupId, [{ type: "record", data: { file: input.file } }])
+        const response = await client.api.sendGroupMessage(groupId, [
+          { type: "record", data: { file: input.file } },
+        ])
+        const messageId = messageIdOf(response)
+        if (messageId) manager.rememberOutgoing(groupId, messageId)
+        manager.markMessageSent(context.sessionID)
         return text("sent")
       },
     })
@@ -194,13 +260,27 @@ export async function registerTools(deps: ToolDeps): Promise<{ dispose(): Promis
         const input = (raw ?? {}) as ForwardInput
         const groupId = requireGroup(context.sessionID)
         if (!groupId) return text("error: 当前会话没有绑定 QQ 群")
-        const nodes = (input.nodes ?? []).map((node) => ({
-          user_id: Number(node.user_id ?? 0),
-          nickname: node.nickname ?? "未知用户",
-          content: [{ type: "text", data: { text: node.content ?? "" } }],
-        }))
+        const nodes: {
+          user_id: number
+          nickname: string
+          content: { type: string; data: { text: string } }[]
+        }[] = []
+        for (const node of input.nodes ?? []) {
+          const userId = node.user_id === undefined ? 0 : Number(node.user_id)
+          if (!Number.isInteger(userId) || userId < 0) {
+            return text(`error: 非法 user_id：${String(node.user_id)}`)
+          }
+          nodes.push({
+            user_id: userId,
+            nickname: node.nickname?.trim() || "未知用户",
+            content: [{ type: "text", data: { text: node.content ?? "" } }],
+          })
+        }
         if (nodes.length === 0) return text("error: nodes 为空")
-        await client.api.sendGroupForwardMessage(groupId, nodes)
+        const response = await client.api.sendGroupForwardMessage(groupId, nodes)
+        const messageId = messageIdOf(response)
+        if (messageId) manager.rememberOutgoing(groupId, messageId)
+        manager.markMessageSent(context.sessionID)
         return text("sent")
       },
     })
@@ -223,6 +303,7 @@ export async function registerTools(deps: ToolDeps): Promise<{ dispose(): Promis
         if (!groupId) return text("error: 当前会话没有绑定 QQ 群")
         if (!input.user_id) return text("error: 缺少 user_id")
         await client.api.sendGroupPoke(groupId, input.user_id)
+        manager.markMessageSent(context.sessionID)
         return text("sent")
       },
     })
@@ -244,6 +325,9 @@ export async function registerTools(deps: ToolDeps): Promise<{ dispose(): Promis
         const groupId = requireGroup(context.sessionID)
         if (!groupId) return text("error: 当前会话没有绑定 QQ 群")
         if (input.message_id === undefined) return text("error: 缺少 message_id")
+        if (!manager.isOutgoing(groupId, String(input.message_id))) {
+          return text("error: 只能撤回机器人自己发送过的消息")
+        }
         await client.api.deleteMessage(input.message_id)
         return text("deleted")
       },
@@ -283,9 +367,14 @@ export async function registerTools(deps: ToolDeps): Promise<{ dispose(): Promis
         additionalProperties: false,
       },
       options: { namespace: TOOL_NAMESPACE },
-      execute: async (raw) => {
+      execute: async (raw, context) => {
         const input = (raw ?? {}) as MessageIdInput
+        const groupId = requireGroup(context.sessionID)
+        if (!groupId) return text("error: 当前会话没有绑定 QQ 群")
         if (input.message_id === undefined) return text("error: 缺少 message_id")
+        if (!manager.isKnownMessage(groupId, String(input.message_id))) {
+          return text("error: 只能转写当前群最近收到的消息")
+        }
         const result = await client.api.fetchPttText(input.message_id)
         return text(result?.text ?? "")
       },
