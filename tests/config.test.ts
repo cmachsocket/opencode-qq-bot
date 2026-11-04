@@ -14,6 +14,7 @@ describe("resolveConfig", () => {
     expect(config.napcat.url).toBe(ENV.NAPCAT_WS_URL)
     expect(config.napcat.token).toBeUndefined()
     expect(config.groups).toEqual([])
+    expect(config.users).toEqual([])
     expect(config.sendDelayMs).toBe(DEFAULT_CONFIG.sendDelayMs)
     expect(config.reminder.max).toBe(DEFAULT_CONFIG.reminder.max)
   })
@@ -40,6 +41,7 @@ describe("resolveConfig", () => {
     const options = raw.plugins.find((entry: { package: string }) => entry.package === "./").options
     const config = resolveConfig(options, ENV)
     expect(config.groups).toEqual(options.groups)
+    expect(config.users).toEqual(options.users)
   })
 
   it("reads groups from the environment as a comma separated list", () => {
@@ -47,14 +49,32 @@ describe("resolveConfig", () => {
     expect(config.groups).toEqual([123, 456, 789])
   })
 
+  it("reads private chat users from the environment", () => {
+    const config = resolveConfig({}, { ...ENV, QQ_TARGET_USERS: "321, 654 ,abc,987" })
+    expect(config.users).toEqual([321, 654, 987])
+  })
+
   it("reads groups from plugin options as an array", () => {
     const config = resolveConfig({ groups: [1, 2] }, { ...ENV, QQ_TARGET_GROUPS: "999" })
     expect(config.groups).toEqual([1, 2])
   })
 
-  it("keeps every group closed when the option list is empty", () => {
-    const config = resolveConfig({ groups: [] }, { ...ENV, QQ_TARGET_GROUPS: "999" })
+  it("reads private chat users from plugin options as an array", () => {
+    const config = resolveConfig({ users: [3, 4] }, { ...ENV, QQ_TARGET_USERS: "999" })
+    expect(config.users).toEqual([3, 4])
+  })
+
+  it("keeps every target closed when the option list is empty", () => {
+    const config = resolveConfig(
+      { groups: [], users: [] },
+      {
+        ...ENV,
+        QQ_TARGET_GROUPS: "999",
+        QQ_TARGET_USERS: "999",
+      },
+    )
     expect(config.groups).toEqual([])
+    expect(config.users).toEqual([])
   })
 
   it("parses the model reference from the environment", () => {
@@ -167,6 +187,13 @@ describe("resolveConfig", () => {
     )
     expect(config.groups).toEqual([1, 3])
     expect(warnings.join("\n")).toContain("非法群号")
+  })
+
+  it("deduplicates users and warns about invalid entries", () => {
+    const warnings: string[] = []
+    const config = resolveConfig({ users: [1, 1, -2, 3] }, ENV, (message) => warnings.push(message))
+    expect(config.users).toEqual([1, 3])
+    expect(warnings.join("\n")).toContain("非法QQ 号")
   })
 
   it("falls back for out of range numeric options", () => {

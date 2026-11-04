@@ -50,6 +50,8 @@ export interface QQBotConfig {
   napcat: NapcatConfig
   /** 参与 AI 对话的群号。 */
   groups: number[]
+  /** 参与 AI 对话的私聊 QQ 号。 */
+  users: number[]
   /** 角色设定文件路径，默认使用插件包内的 SOUL.txt。 */
   soulPath?: string
   /** QQ 会话使用的 OpenCode agent。 */
@@ -71,6 +73,7 @@ export interface QQBotConfig {
 /** 除 NapCat 连接信息外的全部默认值。 */
 export const DEFAULT_CONFIG: Omit<QQBotConfig, "napcat"> = {
   groups: [],
+  users: [],
   sendDelayMs: 1000,
   warnLength: 20,
   reuseSession: false,
@@ -112,14 +115,19 @@ function present(value: unknown): boolean {
 }
 
 /** 把数字数组或逗号分隔字符串整理成去重后的正整数列表。 */
-function toGroups(value: unknown, warn: ConfigWarning, label: string): number[] | undefined {
+function toIds(
+  value: unknown,
+  warn: ConfigWarning,
+  label: string,
+  noun: string,
+): number[] | undefined {
   const source = Array.isArray(value)
     ? value
     : typeof value === "string"
       ? value.split(",")
       : undefined
   if (!source) return undefined
-  const groups: number[] = []
+  const ids: number[] = []
   const seen = new Set<number>()
   for (const entry of source) {
     const raw =
@@ -127,14 +135,14 @@ function toGroups(value: unknown, warn: ConfigWarning, label: string): number[] 
     if (!raw) continue
     const parsed = Number(raw)
     if (!Number.isInteger(parsed) || parsed <= 0) {
-      warn(`${label} 忽略非法群号：${raw}`)
+      warn(`${label} 忽略非法${noun}：${raw}`)
       continue
     }
     if (seen.has(parsed)) continue
     seen.add(parsed)
-    groups.push(parsed)
+    ids.push(parsed)
   }
-  return groups
+  return ids
 }
 
 interface PartialNapcatConfig {
@@ -226,10 +234,23 @@ function createConfigSchema(
     .optional()
     .transform((value) => {
       if (value === undefined || value === null) return [...defaults.groups]
-      const parsed = toGroups(value, warn, label("groups"))
+      const parsed = toIds(value, warn, label("groups"), "群号")
       if (!parsed) {
         if (present(value)) warn(`${label("groups")} 解析不出群号：${String(value)}`)
         return [...defaults.groups]
+      }
+      return parsed
+    })
+
+  const users = z
+    .unknown()
+    .optional()
+    .transform((value) => {
+      if (value === undefined || value === null) return [...defaults.users]
+      const parsed = toIds(value, warn, label("users"), "QQ 号")
+      if (!parsed) {
+        if (present(value)) warn(`${label("users")} 解析不出 QQ 号：${String(value)}`)
+        return [...defaults.users]
       }
       return parsed
     })
@@ -256,6 +277,7 @@ function createConfigSchema(
       .prefault({})
       .catch({ url: napcat.url, token: napcat.token }),
     groups,
+    users,
     soulPath: text("soulPath", defaults.soulPath),
     agent: text("agent", defaults.agent),
     model,
@@ -296,6 +318,7 @@ const ENV_VARS = {
   "napcat.url": "NAPCAT_WS_URL",
   "napcat.token": "NAPCAT_WS_TOKEN",
   groups: "QQ_TARGET_GROUPS",
+  users: "QQ_TARGET_USERS",
   soulPath: "QQ_BOT_SOUL_PATH",
   agent: "QQ_BOT_AGENT",
   model: "QQ_BOT_MODEL",
@@ -315,6 +338,7 @@ const ENV_VARS = {
 const OPTION_KEYS = new Set([
   "napcat",
   "groups",
+  "users",
   "soulPath",
   "agent",
   "model",
@@ -412,6 +436,7 @@ export function resolveConfig(
   return {
     ...parsed,
     groups: [...parsed.groups],
+    users: [...parsed.users],
     proactive: { ...parsed.proactive },
     reminder: { ...parsed.reminder },
     napcat: { url, token: parsed.napcat.token },

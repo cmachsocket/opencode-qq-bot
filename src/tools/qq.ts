@@ -1,4 +1,5 @@
 import type { Plugin } from "@opencode/plugin"
+import { type ChatTarget, isTargetEnabled, targetLabel } from "../chat"
 import type { QQBotConfig } from "../config"
 import type { Logger } from "../logger"
 import type { QQClient } from "../naplink/client"
@@ -96,31 +97,51 @@ export function splitMessage(content: string, max = MAX_MESSAGE_CHARS): string[]
 export async function registerTools(deps: ToolDeps): Promise<{ dispose(): Promise<void> }> {
   const { ctx, config, logger, manager, client } = deps
 
-  const requireGroup = (sessionID: string): string | undefined => {
-    const groupId = manager.groupForSession(sessionID)
-    if (groupId === undefined) return undefined
-    if (!config.groups.includes(groupId)) {
-      logger.warn(`群 ${groupId} 已不在配置中，拒绝工具调用`)
+  const requireTarget = (sessionID: string): ChatTarget | undefined => {
+    const target = manager.targetForSession(sessionID)
+    if (!target) return undefined
+    if (!isTargetEnabled(config, target)) {
+      logger.warn(`${targetLabel(target)} 已不在配置中，拒绝工具调用`)
       return undefined
     }
     if (!manager.hasActiveTurn(sessionID)) {
       logger.warn(`会话 ${sessionID} 当前没有 QQ 消息轮次，拒绝工具调用`)
       return undefined
     }
-    return String(groupId)
+    return target
   }
+
+  const sendText = (target: ChatTarget, chunk: string) =>
+    target.kind === "group"
+      ? client.api.sendGroupMessage(target.id, chunk)
+      : client.api.sendPrivateMessage(target.id, chunk)
+
+  const sendSegments = (target: ChatTarget, segments: unknown[]) =>
+    target.kind === "group"
+      ? client.api.sendGroupMessage(target.id, segments)
+      : client.api.sendPrivateMessage(target.id, segments)
+
+  const sendForward = (target: ChatTarget, nodes: unknown[]) =>
+    target.kind === "group"
+      ? client.api.sendGroupForwardMessage(target.id, nodes)
+      : client.api.sendPrivateForwardMessage({ user_id: target.id, messages: nodes })
+
+  const sendPoke = (target: ChatTarget, userId: string | number) =>
+    target.kind === "group"
+      ? client.api.sendGroupPoke(target.id, userId)
+      : client.api.sendFriendPoke(userId)
 
   return await ctx.tool.transform((editor) => {
     editor.namespace({
       name: TOOL_NAMESPACE,
       description:
-        "QQ 群聊工具：发送消息、图片、语音、合并转发，以及查询群成员信息。仅在 QQ 群会话里可用，其他会话调用会返回错误。",
+        "QQ 聊天工具：发送消息、图片、语音、合并转发，以及查询用户信息。仅在 QQ 群聊或私聊会话里可用，其他会话调用会返回错误。",
     })
 
     editor.add({
       name: "send_message",
       description:
-        "向当前群聊发送一条消息。每轮必须调用一个发送工具。content: 要发送的文本；reply: true 表示发送，false 表示选择不发送（已读不回）；unlimit_length: 设为 true 可解除默认的长度告警限制。",
+        "向当前 QQ 群聊或私聊发送一条消息。每轮必须调用一个发送工具。content: 要发送的文本；reply: true 表示发送，false 表示选择不发送（已读不回）；unlimit_length: 设为 true 可解除默认的长度告警限制。",
       input: {
         type: "object",
         properties: {
@@ -133,17 +154,18 @@ export async function registerTools(deps: ToolDeps): Promise<{ dispose(): Promis
       options: { namespace: TOOL_NAMESPACE },
       execute: async (raw, context) => {
         const input = (raw ?? {}) as SendMessageInput
-        const groupId = requireGroup(context.sessionID)
-        if (!groupId) return text("error: 当前会话没有绑定 QQ 群")
+        const target = requireTarget(context.sessionID)
+        if (!target) return text("error: 当前会话没有绑定 QQ 群聊或私聊")
+        const label = targetLabel(target)
 
         if (input.reply === false) {
-          logger.info(`群 ${groupId} 模型选择不回复`)
+          logger.info(`${label} 模型选择不回复`)
           manager.markMessageSent(context.sessionID)
           return text("skipped")
         }
         const content = (input.content ?? "").trim()
         if (!content) {
-          logger.info(`群 ${groupId} 回复内容为空`)
+          logger.info(`${label} 回复内容为空`)
           manager.markMessageSent(context.sessionID)
           return text("skipped")
         }
@@ -156,9 +178,9 @@ export async function registerTools(deps: ToolDeps): Promise<{ dispose(): Promis
         let sent = 0
         try {
           for (const [index, chunk] of chunks.entries()) {
-            const response = await client.api.sendGroupMessage(groupId, chunk)
+            const response = await sendText(target, chunk)
             const messageId = messageIdOf(response)
-            if (messageId) manager.rememberOutgoing(groupId, messageId)
+            if (messageId) manager.rememberOutgoing(target, messageId)
             sent += 1
             if (index < chunks.length - 1 && config.sendDelayMs > 0) {
               await delay(config.sendDelayMs)
@@ -166,11 +188,11 @@ export async function registerTools(deps: ToolDeps): Promise<{ dispose(): Promis
           }
         } catch (error) {
           if (sent > 0) manager.markMessageSent(context.sessionID)
-          logger.error(`群 ${groupId} 发送消息失败，已发送 ${sent}/${chunks.length} 段`, error)
+          logger.error(`${label} 发送消息失败，已发送 ${sent}/${chunks.length} 段`, error)
           return text(`error: 消息只发送了 ${sent}/${chunks.length} 段`)
         }
         manager.markMessageSent(context.sessionID)
-        logger.info(`群 ${groupId} 已发送 ${content.length} 字`)
+        logger.info(`${label} 已发送 ${content.length} 字`)
         return text("sent")
       },
     })
@@ -178,7 +200,7 @@ export async function registerTools(deps: ToolDeps): Promise<{ dispose(): Promis
     editor.add({
       name: "send_image",
       description:
-        "向当前群聊发送一张图片。file 可以是本地路径或 http(s) 图片地址；base64 传 base64:// 形式的数据。",
+        "向当前 QQ 群聊或私聊发送一张图片。file 可以是本地路径或 http(s) 图片地址；base64 传 base64:// 形式的数据。",
       input: {
         type: "object",
         properties: {
@@ -190,15 +212,13 @@ export async function registerTools(deps: ToolDeps): Promise<{ dispose(): Promis
       options: { namespace: TOOL_NAMESPACE },
       execute: async (raw, context) => {
         const input = (raw ?? {}) as MediaInput
-        const groupId = requireGroup(context.sessionID)
-        if (!groupId) return text("error: 当前会话没有绑定 QQ 群")
+        const target = requireTarget(context.sessionID)
+        if (!target) return text("error: 当前会话没有绑定 QQ 群聊或私聊")
         const file = input.file ?? (input.base64 ? `base64://${input.base64}` : undefined)
         if (!file) return text("error: 缺少 file 或 base64")
-        const response = await client.api.sendGroupMessage(groupId, [
-          { type: "image", data: { file } },
-        ])
+        const response = await sendSegments(target, [{ type: "image", data: { file } }])
         const messageId = messageIdOf(response)
-        if (messageId) manager.rememberOutgoing(groupId, messageId)
+        if (messageId) manager.rememberOutgoing(target, messageId)
         manager.markMessageSent(context.sessionID)
         return text("sent")
       },
@@ -206,7 +226,7 @@ export async function registerTools(deps: ToolDeps): Promise<{ dispose(): Promis
 
     editor.add({
       name: "send_record",
-      description: "向当前群聊发送一条语音。file 可以是本地路径或 http(s) 音频地址。",
+      description: "向当前 QQ 群聊或私聊发送一条语音。file 可以是本地路径或 http(s) 音频地址。",
       input: {
         type: "object",
         properties: {
@@ -217,14 +237,14 @@ export async function registerTools(deps: ToolDeps): Promise<{ dispose(): Promis
       options: { namespace: TOOL_NAMESPACE },
       execute: async (raw, context) => {
         const input = (raw ?? {}) as MediaInput
-        const groupId = requireGroup(context.sessionID)
-        if (!groupId) return text("error: 当前会话没有绑定 QQ 群")
+        const target = requireTarget(context.sessionID)
+        if (!target) return text("error: 当前会话没有绑定 QQ 群聊或私聊")
         if (!input.file) return text("error: 缺少 file")
-        const response = await client.api.sendGroupMessage(groupId, [
+        const response = await sendSegments(target, [
           { type: "record", data: { file: input.file } },
         ])
         const messageId = messageIdOf(response)
-        if (messageId) manager.rememberOutgoing(groupId, messageId)
+        if (messageId) manager.rememberOutgoing(target, messageId)
         manager.markMessageSent(context.sessionID)
         return text("sent")
       },
@@ -233,7 +253,7 @@ export async function registerTools(deps: ToolDeps): Promise<{ dispose(): Promis
     editor.add({
       name: "send_forward",
       description:
-        "向当前群聊发送一条合并转发消息。nodes 为节点列表，每个节点包含 user_id、nickname 和纯文本 content。",
+        "向当前 QQ 群聊或私聊发送一条合并转发消息。nodes 为节点列表，每个节点包含 user_id、nickname 和纯文本 content。",
       input: {
         type: "object",
         properties: {
@@ -258,8 +278,8 @@ export async function registerTools(deps: ToolDeps): Promise<{ dispose(): Promis
       options: { namespace: TOOL_NAMESPACE },
       execute: async (raw, context) => {
         const input = (raw ?? {}) as ForwardInput
-        const groupId = requireGroup(context.sessionID)
-        if (!groupId) return text("error: 当前会话没有绑定 QQ 群")
+        const target = requireTarget(context.sessionID)
+        if (!target) return text("error: 当前会话没有绑定 QQ 群聊或私聊")
         const nodes: {
           user_id: number
           nickname: string
@@ -277,9 +297,9 @@ export async function registerTools(deps: ToolDeps): Promise<{ dispose(): Promis
           })
         }
         if (nodes.length === 0) return text("error: nodes 为空")
-        const response = await client.api.sendGroupForwardMessage(groupId, nodes)
+        const response = await sendForward(target, nodes)
         const messageId = messageIdOf(response)
-        if (messageId) manager.rememberOutgoing(groupId, messageId)
+        if (messageId) manager.rememberOutgoing(target, messageId)
         manager.markMessageSent(context.sessionID)
         return text("sent")
       },
@@ -287,7 +307,7 @@ export async function registerTools(deps: ToolDeps): Promise<{ dispose(): Promis
 
     editor.add({
       name: "send_poke",
-      description: "在群里戳一下某个用户。",
+      description: "在当前 QQ 会话戳一下某个用户。",
       input: {
         type: "object",
         properties: {
@@ -299,10 +319,10 @@ export async function registerTools(deps: ToolDeps): Promise<{ dispose(): Promis
       options: { namespace: TOOL_NAMESPACE },
       execute: async (raw, context) => {
         const input = (raw ?? {}) as UserInput
-        const groupId = requireGroup(context.sessionID)
-        if (!groupId) return text("error: 当前会话没有绑定 QQ 群")
+        const target = requireTarget(context.sessionID)
+        if (!target) return text("error: 当前会话没有绑定 QQ 群聊或私聊")
         if (!input.user_id) return text("error: 缺少 user_id")
-        await client.api.sendGroupPoke(groupId, input.user_id)
+        await sendPoke(target, input.user_id)
         manager.markMessageSent(context.sessionID)
         return text("sent")
       },
@@ -322,10 +342,10 @@ export async function registerTools(deps: ToolDeps): Promise<{ dispose(): Promis
       options: { namespace: TOOL_NAMESPACE },
       execute: async (raw, context) => {
         const input = (raw ?? {}) as MessageIdInput
-        const groupId = requireGroup(context.sessionID)
-        if (!groupId) return text("error: 当前会话没有绑定 QQ 群")
+        const target = requireTarget(context.sessionID)
+        if (!target) return text("error: 当前会话没有绑定 QQ 群聊或私聊")
         if (input.message_id === undefined) return text("error: 缺少 message_id")
-        if (!manager.isOutgoing(groupId, String(input.message_id))) {
+        if (!manager.isOutgoing(target, String(input.message_id))) {
           return text("error: 只能撤回机器人自己发送过的消息")
         }
         await client.api.deleteMessage(input.message_id)
@@ -335,7 +355,7 @@ export async function registerTools(deps: ToolDeps): Promise<{ dispose(): Promis
 
     editor.add({
       name: "get_group_member_info",
-      description: "查询某个群成员的群名片与 QQ 昵称。",
+      description: "查询用户资料：群聊返回群名片与昵称，私聊返回 QQ 昵称。",
       input: {
         type: "object",
         properties: {
@@ -347,10 +367,13 @@ export async function registerTools(deps: ToolDeps): Promise<{ dispose(): Promis
       options: { namespace: TOOL_NAMESPACE },
       execute: async (raw, context) => {
         const input = (raw ?? {}) as UserInput
-        const groupId = requireGroup(context.sessionID)
-        if (!groupId) return text("error: 当前会话没有绑定 QQ 群")
+        const target = requireTarget(context.sessionID)
+        if (!target) return text("error: 当前会话没有绑定 QQ 群聊或私聊")
         if (!input.user_id) return text("error: 缺少 user_id")
-        const info = await client.api.getGroupMemberInfo(groupId, input.user_id)
+        const info =
+          target.kind === "group"
+            ? await client.api.getGroupMemberInfo(target.id, input.user_id)
+            : await client.api.getStrangerInfo(input.user_id)
         return text(JSON.stringify(info))
       },
     })
@@ -369,11 +392,11 @@ export async function registerTools(deps: ToolDeps): Promise<{ dispose(): Promis
       options: { namespace: TOOL_NAMESPACE },
       execute: async (raw, context) => {
         const input = (raw ?? {}) as MessageIdInput
-        const groupId = requireGroup(context.sessionID)
-        if (!groupId) return text("error: 当前会话没有绑定 QQ 群")
+        const target = requireTarget(context.sessionID)
+        if (!target) return text("error: 当前会话没有绑定 QQ 群聊或私聊")
         if (input.message_id === undefined) return text("error: 缺少 message_id")
-        if (!manager.isKnownMessage(groupId, String(input.message_id))) {
-          return text("error: 只能转写当前群最近收到的消息")
+        if (!manager.isKnownMessage(target, String(input.message_id))) {
+          return text("error: 只能转写当前会话最近收到的消息")
         }
         const result = await client.api.fetchPttText(input.message_id)
         return text(result?.text ?? "")

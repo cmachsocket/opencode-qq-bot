@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest"
 import type { Plugin } from "@opencode/plugin"
 import { registerTools, TOOL_NAMESPACE } from "../src/tools/qq"
 import { DEFAULT_CONFIG, type QQBotConfig } from "../src/config"
+import type { ChatTarget } from "../src/chat"
 import type { Logger } from "../src/logger"
 import type { QQClient } from "../src/naplink/client"
 import type { SessionManager } from "../src/session/manager"
@@ -15,7 +16,7 @@ interface Harness {
   tools: Map<string, ToolDefinition>
   api: Record<string, ReturnType<typeof vi.fn>>
   manager: {
-    groupForSession: ReturnType<typeof vi.fn>
+    targetForSession: ReturnType<typeof vi.fn>
     markMessageSent: ReturnType<typeof vi.fn>
     hasActiveTurn: ReturnType<typeof vi.fn>
     rememberOutgoing: ReturnType<typeof vi.fn>
@@ -25,22 +26,29 @@ interface Harness {
   logger: Record<keyof Logger, ReturnType<typeof vi.fn>>
 }
 
+const group = (id: number): ChatTarget => ({ kind: "group", id })
+const privateChat = (id: number): ChatTarget => ({ kind: "private", id })
+
 async function createHarness(
-  groupId: number | null = 100,
+  target: ChatTarget | null = group(100),
   configOverrides: Partial<QQBotConfig> = {},
 ): Promise<Harness> {
   const tools = new Map<string, ToolDefinition>()
   const api = {
     sendGroupMessage: vi.fn(async () => ({})),
+    sendPrivateMessage: vi.fn(async () => ({})),
     sendGroupForwardMessage: vi.fn(async () => ({})),
+    sendPrivateForwardMessage: vi.fn(async () => ({})),
     sendGroupPoke: vi.fn(async () => ({})),
+    sendFriendPoke: vi.fn(async () => ({})),
     deleteMessage: vi.fn(async () => ({})),
     getGroupMemberInfo: vi.fn(async () => ({ card: "名片", nickname: "昵称" })),
+    getStrangerInfo: vi.fn(async () => ({ nickname: "陌生人" })),
     fetchPttText: vi.fn(async () => ({ text: "语音转写" })),
     getLoginInfo: vi.fn(async () => ({ user_id: 123, nickname: "机器人" })),
   }
   const manager = {
-    groupForSession: vi.fn(() => (groupId === null ? undefined : groupId)),
+    targetForSession: vi.fn(() => target ?? undefined),
     markMessageSent: vi.fn(),
     hasActiveTurn: vi.fn(() => true),
     rememberOutgoing: vi.fn(),
@@ -71,6 +79,7 @@ async function createHarness(
     ...DEFAULT_CONFIG,
     napcat: { url: "ws://127.0.0.1:3001" },
     groups: [100],
+    users: [200],
     sendDelayMs: 0,
     ...configOverrides,
   }
@@ -111,7 +120,7 @@ describe("registerTools", () => {
       ?.execute({ content: "第一行\n\n第二行" }, context)
     expect(result?.content).toBe("sent")
     expect(api["sendGroupMessage"]).toHaveBeenCalledTimes(1)
-    expect(api["sendGroupMessage"]).toHaveBeenCalledWith("100", "第一行\n\n第二行")
+    expect(api["sendGroupMessage"]).toHaveBeenCalledWith(100, "第一行\n\n第二行")
   })
 
   it("skips sending when the model chooses not to reply", async () => {
@@ -141,7 +150,7 @@ describe("registerTools", () => {
     expect(logger.warn).toHaveBeenCalled()
   })
 
-  it("reports an error for sessions without a group", async () => {
+  it("reports an error for sessions without a chat target", async () => {
     const { tools, api } = await createHarness(null)
     const result = await tools
       .get(`${TOOL_NAMESPACE}_send_message`)
@@ -156,7 +165,7 @@ describe("registerTools", () => {
       .get(`${TOOL_NAMESPACE}_send_image`)
       ?.execute({ file: "https://example.com/a.png" }, context)
     expect(result?.content).toBe("sent")
-    expect(api["sendGroupMessage"]).toHaveBeenCalledWith("100", [
+    expect(api["sendGroupMessage"]).toHaveBeenCalledWith(100, [
       { type: "image", data: { file: "https://example.com/a.png" } },
     ])
   })
@@ -216,7 +225,7 @@ describe("registerTools", () => {
   })
 
   it("rejects tools for groups removed from the config", async () => {
-    const { tools, api } = await createHarness(100, { groups: [200] })
+    const { tools, api } = await createHarness(group(100), { groups: [200] })
     const result = await tools
       .get(`${TOOL_NAMESPACE}_send_message`)
       ?.execute({ content: "你好" }, context)
@@ -260,5 +269,72 @@ describe("registerTools", () => {
       ?.execute({ reply: false }, context)
     expect(result?.content).toBe("skipped")
     expect(manager.markMessageSent).toHaveBeenCalledWith("session-1")
+  })
+
+  describe("private chats", () => {
+    it("sends text to the private chat", async () => {
+      const { tools, api } = await createHarness(privateChat(200))
+      const result = await tools
+        .get(`${TOOL_NAMESPACE}_send_message`)
+        ?.execute({ content: "私聊你好" }, context)
+      expect(result?.content).toBe("sent")
+      expect(api["sendPrivateMessage"]).toHaveBeenCalledWith(200, "私聊你好")
+      expect(api["sendGroupMessage"]).not.toHaveBeenCalled()
+    })
+
+    it("sends media to the private chat", async () => {
+      const { tools, api } = await createHarness(privateChat(200))
+      await tools.get(`${TOOL_NAMESPACE}_send_image`)?.execute({ file: "a.png" }, context)
+      expect(api["sendPrivateMessage"]).toHaveBeenCalledWith(200, [
+        { type: "image", data: { file: "a.png" } },
+      ])
+    })
+
+    it("sends a private forward", async () => {
+      const { tools, api } = await createHarness(privateChat(200))
+      const result = await tools
+        .get(`${TOOL_NAMESPACE}_send_forward`)
+        ?.execute({ nodes: [{ user_id: "1", content: "内容" }] }, context)
+      expect(result?.content).toBe("sent")
+      expect(api["sendPrivateForwardMessage"]).toHaveBeenCalledWith({
+        user_id: 200,
+        messages: [
+          {
+            user_id: 1,
+            nickname: "未知用户",
+            content: [{ type: "text", data: { text: "内容" } }],
+          },
+        ],
+      })
+    })
+
+    it("pokes through the friend API", async () => {
+      const { tools, api } = await createHarness(privateChat(200))
+      const result = await tools
+        .get(`${TOOL_NAMESPACE}_send_poke`)
+        ?.execute({ user_id: "300" }, context)
+      expect(result?.content).toBe("sent")
+      expect(api["sendFriendPoke"]).toHaveBeenCalledWith("300")
+      expect(api["sendGroupPoke"]).not.toHaveBeenCalled()
+    })
+
+    it("returns stranger info in a private chat", async () => {
+      const { tools, api } = await createHarness(privateChat(200))
+      const result = await tools
+        .get(`${TOOL_NAMESPACE}_get_group_member_info`)
+        ?.execute({ user_id: "300" }, context)
+      expect(result?.content).toContain("陌生人")
+      expect(api["getStrangerInfo"]).toHaveBeenCalledWith("300")
+      expect(api["getGroupMemberInfo"]).not.toHaveBeenCalled()
+    })
+
+    it("rejects private chats removed from the config", async () => {
+      const { tools, api } = await createHarness(privateChat(300), { users: [200] })
+      const result = await tools
+        .get(`${TOOL_NAMESPACE}_send_message`)
+        ?.execute({ content: "你好" }, context)
+      expect(result?.content).toContain("error")
+      expect(api["sendPrivateMessage"]).not.toHaveBeenCalled()
+    })
   })
 })

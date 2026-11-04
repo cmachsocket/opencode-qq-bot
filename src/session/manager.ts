@@ -1,17 +1,18 @@
 import type { Plugin } from "@opencode/plugin"
+import { type ChatTarget, isTargetEnabled, parseTargetKey, targetKey, targetLabel } from "../chat"
 import type { QQBotConfig } from "../config"
 import type { Logger } from "../logger"
 import { limitFiles, type PromptFile } from "../naplink/render"
 
-/** 插件存储里保存群与会话绑定的键。 */
+/** 插件存储里保存会话与目标绑定的键。 */
 const BINDINGS_KEY = "bindings"
-/** 插件存储里保存群最近活跃时间的键。 */
+/** 插件存储里保存目标最近活跃时间的键。 */
 const ACTIVITY_KEY = "activity"
-/** 单个群最多缓存的消息条数。 */
+/** 单个目标最多缓存的消息条数。 */
 export const MAX_BUFFER_TURNS = 100
-/** 单个群最多缓存的文本与附件字节数。 */
+/** 单个目标最多缓存的文本与附件字节数。 */
 export const MAX_BUFFER_BYTES = 32 * 1024 * 1024
-/** 每个群最多记录的消息 ID 数量。 */
+/** 每个目标最多记录的消息 ID 数量。 */
 const MAX_TRACKED_MESSAGES = 200
 
 export interface Turn {
@@ -25,8 +26,8 @@ export interface Turn {
   proactive?: boolean
 }
 
-interface GroupState {
-  groupId: number
+interface ChatState {
+  target: ChatTarget
   sessionID?: string
   /** 会话是否正在跑模型（收到消息到 idle 之间）。 */
   busy: boolean
@@ -68,18 +69,18 @@ function turnBytes(turn: Turn): number {
 }
 
 /**
- * 管理 QQ 群与 OpenCode 会话的映射。
+ * 管理 QQ 群聊/私聊与 OpenCode 会话的映射。
  *
- * 一个群固定对应一个会话，一个会话只能绑定一个群；
+ * 一个目标固定对应一个会话，一个会话只能绑定一个目标；
  * 会话忙碌时新到的消息先缓存，等会话真正空闲之后再合并成新的一轮 prompt 发进去。
  */
 export class SessionManager {
-  private readonly groups = new Map<number, GroupState>()
-  private readonly sessions = new Map<string, GroupState>()
-  private readonly ensureRequests = new Map<number, Promise<string | undefined>>()
+  private readonly states = new Map<string, ChatState>()
+  private readonly sessions = new Map<string, ChatState>()
+  private readonly ensureRequests = new Map<string, Promise<string | undefined>>()
   private readonly verifiedSessions = new Set<string>()
-  private readonly outgoing = new Map<number, Set<string>>()
-  private readonly incoming = new Map<number, Set<string>>()
+  private readonly outgoing = new Map<string, Set<string>>()
+  private readonly incoming = new Map<string, Set<string>>()
   private activity: Record<string, number> = {}
   private bindingsLoaded: Promise<void> | undefined
   private saveQueue: Promise<void> = Promise.resolve()
@@ -90,7 +91,7 @@ export class SessionManager {
     private readonly logger: Logger,
   ) {}
 
-  /** 载入上次运行时保存的群与会话绑定。 */
+  /** 载入上次运行时保存的目标与会话绑定。 */
   async load(): Promise<void> {
     await this.ensureBindings()
   }
@@ -111,31 +112,29 @@ export class SessionManager {
     if (stored && typeof stored === "object" && !Array.isArray(stored)) {
       let restored = 0
       for (const [key, value] of Object.entries(stored)) {
-        const groupId = Number(key)
-        if (!Number.isInteger(groupId) || typeof value !== "string" || value.length === 0) continue
-        // 配置里已经移除的群不再恢复，避免旧绑定继续获得工具权限。
-        if (!this.config.groups.includes(groupId)) continue
-        if (!this.bindSession(this.state(groupId), value)) continue
+        const target = parseTargetKey(key)
+        if (!target || typeof value !== "string" || value.length === 0) continue
+        // 配置里已经移除的目标不再恢复，避免旧绑定继续获得工具权限。
+        if (!isTargetEnabled(this.config, target)) continue
+        if (!this.bindSession(this.state(target), value)) continue
         restored += 1
       }
-      if (restored > 0) this.logger.debug(`已恢复 ${restored} 个群的会话绑定`)
+      if (restored > 0) this.logger.debug(`已恢复 ${restored} 个目标的会话绑定`)
     }
 
     try {
       const activity = await this.ctx.storage.get(ACTIVITY_KEY)
       if (!activity || typeof activity !== "object" || Array.isArray(activity)) return
       for (const [key, value] of Object.entries(activity)) {
-        const groupId = Number(key)
-        if (!Number.isInteger(groupId) || typeof value !== "number" || !Number.isFinite(value)) {
-          continue
-        }
-        if (!this.config.groups.includes(groupId)) continue
-        this.activity[String(groupId)] = value
-        const state = this.groups.get(groupId)
+        const target = parseTargetKey(key)
+        if (!target || typeof value !== "number" || !Number.isFinite(value)) continue
+        if (!isTargetEnabled(this.config, target)) continue
+        this.activity[targetKey(target)] = value
+        const state = this.states.get(targetKey(target))
         if (state) state.lastUserMessageAt = value
       }
     } catch (error) {
-      this.logger.warn("读取群活跃时间失败", error)
+      this.logger.warn("读取目标活跃时间失败", error)
     }
   }
 
@@ -151,8 +150,8 @@ export class SessionManager {
 
   private async writeBindings(): Promise<void> {
     const bindings: Record<string, string> = {}
-    for (const [groupId, state] of this.groups) {
-      if (state.sessionID) bindings[String(groupId)] = state.sessionID
+    for (const state of this.states.values()) {
+      if (state.sessionID) bindings[targetKey(state.target)] = state.sessionID
     }
     try {
       await this.ctx.storage.set(BINDINGS_KEY, bindings)
@@ -165,7 +164,7 @@ export class SessionManager {
     try {
       await this.ctx.storage.set(ACTIVITY_KEY, { ...this.activity })
     } catch (error) {
-      this.logger.error("保存群活跃时间失败", error)
+      this.logger.error("保存目标活跃时间失败", error)
     }
   }
 
@@ -175,53 +174,54 @@ export class SessionManager {
     await this.persist()
   }
 
-  private state(groupId: number): GroupState {
-    let state = this.groups.get(groupId)
+  private state(target: ChatTarget): ChatState {
+    const key = targetKey(target)
+    let state = this.states.get(key)
     if (!state) {
       state = {
-        groupId,
+        target,
         busy: false,
         busySince: 0,
         buffer: [],
         awaitingSend: false,
         reminders: 0,
-        lastUserMessageAt: this.activity[String(groupId)] ?? Date.now(),
+        lastUserMessageAt: this.activity[key] ?? Date.now(),
       }
-      this.groups.set(groupId, state)
+      this.states.set(key, state)
     }
     return state
   }
 
-  private beginBusy(state: GroupState): void {
+  private beginBusy(state: ChatState): void {
     state.busy = true
     state.busySince = Date.now()
     this.armBusyTimer(state)
   }
 
-  private armBusyTimer(state: GroupState): void {
+  private armBusyTimer(state: ChatState): void {
     this.clearBusyTimer(state)
     state.busyTimer = setTimeout(() => {
-      void this.recoverGroup(state.groupId)
+      void this.recoverTarget(state.target)
     }, this.config.busyTimeoutMs)
     const timer = state.busyTimer as { unref?: () => void }
     timer.unref?.()
   }
 
-  private clearBusyTimer(state: GroupState): void {
+  private clearBusyTimer(state: ChatState): void {
     if (state.busyTimer === undefined) return
     clearTimeout(state.busyTimer)
     state.busyTimer = undefined
   }
 
-  private endBusy(state: GroupState): void {
+  private endBusy(state: ChatState): void {
     state.busy = false
     state.busySince = 0
     this.clearBusyTimer(state)
   }
 
-  /** 会话 ID 反查群号。 */
-  groupForSession(sessionID: string): number | undefined {
-    return this.sessions.get(sessionID)?.groupId
+  /** 会话 ID 反查目标。 */
+  targetForSession(sessionID: string): ChatTarget | undefined {
+    return this.sessions.get(sessionID)?.target
   }
 
   /** 当前轮次的消息。 */
@@ -229,7 +229,7 @@ export class SessionManager {
     return this.sessions.get(sessionID)?.current
   }
 
-  /** 当前是否有 QQ 消息轮次正在执行，用于阻止手动 prompt 调用群工具。 */
+  /** 当前是否有 QQ 消息轮次正在执行，用于阻止手动 prompt 调用 QQ 工具。 */
   hasActiveTurn(sessionID: string): boolean {
     return this.sessions.get(sessionID)?.current !== undefined
   }
@@ -243,8 +243,8 @@ export class SessionManager {
   }
 
   /** 记录一条机器人发出的消息，撤回工具只能操作这些消息。 */
-  rememberOutgoing(groupId: number | string, messageId: string): void {
-    const key = Number(groupId)
+  rememberOutgoing(target: ChatTarget, messageId: string): void {
+    const key = targetKey(target)
     const ids = this.outgoing.get(key) ?? new Set<string>()
     ids.add(messageId)
     while (ids.size > MAX_TRACKED_MESSAGES) {
@@ -256,13 +256,13 @@ export class SessionManager {
   }
 
   /** 判断消息是否是机器人发出的。 */
-  isOutgoing(groupId: number | string, messageId: string): boolean {
-    return this.outgoing.get(Number(groupId))?.has(messageId) ?? false
+  isOutgoing(target: ChatTarget, messageId: string): boolean {
+    return this.outgoing.get(targetKey(target))?.has(messageId) ?? false
   }
 
   /** 记录一条收到的消息，语音转写工具只能操作这些消息。 */
-  rememberIncoming(groupId: number | string, messageId: string): void {
-    const key = Number(groupId)
+  rememberIncoming(target: ChatTarget, messageId: string): void {
+    const key = targetKey(target)
     const ids = this.incoming.get(key) ?? new Set<string>()
     ids.add(messageId)
     while (ids.size > MAX_TRACKED_MESSAGES) {
@@ -273,40 +273,40 @@ export class SessionManager {
     this.incoming.set(key, ids)
   }
 
-  /** 判断消息是否属于当前群最近收到的消息。 */
-  isKnownMessage(groupId: number | string, messageId: string): boolean {
+  /** 判断消息是否属于当前目标最近收到的消息。 */
+  isKnownMessage(target: ChatTarget, messageId: string): boolean {
     return (
-      this.isOutgoing(groupId, messageId) ||
-      (this.incoming.get(Number(groupId))?.has(messageId) ?? false)
+      this.isOutgoing(target, messageId) ||
+      (this.incoming.get(targetKey(target))?.has(messageId) ?? false)
     )
   }
 
   /** 记录一次真实用户消息的时间。 */
-  touch(groupId: number): void {
-    const state = this.state(groupId)
+  touch(target: ChatTarget): void {
+    const state = this.state(target)
     state.lastUserMessageAt = Date.now()
-    this.activity[String(groupId)] = state.lastUserMessageAt
+    this.activity[targetKey(target)] = state.lastUserMessageAt
     this.scheduleSave()
   }
 
   /** 距上次用户消息的沉默时长（秒）。 */
-  silenceSeconds(groupId: number): number {
-    return (Date.now() - this.state(groupId).lastUserMessageAt) / 1000
+  silenceSeconds(target: ChatTarget): number {
+    return (Date.now() - this.state(target).lastUserMessageAt) / 1000
   }
 
   /**
-   * 收到一条群消息：空闲则直接投进会话，忙则先缓存。
+   * 收到一条消息：空闲则直接投进会话，忙则先缓存。
    */
-  async enqueue(groupId: number, turn: Turn): Promise<void> {
-    const state = this.state(groupId)
+  async enqueue(target: ChatTarget, turn: Turn): Promise<void> {
+    const state = this.state(target)
     if (state.busy) {
       this.pushBuffered(state, turn)
       return
     }
-    await this.dispatch(groupId, state, turn)
+    await this.dispatch(state, turn)
   }
 
-  private pushBuffered(state: GroupState, turn: Turn): void {
+  private pushBuffered(state: ChatState, turn: Turn): void {
     state.buffer.push(turn)
     let bytes = state.buffer.reduce((total, item) => total + turnBytes(item), 0)
     while (
@@ -316,16 +316,18 @@ export class SessionManager {
       const dropped = state.buffer.shift()
       if (!dropped) break
       bytes -= turnBytes(dropped)
-      this.logger.warn(`群 ${state.groupId} 缓存已满，丢弃最早的一条消息`)
+      this.logger.warn(`${targetLabel(state.target)} 缓存已满，丢弃最早的一条消息`)
     }
     if (state.buffer.length === 1 && bytes > MAX_BUFFER_BYTES) {
-      this.logger.warn(`群 ${state.groupId} 单条消息超过缓存上限，仍保留该消息`)
+      this.logger.warn(`${targetLabel(state.target)} 单条消息超过缓存上限，仍保留该消息`)
     }
-    this.logger.debug(`群 ${state.groupId} 忙碌中，消息已缓存（累计 ${state.buffer.length} 条）`)
+    this.logger.debug(
+      `${targetLabel(state.target)} 忙碌中，消息已缓存（累计 ${state.buffer.length} 条）`,
+    )
   }
 
   /** 把一轮消息投进 OpenCode 会话。 */
-  private async dispatch(groupId: number, state: GroupState, turn: Turn): Promise<void> {
+  private async dispatch(state: ChatState, turn: Turn): Promise<void> {
     if (state.busy) return
     // 先同步占位，避免并发消息重复投递
     this.beginBusy(state)
@@ -333,8 +335,9 @@ export class SessionManager {
     state.awaitingSend = true
     // 新的用户轮次重新给一份提醒预算，否则连续几轮不调工具就再也提醒不了。
     state.reminders = 0
+    const label = targetLabel(state.target)
     try {
-      const sessionID = await this.ensureSession(groupId)
+      const sessionID = await this.ensureSession(state.target)
       if (!sessionID) {
         this.endBusy(state)
         state.current = undefined
@@ -346,16 +349,16 @@ export class SessionManager {
         text: turn.text,
         ...(turn.files.length > 0 ? { files: turn.files } : {}),
       })
-      this.logger.debug(`群 ${groupId} 已投递消息到会话 ${sessionID}`)
+      this.logger.debug(`${label} 已投递消息到会话 ${sessionID}`)
     } catch (error) {
       this.endBusy(state)
       state.current = undefined
       state.awaitingSend = false
-      this.logger.error(`群 ${groupId} 投递消息失败`, error)
+      this.logger.error(`${label} 投递消息失败`, error)
       const buffered = state.buffer
       state.buffer = []
       if (buffered.length > 0) {
-        await this.dispatch(groupId, state, mergeTurns(buffered))
+        await this.dispatch(state, mergeTurns(buffered))
       }
     }
   }
@@ -365,7 +368,7 @@ export class SessionManager {
    * 否则清掉忙碌标记，若模型这一轮没调用发送工具则提醒它补一次。
    *
    * `background` 只统计本会话自己的后台任务；子会话遗留的任务不会唤醒本会话，
-   * 不能因此让群一直保持忙碌。
+   * 不能因此让目标一直保持忙碌。
    */
   async handleIdle(
     sessionID: string,
@@ -373,15 +376,16 @@ export class SessionManager {
   ): Promise<void> {
     const state = this.sessions.get(sessionID)
     if (!state) return
+    const label = targetLabel(state.target)
 
     if (background.some((task) => task.sessionID === sessionID)) {
-      this.logger.debug(`群 ${state.groupId} 仍有后台任务，保持忙碌状态`)
+      this.logger.debug(`${label} 仍有后台任务，保持忙碌状态`)
       return
     }
 
     if (state.buffer.length > 0) {
       // 在 idle 钩子里投递会被并入旧的一轮；保持忙碌，等真正空闲后再开始新一轮。
-      this.logger.debug(`群 ${state.groupId} 空闲，等待投递 ${state.buffer.length} 条缓存消息`)
+      this.logger.debug(`${label} 空闲，等待投递 ${state.buffer.length} 条缓存消息`)
       return
     }
 
@@ -397,7 +401,7 @@ export class SessionManager {
       // 合成消息会唤醒会话再跑一轮，先占位避免新消息插队。
       this.beginBusy(state)
       state.current = { text: "[提醒]", files: [], atMe: false }
-      this.logger.warn(`群 ${state.groupId} 模型未调用发送工具，提醒第 ${state.reminders} 次`)
+      this.logger.warn(`${label} 模型未调用发送工具，提醒第 ${state.reminders} 次`)
       try {
         await this.ctx.session.synthetic({
           sessionID,
@@ -406,7 +410,7 @@ export class SessionManager {
       } catch (error) {
         this.endBusy(state)
         state.awaitingSend = false
-        this.logger.error(`群 ${state.groupId} 发送提醒失败`, error)
+        this.logger.error(`${label} 发送提醒失败`, error)
       }
     }
   }
@@ -417,7 +421,7 @@ export class SessionManager {
   async handleExecutionEnd(sessionID: string, reason: string): Promise<void> {
     const state = this.sessions.get(sessionID)
     if (!state) return
-    this.logger.warn(`群 ${state.groupId} 会话执行结束（${reason}），释放忙碌状态`)
+    this.logger.warn(`${targetLabel(state.target)} 会话执行结束（${reason}），释放忙碌状态`)
     this.endBusy(state)
     state.current = undefined
     state.awaitingSend = false
@@ -427,26 +431,26 @@ export class SessionManager {
   }
 
   /** 超时看门狗：会话长时间没有 idle 时强制放行缓存。 */
-  async recoverGroup(groupId: number): Promise<void> {
-    const state = this.groups.get(groupId)
+  async recoverTarget(target: ChatTarget): Promise<void> {
+    const state = this.states.get(targetKey(target))
     if (!state?.busy) return
-    this.logger.warn(`群 ${groupId} 会话超时未结束，强制放行缓存消息`)
+    this.logger.warn(`${targetLabel(target)} 会话超时未结束，强制放行缓存消息`)
     const buffered = state.buffer
     state.buffer = []
     this.endBusy(state)
     state.current = undefined
     state.awaitingSend = false
     if (buffered.length > 0) {
-      await this.dispatch(groupId, state, mergeTurns(buffered))
+      await this.dispatch(state, mergeTurns(buffered))
     }
   }
 
-  /** 检查所有群是否有超过阈值的忙碌会话。 */
+  /** 检查所有目标是否有超过阈值的忙碌会话。 */
   async recoverStale(): Promise<void> {
-    for (const state of this.groups.values()) {
+    for (const state of this.states.values()) {
       if (!state.busy) continue
       if (Date.now() - state.busySince <= this.config.busyTimeoutMs) continue
-      await this.recoverGroup(state.groupId)
+      await this.recoverTarget(state.target)
     }
   }
 
@@ -466,54 +470,59 @@ export class SessionManager {
     state.buffer = []
     this.endBusy(state)
     state.current = undefined
-    this.logger.debug(`群 ${state.groupId} 空闲，合并 ${turns.length} 条缓存消息`)
-    await this.dispatch(state.groupId, state, mergeTurns(turns))
+    this.logger.debug(`${targetLabel(state.target)} 空闲，合并 ${turns.length} 条缓存消息`)
+    await this.dispatch(state, mergeTurns(turns))
   }
 
-  /** 取得（必要时创建）群对应的会话；并发调用复用同一个请求。 */
-  ensureSession(groupId: number): Promise<string | undefined> {
-    const pending = this.ensureRequests.get(groupId)
+  /** 取得（必要时创建）目标对应的会话；并发调用复用同一个请求。 */
+  ensureSession(target: ChatTarget): Promise<string | undefined> {
+    const key = targetKey(target)
+    const pending = this.ensureRequests.get(key)
     if (pending) return pending
-    const request = this.resolveSession(groupId).finally(() => {
-      if (this.ensureRequests.get(groupId) === request) this.ensureRequests.delete(groupId)
+    const request = this.resolveSession(target).finally(() => {
+      if (this.ensureRequests.get(key) === request) this.ensureRequests.delete(key)
     })
-    this.ensureRequests.set(groupId, request)
+    this.ensureRequests.set(key, request)
     return request
   }
 
-  private async resolveSession(groupId: number): Promise<string | undefined> {
+  private async resolveSession(target: ChatTarget): Promise<string | undefined> {
     await this.ensureBindings()
-    const state = this.state(groupId)
+    const state = this.state(target)
+    const label = targetLabel(target)
     if (state.sessionID) {
       if (await this.sessionExists(state.sessionID)) return state.sessionID
       this.unbind(state)
     }
 
     if (this.config.reuseSession) {
-      const reused = await this.findExistingSession(groupId)
-      // 会话已经绑给别的群时不能复用，改为新建一个会话。
+      const reused = await this.findExistingSession(target)
+      // 会话已经绑给别的目标时不能复用，改为新建一个会话。
       if (reused && this.bindSession(state, reused)) {
         this.scheduleSave()
-        this.logger.info(`群 ${groupId} 复用已有会话 ${reused}`)
+        this.logger.info(`${label} 复用已有会话 ${reused}`)
         return reused
       }
     }
 
     const created = await this.ctx.session.create({
-      title: `QQ 群 ${groupId}`,
+      title: target.kind === "group" ? `QQ 群 ${target.id}` : `QQ 私聊 ${target.id}`,
       ...(this.config.agent ? { agent: this.config.agent } : {}),
       ...(this.config.model ? { model: this.config.model } : {}),
-      metadata: { qqGroupId: groupId },
+      metadata: {
+        qqTargetKind: target.kind,
+        qqTargetId: target.id,
+      },
     })
     if (!this.bindSession(state, created.id)) {
-      this.logger.error(`群 ${groupId} 新建会话 ${created.id} 已被其他群占用`)
+      this.logger.error(`${label} 新建会话 ${created.id} 已被其他目标占用`)
       await this.ctx.session.remove({ sessionID: created.id }).catch((error: unknown) => {
         this.logger.warn(`清理冲突会话 ${created.id} 失败`, error)
       })
       return undefined
     }
     this.scheduleSave()
-    this.logger.info(`群 ${groupId} 新建会话 ${created.id}`)
+    this.logger.info(`${label} 新建会话 ${created.id}`)
     return created.id
   }
 
@@ -530,7 +539,7 @@ export class SessionManager {
     }
   }
 
-  private unbind(state: GroupState): void {
+  private unbind(state: ChatState): void {
     if (!state.sessionID) return
     this.sessions.delete(state.sessionID)
     this.verifiedSessions.delete(state.sessionID)
@@ -538,18 +547,18 @@ export class SessionManager {
     this.scheduleSave()
   }
 
-  /** 绑定会话到群；一个会话只能绑定一个群，已有绑定不能被覆盖。 */
-  private bindSession(state: GroupState, sessionID: string): boolean {
+  /** 绑定会话到目标；一个会话只能绑定一个目标，已有绑定不能被覆盖。 */
+  private bindSession(state: ChatState, sessionID: string): boolean {
     if (state.sessionID && state.sessionID !== sessionID) {
       this.logger.error(
-        `群 ${state.groupId} 已绑定会话 ${state.sessionID}，拒绝覆盖为 ${sessionID}`,
+        `${targetLabel(state.target)} 已绑定会话 ${state.sessionID}，拒绝覆盖为 ${sessionID}`,
       )
       return false
     }
     const owner = this.sessions.get(sessionID)
-    if (owner && owner.groupId !== state.groupId) {
+    if (owner && targetKey(owner.target) !== targetKey(state.target)) {
       this.logger.error(
-        `会话 ${sessionID} 已绑定群 ${owner.groupId}，不能再次绑定群 ${state.groupId}`,
+        `会话 ${sessionID} 已绑定 ${targetLabel(owner.target)}，不能再次绑定 ${targetLabel(state.target)}`,
       )
       return false
     }
@@ -558,8 +567,8 @@ export class SessionManager {
     return true
   }
 
-  /** 查找带相同群号标记的历史会话，按最近优先分页查找。 */
-  private async findExistingSession(groupId: number): Promise<string | undefined> {
+  /** 查找带相同目标标记的历史会话，按最近优先分页查找。 */
+  private async findExistingSession(target: ChatTarget): Promise<string | undefined> {
     let cursor: SessionListCursor | undefined
     try {
       for (let page = 0; page < 5; page += 1) {
@@ -569,25 +578,28 @@ export class SessionManager {
           order: "desc",
           ...(cursor ? { cursor } : {}),
         })
-        const hit = result.data.find((session) => session.metadata?.["qqGroupId"] === groupId)
+        const hit = result.data.find((session) => {
+          const metadata = session.metadata
+          return metadata?.["qqTargetKind"] === target.kind && metadata["qqTargetId"] === target.id
+        })
         if (hit) return hit.id
         cursor = result.cursor.next ?? undefined
         if (!cursor) break
       }
     } catch (error) {
-      this.logger.warn(`查找历史会话失败 group=${groupId}`, error)
+      this.logger.warn(`查找历史会话失败 ${targetLabel(target)}`, error)
     }
     return undefined
   }
 
-  /** 该群是否已经建立过会话。 */
-  hasSession(groupId: number): boolean {
-    return this.groups.get(groupId)?.sessionID !== undefined
+  /** 该目标是否已经建立过会话。 */
+  hasSession(target: ChatTarget): boolean {
+    return this.states.get(targetKey(target))?.sessionID !== undefined
   }
 
-  /** 主动说话：向群里对应的会话投递一条合成消息。 */
-  async proactive(groupId: number, text: string): Promise<void> {
-    const state = this.state(groupId)
+  /** 主动说话：向目标对应的会话投递一条合成消息。 */
+  async proactive(target: ChatTarget, text: string): Promise<void> {
+    const state = this.state(target)
     if (state.busy) return
     // 在 await 之前占位，避免用户消息或下一次心跳同时投递。
     this.beginBusy(state)
@@ -595,7 +607,7 @@ export class SessionManager {
     state.awaitingSend = true
     state.reminders = 0
     try {
-      const sessionID = await this.ensureSession(groupId)
+      const sessionID = await this.ensureSession(target)
       if (!sessionID) {
         this.endBusy(state)
         state.current = undefined
@@ -603,14 +615,14 @@ export class SessionManager {
         return
       }
       state.lastUserMessageAt = Date.now()
-      this.activity[String(groupId)] = state.lastUserMessageAt
+      this.activity[targetKey(target)] = state.lastUserMessageAt
       this.scheduleSave()
       await this.ctx.session.synthetic({ sessionID, text })
     } catch (error) {
       this.endBusy(state)
       state.current = undefined
       state.awaitingSend = false
-      this.logger.error(`群 ${groupId} 主动说话失败`, error)
+      this.logger.error(`${targetLabel(target)} 主动说话失败`, error)
     }
   }
 }

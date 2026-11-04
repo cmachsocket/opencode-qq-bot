@@ -3,6 +3,7 @@ import {
   type GroupMessageEvent,
   type MessageSegment,
   type OneBotApi,
+  type PrivateMessageEvent,
 } from "@naplink/naplink"
 import type { Logger } from "../logger"
 import type { NapcatConfig } from "../config"
@@ -94,6 +95,11 @@ export class QQClient {
   /** 订阅群消息事件。 */
   onGroupMessage(handler: (event: GroupMessageEvent) => void): void {
     this.link.on("message.group.normal", handler)
+  }
+
+  /** 订阅私聊消息事件（好友、临时会话等）。 */
+  onPrivateMessage(handler: (event: PrivateMessageEvent) => void): void {
+    this.link.on("message.private", handler)
   }
 
   /** 补全消息里媒体段的直链，便于下载图片。 */

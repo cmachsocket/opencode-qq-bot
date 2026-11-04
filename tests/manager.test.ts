@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest"
 import type { Plugin } from "@opencode/plugin"
 import { MAX_BUFFER_TURNS, SessionManager, mergeTurns } from "../src/session/manager"
 import { DEFAULT_CONFIG, type QQBotConfig } from "../src/config"
+import type { ChatTarget } from "../src/chat"
 import { MAX_PROMPT_IMAGES } from "../src/naplink/render"
 import type { Logger } from "../src/logger"
 
@@ -12,6 +13,9 @@ const logger: Logger = {
   error: () => {},
 }
 
+const group = (id: number): ChatTarget => ({ kind: "group", id })
+const privateChat = (id: number): ChatTarget => ({ kind: "private", id })
+
 interface Harness {
   manager: SessionManager
   prompts: Array<{ sessionID: string; text: string }>
@@ -21,6 +25,7 @@ interface Harness {
     set: ReturnType<typeof vi.fn>
   }
   sessionGet: ReturnType<typeof vi.fn>
+  sessionCreate: ReturnType<typeof vi.fn>
 }
 
 function createHarness(
@@ -37,16 +42,17 @@ function createHarness(
     set: vi.fn(async () => {}),
   }
   const sessionGet = vi.fn(async (input: { sessionID: string }) => ({ id: input.sessionID }))
+  const sessionCreate = vi.fn(async () => {
+    if (createId) return { id: createId() }
+    created += 1
+    return { id: `session-${created}` }
+  })
 
   const ctx = {
     location: { directory: "/tmp" },
     storage,
     session: {
-      create: vi.fn(async () => {
-        if (createId) return { id: createId() }
-        created += 1
-        return { id: `session-${created}` }
-      }),
+      create: sessionCreate,
       get: sessionGet,
       remove: vi.fn(async () => {}),
       prompt: vi.fn(async (input: { sessionID: string; text: string }) => {
@@ -72,6 +78,7 @@ function createHarness(
     synthetics,
     storage,
     sessionGet,
+    sessionCreate,
   }
 }
 
@@ -104,40 +111,69 @@ describe("mergeTurns", () => {
 describe("SessionManager", () => {
   it("creates a session and dispatches the first message", async () => {
     const { manager, prompts } = createHarness()
-    await manager.enqueue(100, { text: "你好", files: [], atMe: false })
+    await manager.enqueue(group(100), { text: "你好", files: [], atMe: false })
     expect(prompts).toHaveLength(1)
     expect(prompts[0]?.text).toBe("你好")
-    expect(manager.groupForSession("session-1")).toBe(100)
+    expect(manager.targetForSession("session-1")).toEqual(group(100))
+  })
+
+  it("creates a private session with its own title and metadata", async () => {
+    const { manager, prompts, sessionCreate } = createHarness({ users: [200] })
+    await manager.enqueue(privateChat(200), { text: "你好", files: [], atMe: false })
+    expect(prompts).toHaveLength(1)
+    expect(manager.targetForSession("session-1")).toEqual(privateChat(200))
+    expect(sessionCreate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        title: "QQ 私聊 200",
+        metadata: { qqTargetKind: "private", qqTargetId: 200 },
+      }),
+    )
+  })
+
+  it("keeps a group and a private chat with the same id apart", async () => {
+    const { manager, prompts } = createHarness({ groups: [200], users: [200] })
+    await manager.enqueue(group(200), { text: "群消息", files: [], atMe: false })
+    await manager.enqueue(privateChat(200), { text: "私聊消息", files: [], atMe: false })
+    expect(prompts).toHaveLength(2)
+    expect(manager.targetForSession("session-1")).toEqual(group(200))
+    expect(manager.targetForSession("session-2")).toEqual(privateChat(200))
   })
 
   it("restores the session binding from storage", async () => {
-    const { manager, prompts } = createHarness({}, undefined, { "100": "session-restored" })
+    const { manager, prompts } = createHarness({}, undefined, { "group:100": "session-restored" })
     await manager.load()
-    await manager.enqueue(100, { text: "你好", files: [], atMe: false })
+    await manager.enqueue(group(100), { text: "你好", files: [], atMe: false })
     expect(prompts[0]?.sessionID).toBe("session-restored")
-    expect(manager.groupForSession("session-restored")).toBe(100)
+    expect(manager.targetForSession("session-restored")).toEqual(group(100))
+  })
+
+  it("ignores legacy numeric bindings", async () => {
+    const { manager, prompts } = createHarness({}, undefined, { "100": "session-old" })
+    await manager.load()
+    await manager.enqueue(group(100), { text: "你好", files: [], atMe: false })
+    expect(prompts[0]?.sessionID).toBe("session-1")
   })
 
   it("persists a new session binding", async () => {
     const { manager, storage } = createHarness()
-    await manager.enqueue(100, { text: "你好", files: [], atMe: false })
+    await manager.enqueue(group(100), { text: "你好", files: [], atMe: false })
     await vi.waitFor(() => {
-      expect(storage.set).toHaveBeenCalledWith("bindings", { "100": "session-1" })
+      expect(storage.set).toHaveBeenCalledWith("bindings", { "group:100": "session-1" })
     })
   })
 
   it("ignores malformed stored bindings", async () => {
-    const stored = { oops: "session-x", "100": 42 } as unknown as Record<string, string>
+    const stored = { oops: "session-x", "group:100": 42 } as unknown as Record<string, string>
     const { manager, prompts } = createHarness({}, undefined, stored)
     await manager.load()
-    await manager.enqueue(100, { text: "你好", files: [], atMe: false })
+    await manager.enqueue(group(100), { text: "你好", files: [], atMe: false })
     expect(prompts[0]?.sessionID).toBe("session-1")
   })
 
   it("buffers messages while the session is busy and flushes them on idle", async () => {
     const { manager, prompts } = createHarness()
-    await manager.enqueue(100, { text: "第一条", files: [], atMe: false })
-    await manager.enqueue(100, { text: "第二条", files: [], atMe: false })
+    await manager.enqueue(group(100), { text: "第一条", files: [], atMe: false })
+    await manager.enqueue(group(100), { text: "第二条", files: [], atMe: false })
     expect(prompts).toHaveLength(1)
 
     // idle 钩子里不投递，等真正空闲后再合并成新一轮。
@@ -151,9 +187,9 @@ describe("SessionManager", () => {
 
   it("merges several buffered messages into one prompt", async () => {
     const { manager, prompts } = createHarness()
-    await manager.enqueue(100, { text: "第一条", files: [], atMe: false })
-    await manager.enqueue(100, { text: "第二条", files: [], atMe: false })
-    await manager.enqueue(100, { text: "第三条", files: [], atMe: false })
+    await manager.enqueue(group(100), { text: "第一条", files: [], atMe: false })
+    await manager.enqueue(group(100), { text: "第二条", files: [], atMe: false })
+    await manager.enqueue(group(100), { text: "第三条", files: [], atMe: false })
 
     await manager.handleIdle("session-1")
     await manager.flushBuffered("session-1")
@@ -161,20 +197,20 @@ describe("SessionManager", () => {
     expect(prompts[1]?.text).toBe("第二条\n第三条")
   })
 
-  it("refuses to bind one session to two groups", async () => {
-    const { manager, prompts } = createHarness({}, () => "session-1")
-    await manager.enqueue(100, { text: "第一条", files: [], atMe: false })
+  it("refuses to bind one session to two targets", async () => {
+    const { manager, prompts } = createHarness({ groups: [100, 200] }, () => "session-1")
+    await manager.enqueue(group(100), { text: "第一条", files: [], atMe: false })
     expect(prompts).toHaveLength(1)
 
-    // 复用同一个会话 ID 时必须拒绝，否则两个群会共用一条会话。
-    await manager.enqueue(200, { text: "第二条", files: [], atMe: false })
+    // 复用同一个会话 ID 时必须拒绝，否则两个目标会共用一条会话。
+    await manager.enqueue(group(200), { text: "第二条", files: [], atMe: false })
     expect(prompts).toHaveLength(1)
-    expect(manager.groupForSession("session-1")).toBe(100)
+    expect(manager.targetForSession("session-1")).toEqual(group(100))
   })
 
   it("reminds the model when it never called the send tool", async () => {
     const { manager, synthetics } = createHarness()
-    await manager.enqueue(100, { text: "你好", files: [], atMe: false })
+    await manager.enqueue(group(100), { text: "你好", files: [], atMe: false })
     await manager.handleIdle("session-1")
     expect(synthetics).toHaveLength(1)
     expect(synthetics[0]?.text).toContain("qq_send_message")
@@ -182,7 +218,7 @@ describe("SessionManager", () => {
 
   it("stops reminding once the send tool was called", async () => {
     const { manager, synthetics } = createHarness()
-    await manager.enqueue(100, { text: "你好", files: [], atMe: false })
+    await manager.enqueue(group(100), { text: "你好", files: [], atMe: false })
     manager.markMessageSent("session-1")
     await manager.handleIdle("session-1")
     expect(synthetics).toHaveLength(0)
@@ -190,7 +226,7 @@ describe("SessionManager", () => {
 
   it("caps the number of reminders", async () => {
     const { manager, synthetics } = createHarness({ reminder: { enabled: true, max: 1 } })
-    await manager.enqueue(100, { text: "你好", files: [], atMe: false })
+    await manager.enqueue(group(100), { text: "你好", files: [], atMe: false })
     await manager.handleIdle("session-1")
     await manager.handleIdle("session-1")
     expect(synthetics).toHaveLength(1)
@@ -204,24 +240,24 @@ describe("SessionManager", () => {
 
   it("reuses an existing session when reuseSession is enabled", async () => {
     const { manager, prompts } = createHarness({ reuseSession: true })
-    await manager.enqueue(100, { text: "你好", files: [], atMe: false })
+    await manager.enqueue(group(100), { text: "你好", files: [], atMe: false })
     expect(prompts).toHaveLength(1)
   })
 
   it("skips the reminder while background work is still running", async () => {
     const { manager, synthetics } = createHarness()
-    await manager.enqueue(100, { text: "你好", files: [], atMe: false })
+    await manager.enqueue(group(100), { text: "你好", files: [], atMe: false })
     await manager.handleIdle("session-1", [{ sessionID: "session-1" }])
     expect(synthetics).toHaveLength(0)
   })
 
   it("keeps the session busy while its own background work is still running", async () => {
     const { manager, prompts } = createHarness()
-    await manager.enqueue(100, { text: "第一条", files: [], atMe: false })
+    await manager.enqueue(group(100), { text: "第一条", files: [], atMe: false })
     await manager.handleIdle("session-1", [{ sessionID: "session-1" }])
 
     // 后台任务还在跑，新消息必须排队，不能插进正在执行的会话。
-    await manager.enqueue(100, { text: "第二条", files: [], atMe: false })
+    await manager.enqueue(group(100), { text: "第二条", files: [], atMe: false })
     expect(prompts).toHaveLength(1)
 
     await manager.handleIdle("session-1")
@@ -234,28 +270,28 @@ describe("SessionManager", () => {
 
   it("ignores background work owned by descendant sessions", async () => {
     const { manager, prompts } = createHarness()
-    await manager.enqueue(100, { text: "第一条", files: [], atMe: false })
+    await manager.enqueue(group(100), { text: "第一条", files: [], atMe: false })
     manager.markMessageSent("session-1")
     await manager.handleIdle("session-1", [{ sessionID: "child-session" }])
 
-    await manager.enqueue(100, { text: "第二条", files: [], atMe: false })
+    await manager.enqueue(group(100), { text: "第二条", files: [], atMe: false })
     expect(prompts).toHaveLength(2)
     expect(prompts[1]?.text).toBe("第二条")
   })
 
   it("releases stale busy state on an idle event without buffered messages", async () => {
     const { manager, prompts } = createHarness()
-    await manager.enqueue(100, { text: "第一条", files: [], atMe: false })
+    await manager.enqueue(group(100), { text: "第一条", files: [], atMe: false })
     // 模拟控制类工作只发 session.idle、不触发 idle 钩子。
     await manager.flushBuffered("session-1")
-    await manager.enqueue(100, { text: "第二条", files: [], atMe: false })
+    await manager.enqueue(group(100), { text: "第二条", files: [], atMe: false })
     expect(prompts).toHaveLength(2)
   })
 
   it("does not flush the same buffered messages twice", async () => {
     const { manager, prompts } = createHarness()
-    await manager.enqueue(100, { text: "第一条", files: [], atMe: false })
-    await manager.enqueue(100, { text: "第二条", files: [], atMe: false })
+    await manager.enqueue(group(100), { text: "第一条", files: [], atMe: false })
+    await manager.enqueue(group(100), { text: "第二条", files: [], atMe: false })
 
     await manager.flushBuffered("session-1")
     await manager.flushBuffered("session-1")
@@ -264,13 +300,13 @@ describe("SessionManager", () => {
 
   it("gives every user turn a fresh reminder budget", async () => {
     const { manager, synthetics } = createHarness({ reminder: { enabled: true, max: 1 } })
-    await manager.enqueue(100, { text: "第一条", files: [], atMe: false })
+    await manager.enqueue(group(100), { text: "第一条", files: [], atMe: false })
     await manager.handleIdle("session-1")
     await manager.handleIdle("session-1")
     expect(synthetics).toHaveLength(1)
 
     // 新的用户轮次重新获得提醒预算。
-    await manager.enqueue(100, { text: "第二条", files: [], atMe: false })
+    await manager.enqueue(group(100), { text: "第二条", files: [], atMe: false })
     await manager.handleIdle("session-1")
     expect(synthetics).toHaveLength(2)
   })
@@ -279,8 +315,8 @@ describe("SessionManager", () => {
     vi.useFakeTimers()
     try {
       const { manager, prompts } = createHarness({ busyTimeoutMs: 1000 })
-      await manager.enqueue(100, { text: "第一条", files: [], atMe: false })
-      await manager.enqueue(100, { text: "第二条", files: [], atMe: false })
+      await manager.enqueue(group(100), { text: "第一条", files: [], atMe: false })
+      await manager.enqueue(group(100), { text: "第二条", files: [], atMe: false })
       expect(prompts).toHaveLength(1)
 
       // 即使群里没有新消息，看门狗也会在超时后放行缓存。
@@ -294,8 +330,8 @@ describe("SessionManager", () => {
 
   it("releases the busy state when the model execution fails", async () => {
     const { manager, prompts } = createHarness()
-    await manager.enqueue(100, { text: "第一条", files: [], atMe: false })
-    await manager.enqueue(100, { text: "第二条", files: [], atMe: false })
+    await manager.enqueue(group(100), { text: "第一条", files: [], atMe: false })
+    await manager.enqueue(group(100), { text: "第二条", files: [], atMe: false })
     expect(prompts).toHaveLength(1)
 
     await manager.handleExecutionEnd("session-1", "session.execution.failed")
@@ -306,34 +342,36 @@ describe("SessionManager", () => {
   it("creates only one session for concurrent ensureSession calls", async () => {
     const { manager } = createHarness()
     const [first, second] = await Promise.all([
-      manager.ensureSession(100),
-      manager.ensureSession(100),
+      manager.ensureSession(group(100)),
+      manager.ensureSession(group(100)),
     ])
     expect(first).toBe("session-1")
     expect(second).toBe("session-1")
   })
 
   it("rebuilds a binding when the restored session no longer exists", async () => {
-    const { manager, prompts, sessionGet } = createHarness({}, undefined, { "100": "gone" })
+    const { manager, prompts, sessionGet } = createHarness({}, undefined, {
+      "group:100": "gone",
+    })
     sessionGet.mockRejectedValueOnce(new Error("not found"))
     await manager.load()
-    await manager.enqueue(100, { text: "你好", files: [], atMe: false })
+    await manager.enqueue(group(100), { text: "你好", files: [], atMe: false })
     expect(prompts[0]?.sessionID).toBe("session-1")
-    expect(manager.groupForSession("gone")).toBeUndefined()
+    expect(manager.targetForSession("gone")).toBeUndefined()
   })
 
-  it("does not create a proactive turn while the group is busy", async () => {
+  it("does not create a proactive turn while the chat is busy", async () => {
     const { manager, synthetics } = createHarness()
-    await manager.enqueue(100, { text: "你好", files: [], atMe: false })
-    await manager.proactive(100, "主动话题")
+    await manager.enqueue(group(100), { text: "你好", files: [], atMe: false })
+    await manager.proactive(group(100), "主动话题")
     expect(synthetics).toHaveLength(0)
   })
 
   it("drops the oldest buffered messages when the buffer is full", async () => {
     const { manager, prompts } = createHarness()
-    await manager.enqueue(100, { text: "first", files: [], atMe: false })
+    await manager.enqueue(group(100), { text: "first", files: [], atMe: false })
     for (let index = 0; index < MAX_BUFFER_TURNS + 5; index += 1) {
-      await manager.enqueue(100, { text: `buffered-${index}`, files: [], atMe: false })
+      await manager.enqueue(group(100), { text: `buffered-${index}`, files: [], atMe: false })
     }
     await manager.handleIdle("session-1")
     await manager.flushBuffered("session-1")
@@ -344,13 +382,13 @@ describe("SessionManager", () => {
 
   it("flushes bindings and activity to storage", async () => {
     const { manager, storage } = createHarness()
-    manager.touch(100)
-    await manager.enqueue(100, { text: "你好", files: [], atMe: false })
+    manager.touch(group(100))
+    await manager.enqueue(group(100), { text: "你好", files: [], atMe: false })
     await manager.flush()
-    expect(storage.set).toHaveBeenCalledWith("bindings", { "100": "session-1" })
+    expect(storage.set).toHaveBeenCalledWith("bindings", { "group:100": "session-1" })
     expect(storage.set).toHaveBeenCalledWith(
       "activity",
-      expect.objectContaining({ "100": expect.any(Number) }),
+      expect.objectContaining({ "group:100": expect.any(Number) }),
     )
   })
 })

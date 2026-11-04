@@ -1,4 +1,6 @@
-import type { GroupMessageEvent, MessageSegment, OneBotApi } from "@naplink/naplink"
+import type { MessageEvent, MessageSegment, OneBotApi } from "@naplink/naplink"
+import type { ChatTarget } from "../chat"
+import { targetKey } from "../chat"
 import type { Logger } from "../logger"
 import {
   MAX_IMAGE_BYTES,
@@ -34,11 +36,11 @@ export interface RenderedMessage {
 
 export interface RenderContext {
   api: OneBotApi
-  groupId: number
+  target: ChatTarget
   logger: Logger
   /** 受控临时图片存储。 */
   media: MediaStore
-  /** 群成员显示名缓存，避免每条消息都请求一次 API。 */
+  /** 用户显示名缓存，避免每条消息都请求一次 API。 */
   names?: Map<string, { name: string; expires: number }>
 }
 
@@ -117,20 +119,23 @@ export function limitFiles(files: readonly PromptFile[]): PromptFile[] {
 
 const USER_NAME_TTL_MS = 5 * 60 * 1000
 
-/** 查询用户在群里的显示名：优先群名片，再退回 QQ 昵称。 */
+/** 查询用户显示名：群聊优先群名片，私聊使用 QQ 昵称。 */
 export async function resolveUserName(ctx: RenderContext, userId: string): Promise<string> {
   if (userId === "all") return "全体成员"
-  const key = `${ctx.groupId}:${userId}`
+  const key = `${targetKey(ctx.target)}:${userId}`
   const cached = ctx.names?.get(key)
   if (cached && cached.expires > Date.now()) return cached.name
   try {
-    const info = (await ctx.api.getGroupMemberInfo(ctx.groupId, userId)) as
-      { card?: string; nickname?: string } | undefined
+    const info = (
+      ctx.target.kind === "group"
+        ? await ctx.api.getGroupMemberInfo(ctx.target.id, userId)
+        : await ctx.api.getStrangerInfo(userId)
+    ) as { card?: string; nickname?: string } | undefined
     const name = info?.card?.trim() || info?.nickname?.trim() || "未知用户"
     ctx.names?.set(key, { name, expires: Date.now() + USER_NAME_TTL_MS })
     return name
   } catch (error) {
-    ctx.logger.warn(`获取群成员信息失败 user_id=${userId}`, error)
+    ctx.logger.warn(`获取用户信息失败 user_id=${userId}`, error)
     return "未知用户"
   }
 }
@@ -298,14 +303,14 @@ export async function fetchVoiceText(
 }
 
 /**
- * 把一条群消息拆成 (纯文本, 图片附件)。
+ * 把一条 QQ 消息拆成 (纯文本, 图片附件)。
  *
  * 引用消息会展开成 ``<quote>`` 块，合并转发展开成 ``<forward>`` 块，
  * 图片既留占位文本又内联成附件，语音先转写成文字。
  */
 export async function renderMessage(
   ctx: RenderContext,
-  event: GroupMessageEvent,
+  event: MessageEvent,
 ): Promise<RenderedMessage> {
   const textBuffer: string[] = []
   const files: PromptFile[] = []

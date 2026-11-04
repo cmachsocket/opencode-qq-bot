@@ -1,5 +1,10 @@
 import { afterAll, describe, expect, it, vi } from "vitest"
-import type { GroupMessageEvent, MessageSegment, OneBotApi } from "@naplink/naplink"
+import type {
+  GroupMessageEvent,
+  MessageSegment,
+  OneBotApi,
+  PrivateMessageEvent,
+} from "@naplink/naplink"
 import { mkdtemp, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -12,6 +17,7 @@ import {
   shouldProcess,
 } from "../src/naplink/render"
 import { createMediaStore } from "../src/naplink/media"
+import type { ChatTarget } from "../src/chat"
 import type { Logger } from "../src/logger"
 
 const logger: Logger = {
@@ -57,9 +63,31 @@ function makeEvent(
   } as GroupMessageEvent
 }
 
+function makePrivateEvent(
+  message: MessageSegment[],
+  extra: Partial<PrivateMessageEvent> = {},
+): PrivateMessageEvent {
+  return {
+    post_type: "message",
+    message_type: "private",
+    sub_type: "friend",
+    target_id: 200,
+    message_id: 1,
+    user_id: 200,
+    raw_message: "",
+    font: 0,
+    time: 0,
+    self_id: 999,
+    sender: { user_id: 200 },
+    message,
+    ...extra,
+  } as PrivateMessageEvent
+}
+
 function makeApi(overrides: Partial<OneBotApi> = {}): OneBotApi {
   return {
     getGroupMemberInfo: vi.fn(async () => ({ card: "名片", nickname: "昵称" })),
+    getStrangerInfo: vi.fn(async () => ({ nickname: "陌生人" })),
     getMessage: vi.fn(async () => ({
       sender: { user_id: 200 },
       message: [{ type: "text", data: { text: "被引用的内容" } }],
@@ -77,7 +105,10 @@ function makeApi(overrides: Partial<OneBotApi> = {}): OneBotApi {
   } as unknown as OneBotApi
 }
 
-const ctx = (api: OneBotApi) => ({ api, groupId: 100, logger, media })
+const groupTarget: ChatTarget = { kind: "group", id: 100 }
+const privateTarget: ChatTarget = { kind: "private", id: 200 }
+
+const ctx = (api: OneBotApi, target: ChatTarget = groupTarget) => ({ api, target, logger, media })
 
 describe("shouldProcess", () => {
   it("accepts text messages", () => {
@@ -153,6 +184,22 @@ describe("resolveUserName", () => {
     await resolveUserName(renderCtx, "200")
     await resolveUserName(renderCtx, "200")
     expect(api.getGroupMemberInfo).toHaveBeenCalledTimes(1)
+  })
+
+  it("uses the stranger profile in a private chat", async () => {
+    const api = makeApi()
+    const name = await resolveUserName(ctx(api, privateTarget), "200")
+    expect(name).toBe("陌生人")
+    expect(api.getStrangerInfo).toHaveBeenCalledWith("200")
+    expect(api.getGroupMemberInfo).not.toHaveBeenCalled()
+  })
+
+  it("caches names per private chat", async () => {
+    const api = makeApi()
+    const renderCtx = { ...ctx(api, privateTarget), names: new Map() }
+    await resolveUserName(renderCtx, "200")
+    await resolveUserName(renderCtx, "200")
+    expect(api.getStrangerInfo).toHaveBeenCalledTimes(1)
   })
 })
 
@@ -263,6 +310,14 @@ describe("renderMessage", () => {
     )
     expect(rendered.text).toBe("在吗")
     expect(rendered.files).toEqual([])
+  })
+
+  it("renders a private message", async () => {
+    const rendered = await renderMessage(
+      ctx(makeApi(), privateTarget),
+      makePrivateEvent([{ type: "text", data: { text: "私聊消息" } }]),
+    )
+    expect(rendered.text).toBe("私聊消息")
   })
 
   it("expands a reply into a quote block", async () => {

@@ -1,5 +1,6 @@
 import { Plugin } from "@opencode/plugin"
-import type { GroupMessageEvent } from "@naplink/naplink"
+import type { GroupMessageEvent, MessageEvent } from "@naplink/naplink"
+import { type ChatTarget, configuredTargets, isTargetEnabled, targetKey, targetLabel } from "./chat"
 import { resolveConfig, type QQBotConfig } from "./config"
 import { createLogger } from "./logger"
 import { QQClient } from "./naplink/client"
@@ -35,8 +36,10 @@ export default Plugin.define({
       return
     }
 
-    if (config.groups.length === 0) {
-      logger.warn("未配置目标群号，插件不会响应任何消息（请设置 groups 或 QQ_TARGET_GROUPS）")
+    if (config.groups.length === 0 && config.users.length === 0) {
+      logger.warn(
+        "未配置目标群号或私聊 QQ 号，插件不会响应任何消息（请设置 groups/users 或 QQ_TARGET_GROUPS/QQ_TARGET_USERS）",
+      )
     }
 
     const soulPath = resolveSoulPath(config.soulPath, packageDirectory(), process.cwd())
@@ -59,18 +62,22 @@ export default Plugin.define({
     const toolRegistration = await registerTools({ ctx, config, logger, manager, client })
     const nameCache = new Map<string, { name: string; expires: number }>()
 
-    // 系统提示：角色设定、当前时间、本轮是否被 @。
+    // 系统提示：角色设定、当前时间、本轮是否必须回复。
     const contextRegistration = await ctx.session.hook("context", (event) => {
-      if (manager.groupForSession(event.sessionID) === undefined) return
+      const target = manager.targetForSession(event.sessionID)
+      if (target === undefined) return
       event.system.push({ type: "text", text: systemPrompt })
       event.system.push({ type: "text", text: `当前时间：${currentTimeText()}` })
       const turn = manager.currentTurn(event.sessionID)
+      const destination = target.kind === "group" ? "群里" : "私聊里"
       event.system.push({
         type: "text",
         text: turn?.proactive
-          ? "这是一次主动发起话题，必须调用 qq_send_message 把话题发到群里。"
+          ? `这是一次主动发起话题，必须调用 qq_send_message 把话题发到${destination}。`
           : turn?.atMe
-            ? "你被 @ 了，必须回复。"
+            ? target.kind === "private"
+              ? "这是一条私聊消息，必须回复。"
+              : "你被 @ 了，必须回复。"
             : "你没有被 @，可以选择不回复。",
       })
     })
@@ -104,15 +111,23 @@ export default Plugin.define({
       }
     })()
 
-    const handleMessage = async (event: GroupMessageEvent, selfId: string) => {
+    const isGroupEvent = (event: MessageEvent): event is GroupMessageEvent =>
+      event.message_type === "group"
+
+    const eventTarget = (event: MessageEvent): ChatTarget =>
+      isGroupEvent(event)
+        ? { kind: "group", id: event.group_id }
+        : { kind: "private", id: event.user_id }
+
+    const handleMessage = async (event: MessageEvent, target: ChatTarget, selfId: string) => {
       try {
-        if (!config.groups.includes(event.group_id)) return
+        if (!isTargetEnabled(config, target)) return
         if (!shouldProcess(event.message, selfId)) return
 
         await client.hydrate(event.message)
         const renderCtx = {
           api: client.api,
-          groupId: event.group_id,
+          target,
           logger,
           media,
           names: nameCache,
@@ -121,40 +136,44 @@ export default Plugin.define({
         if (!rendered.text.trim()) return
 
         const userName = await resolveUserName(renderCtx, String(event.user_id))
-        const atMe = mentionsUser(event.message, selfId)
+        // 私聊消息默认都是对机器人说的，群聊只有被 @ 时才必须回复。
+        const atMe = target.kind === "private" || mentionsUser(event.message, selfId)
 
-        await manager.enqueue(event.group_id, {
+        await manager.enqueue(target, {
           text: `${userName}: ${rendered.text}`,
           files: rendered.files,
           atMe,
         })
       } catch (error) {
-        logger.error(`处理群 ${event.group_id} 消息失败`, error)
+        logger.error(`处理 ${targetLabel(target)} 消息失败`, error)
       }
     }
 
-    // 同一群内串行处理，避免图片下载、成员查询等异步操作打乱消息顺序。
-    const processing = new Map<number, Promise<void>>()
-    const scheduleMessage = (event: GroupMessageEvent) => {
-      if (!config.groups.includes(event.group_id)) return
+    // 同一会话内串行处理，避免图片下载、成员查询等异步操作打乱消息顺序。
+    const processing = new Map<string, Promise<void>>()
+    const scheduleMessage = (event: MessageEvent) => {
+      const target = eventTarget(event)
+      if (!isTargetEnabled(config, target)) return
       const selfId = String(event.self_id ?? client.selfId ?? "")
       if (selfId && String(event.user_id) === selfId) return
 
-      manager.touch(event.group_id)
-      manager.rememberIncoming(event.group_id, String(event.message_id))
+      manager.touch(target)
+      manager.rememberIncoming(target, String(event.message_id))
 
-      const previous = processing.get(event.group_id) ?? Promise.resolve()
+      const key = targetKey(target)
+      const previous = processing.get(key) ?? Promise.resolve()
       const task = previous
-        .then(() => handleMessage(event, selfId))
-        .catch((error: unknown) => logger.error(`处理群 ${event.group_id} 消息失败`, error))
-      processing.set(event.group_id, task)
+        .then(() => handleMessage(event, target, selfId))
+        .catch((error: unknown) => logger.error(`处理 ${targetLabel(target)} 消息失败`, error))
+      processing.set(key, task)
       void task.finally(() => {
-        if (processing.get(event.group_id) === task) processing.delete(event.group_id)
+        if (processing.get(key) === task) processing.delete(key)
       })
     }
 
     // 先注册监听再连接：NapCat 连接期间推送的消息也会被收到。
     client.onGroupMessage(scheduleMessage)
+    client.onPrivateMessage(scheduleMessage)
 
     await client.connectSafe()
 
@@ -167,14 +186,14 @@ export default Plugin.define({
         ticking = true
         try {
           await manager.recoverStale()
-          for (const groupId of config.groups) {
+          for (const target of configuredTargets(config)) {
             const probability = proactiveTickProbability(
               config.proactive,
-              manager.silenceSeconds(groupId),
+              manager.silenceSeconds(target),
             )
             if (probability <= 0 || Math.random() >= probability) continue
-            logger.info(`群 ${groupId} 沉默达到阈值，主动发起话题`)
-            await manager.proactive(groupId, PROACTIVE_HINT)
+            logger.info(`${targetLabel(target)} 沉默达到阈值，主动发起话题`)
+            await manager.proactive(target, PROACTIVE_HINT)
           }
         } finally {
           ticking = false
@@ -189,6 +208,7 @@ export default Plugin.define({
 
     logger.info("插件已加载", {
       groups: config.groups,
+      users: config.users,
       napcat: config.napcat.url,
       agent: config.agent ?? "(默认)",
     })
