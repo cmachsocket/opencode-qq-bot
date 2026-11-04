@@ -58,8 +58,8 @@ cp .env.example .env
 | `soulPath`                          | `QQ_BOT_SOUL_PATH`              | 包内 `SOUL.txt` | 角色设定文件路径                                |
 | `agent`                             | `QQ_BOT_AGENT`                  | OpenCode 默认   | 会话使用的 agent                                |
 | `model`                             | `QQ_BOT_MODEL`                  | OpenCode 默认   | 会话使用的模型，格式 `provider/model[/variant]` |
-| `sendDelayMs`                       | `QQ_SEND_DELAY_MS`              | `1000`          | 拆行发送时每条之间的间隔                        |
-| `warnLength`                        | `QQ_WARN_LENGTH`                | `20`            | 单条消息超过该长度时告警                        |
+| `sendDelayMs`                       | `QQ_SEND_DELAY_MS`              | `1000`          | 超长消息分段发送时每段之间的间隔                |
+| `warnLength`                        | `QQ_WARN_LENGTH`                | `20`            | 一轮回复总长度超过该值时告警                    |
 | `reuseSession`                      | `QQ_REUSE_SESSION`              | `false`         | 没有保存的绑定时，按会话标记找回上一次的会话    |
 | `busyTimeoutMs`                     | `QQ_BUSY_TIMEOUT_MS`            | `300000`        | 会话超过该时长未结束视为卡死，强制放行缓存消息  |
 | `proactive.enabled`                 | `QQ_PROACTIVE_ENABLED`          | `true`          | 是否启用主动说话                                |
@@ -87,10 +87,13 @@ cp .env.example .env
 | `qq_send_record`           | 发语音                                                                                 |
 | `qq_send_forward`          | 发合并转发，`nodes` 为节点列表                                                         |
 | `qq_send_poke`             | 戳一戳                                                                                 |
-| `qq_delete_message`        | 撤回消息                                                                               |
+| `qq_delete_message`        | 撤回机器人自己发送过的消息                                                             |
 | `qq_get_group_member_info` | 查群名片与昵称                                                                         |
-| `qq_fetch_ptt_text`        | 语音转文字                                                                             |
+| `qq_fetch_ptt_text`        | 转写当前群最近收到的语音                                                               |
 | `qq_get_login_info`        | 机器人自己的 QQ 号与昵称                                                               |
+
+发送类工具（消息、图片、语音、转发、戳一戳）成功后都算本轮已回复，不会再触发补发提醒。
+工具只在当前群配置仍启用、且会话正处理 QQ 消息轮次时可用。
 
 ## 扩展能力（可选）：SnowLuma MCP
 
@@ -125,12 +128,14 @@ cp .env.example .env
 
 ## 行为
 
-- **回复是强制的**：系统提示要求模型每轮调用一次 `qq_send_message`，直接输出的文字会被丢弃。
-- **被 @ 才必须回**：没被 @ 时模型可以调用 `reply=false` 选择已读不回。
+- **回复是强制的**：系统提示要求模型每轮至少调用一个发送类工具，直接输出的文字会被丢弃。
+- **被 @ 才必须回**：没被 @ 时模型可以调用 `qq_send_message` 并设 `reply=false` 选择已读不回。
 - **消息合并**：会话正在跑模型时新到的消息进缓存，会话空闲后合并成一轮再投进去。
-- **提醒**：模型一轮完全没调用发送工具时，插件会补一条合成消息提醒它，最多 `reminder.max` 次，
+- **顺序处理**：同一群的消息按到达顺序完成渲染和入队，不会因图片下载或成员查询而乱序。
+- **异常恢复**：模型失败、中断或长时间无响应时会释放忙碌状态并放行缓存消息。
+- **提醒**：模型一轮完全没调用任何发送工具时，插件会补一条合成消息提醒它，最多 `reminder.max` 次，
   每个新的用户轮次都会重新给一份预算。
-- **主动说话**：群沉默超过阈值后，按概率发起话题。
+- **主动说话**：群沉默超过阈值后按每小时概率发起话题，重启后静默时长会继续累计。
 - **图片**：远端图片会下载后内联进提示，单张不超过 5MB、单轮最多 8 张、总量不超过 16MB，
   超出的图片只保留 `[图片]` 占位文本。
 
@@ -158,6 +163,7 @@ src/
   tools/qq.ts        QQ 工具注册
 docs/
   configuration.md   配置取值规则与限制
+  design-review.md   设计审查与修复记录
 tests/               vitest 用例
 ```
 

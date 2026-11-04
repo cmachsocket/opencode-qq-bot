@@ -8,9 +8,27 @@
 - **布尔**：`true` / `false`、`1` / `0`、`yes` / `no`、`on` / `off`，不区分大小写。
   写错（例如 `maybe`）会回退到默认值并输出告警。
 - **数值**：直接写数字，例如 `250`、`0.01`。写错会回退到默认值并输出告警。
-- **群号**：逗号分隔，例如 `123,456`；插件选项里写成数组。
+- **群号**：逗号分隔，例如 `123,456`；插件选项里写成数组。重复群号会去重，
+  非正整数会被忽略并告警。
 - **模型**：`provider/model` 或 `provider/model/variant`。
   写错会回退到默认模型并输出告警。
+- **未知配置项**：顶层和 `napcat`、`proactive`、`reminder` 下的未知键会输出告警，
+  不会被静默忽略。
+
+## 数值范围
+
+| 配置项                              | 约束       |
+| ----------------------------------- | ---------- |
+| `sendDelayMs`                       | 大于等于 0 |
+| `warnLength`                        | 大于等于 1 |
+| `busyTimeoutMs`                     | 大于 0     |
+| `reminder.max`                      | 大于等于 0 |
+| `proactive.silenceThresholdSeconds` | 大于等于 0 |
+| `proactive.startProbability`        | 0 到 1     |
+| `proactive.probabilityPerHour`      | 0 到 1     |
+| `proactive.tickSeconds`             | 大于 0     |
+
+越界值会回退到默认值并告警。
 
 ## 配置告警
 
@@ -22,6 +40,8 @@
 ```
 
 `proactive.tickSeconds` 必须是正数，否则心跳会退化成毫秒级热循环，非正数会回退到默认值。
+`startProbability` 与 `probabilityPerHour` 表示目标每小时概率，实际每个心跳的触发概率会按
+`tickSeconds` 换算，修改心跳间隔不会改变整体触发频率。
 
 ## 图片内联
 
