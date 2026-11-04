@@ -111,8 +111,8 @@ function present(value: unknown): boolean {
   return value !== undefined && value !== null && value !== ""
 }
 
-/** 把数字数组或逗号分隔字符串整理成整数列表。 */
-function toGroups(value: unknown): number[] | undefined {
+/** 把数字数组或逗号分隔字符串整理成去重后的正整数列表。 */
+function toGroups(value: unknown, warn: ConfigWarning, label: string): number[] | undefined {
   const source = Array.isArray(value)
     ? value
     : typeof value === "string"
@@ -120,12 +120,19 @@ function toGroups(value: unknown): number[] | undefined {
       : undefined
   if (!source) return undefined
   const groups: number[] = []
+  const seen = new Set<number>()
   for (const entry of source) {
     const raw =
       typeof entry === "number" ? String(entry) : typeof entry === "string" ? entry.trim() : ""
     if (!raw) continue
     const parsed = Number(raw)
-    if (Number.isInteger(parsed)) groups.push(parsed)
+    if (!Number.isInteger(parsed) || parsed <= 0) {
+      warn(`${label} 忽略非法群号：${raw}`)
+      continue
+    }
+    if (seen.has(parsed)) continue
+    seen.add(parsed)
+    groups.push(parsed)
   }
   return groups
 }
@@ -159,15 +166,32 @@ function createConfigSchema(
       })
       .default(fallback)
 
-  const positive = (path: string, fallback: number) =>
+  const constrained = (
+    path: string,
+    fallback: number,
+    check: (value: z.ZodNumber) => z.ZodNumber,
+    rule: string,
+  ) =>
     number(path, fallback)
-      .pipe(z.number().positive())
+      .pipe(check(z.number()))
       .catch((ctx) => {
         if (present(ctx.value)) {
-          warn(`${label(path)} 必须大于 0，当前为 ${String(ctx.value)}，已回退到 ${fallback}`)
+          warn(`${label(path)} ${rule}，当前为 ${String(ctx.value)}，已回退到 ${fallback}`)
         }
         return fallback
       })
+
+  const positive = (path: string, fallback: number) =>
+    constrained(path, fallback, (value) => value.positive(), "必须大于 0")
+
+  const nonNegative = (path: string, fallback: number) =>
+    constrained(path, fallback, (value) => value.min(0), "不能小于 0")
+
+  const integer = (path: string, fallback: number, min: number) =>
+    constrained(path, fallback, (value) => value.int().min(min), `必须是大于等于 ${min} 的整数`)
+
+  const probability = (path: string, fallback: number) =>
+    constrained(path, fallback, (value) => value.min(0).max(1), "必须在 0 到 1 之间")
 
   const boolean = (path: string, fallback: boolean) =>
     z
@@ -179,27 +203,33 @@ function createConfigSchema(
       })
       .default(fallback)
 
-  const text = (fallback: string | undefined) =>
+  const text = (path: string, fallback: string | undefined) =>
     z
-      .string()
-      .trim()
-      .min(1)
+      .unknown()
       .optional()
-      .catch(() => undefined)
-      .transform((value) => value ?? fallback)
+      .transform((value) => {
+        if (!present(value)) return fallback
+        if (typeof value !== "string") {
+          warn(`${label(path)} 必须是字符串：${String(value)}`)
+          return fallback
+        }
+        const trimmed = value.trim()
+        if (!trimmed) {
+          warn(`${label(path)} 不能为空，已回退到默认值`)
+          return fallback
+        }
+        return trimmed
+      })
 
   const groups = z
     .unknown()
     .optional()
     .transform((value) => {
-      if (value === undefined || value === null) return defaults.groups
-      const parsed = toGroups(value)
+      if (value === undefined || value === null) return [...defaults.groups]
+      const parsed = toGroups(value, warn, label("groups"))
       if (!parsed) {
         if (present(value)) warn(`${label("groups")} 解析不出群号：${String(value)}`)
-        return defaults.groups
-      }
-      if (parsed.length === 0 && present(value) && !(Array.isArray(value) && value.length === 0)) {
-        warn(`${label("groups")} 解析不出群号：${String(value)}`)
+        return [...defaults.groups]
       }
       return parsed
     })
@@ -220,28 +250,31 @@ function createConfigSchema(
   return z.object({
     napcat: z
       .object({
-        url: text(napcat.url),
-        token: text(napcat.token),
+        url: text("napcat.url", napcat.url),
+        token: text("napcat.token", napcat.token),
       })
       .prefault({})
       .catch({ url: napcat.url, token: napcat.token }),
     groups,
-    soulPath: text(defaults.soulPath),
-    agent: text(defaults.agent),
+    soulPath: text("soulPath", defaults.soulPath),
+    agent: text("agent", defaults.agent),
     model,
-    sendDelayMs: number("sendDelayMs", defaults.sendDelayMs),
-    warnLength: number("warnLength", defaults.warnLength),
+    sendDelayMs: nonNegative("sendDelayMs", defaults.sendDelayMs),
+    warnLength: integer("warnLength", defaults.warnLength, 1),
     reuseSession: boolean("reuseSession", defaults.reuseSession),
-    busyTimeoutMs: number("busyTimeoutMs", defaults.busyTimeoutMs),
+    busyTimeoutMs: positive("busyTimeoutMs", defaults.busyTimeoutMs),
     proactive: z
       .object({
         enabled: boolean("proactive.enabled", defaults.proactive.enabled),
-        silenceThresholdSeconds: number(
+        silenceThresholdSeconds: nonNegative(
           "proactive.silenceThresholdSeconds",
           defaults.proactive.silenceThresholdSeconds,
         ),
-        startProbability: number("proactive.startProbability", defaults.proactive.startProbability),
-        probabilityPerHour: number(
+        startProbability: probability(
+          "proactive.startProbability",
+          defaults.proactive.startProbability,
+        ),
+        probabilityPerHour: probability(
           "proactive.probabilityPerHour",
           defaults.proactive.probabilityPerHour,
         ),
@@ -252,7 +285,7 @@ function createConfigSchema(
     reminder: z
       .object({
         enabled: boolean("reminder.enabled", defaults.reminder.enabled),
-        max: number("reminder.max", defaults.reminder.max),
+        max: integer("reminder.max", defaults.reminder.max, 0),
       })
       .prefault({})
       .catch(defaults.reminder),
@@ -278,6 +311,48 @@ const ENV_VARS = {
   "reminder.enabled": "QQ_REMINDER_ENABLED",
   "reminder.max": "QQ_REMINDER_MAX",
 } as const
+
+const OPTION_KEYS = new Set([
+  "napcat",
+  "groups",
+  "soulPath",
+  "agent",
+  "model",
+  "sendDelayMs",
+  "warnLength",
+  "reuseSession",
+  "busyTimeoutMs",
+  "proactive",
+  "reminder",
+])
+
+const NESTED_OPTION_KEYS: Record<string, ReadonlySet<string>> = {
+  napcat: new Set(["url", "token"]),
+  proactive: new Set([
+    "enabled",
+    "silenceThresholdSeconds",
+    "startProbability",
+    "probabilityPerHour",
+    "tickSeconds",
+  ]),
+  reminder: new Set(["enabled", "max"]),
+}
+
+/** 报告被 schema 静默剥离的未知配置项。 */
+function warnUnknownKeys(options: Record<string, unknown>, warn: ConfigWarning): void {
+  for (const key of Object.keys(options)) {
+    if (!OPTION_KEYS.has(key)) {
+      warn(`插件选项 未知配置项：${key}`)
+      continue
+    }
+    const allowed = NESTED_OPTION_KEYS[key]
+    const value = options[key]
+    if (!allowed || !value || typeof value !== "object" || Array.isArray(value)) continue
+    for (const nested of Object.keys(value)) {
+      if (!allowed.has(nested)) warn(`插件选项 ${key}.${nested} 未知配置项`)
+    }
+  }
+}
 
 function envLabel(path: string): string {
   return ENV_VARS[path as keyof typeof ENV_VARS] ?? path
@@ -318,10 +393,14 @@ export function resolveConfig(
   const warnings: string[] = []
   const warn: ConfigWarning = (message) => warnings.push(message)
 
+  warnUnknownKeys(options, warn)
   const envSchema = createConfigSchema(DEFAULT_CONFIG, {}, envLabel, warn)
   const base: RawConfig = envSchema.parse(fromEnv(env))
   const optionsSchema = createConfigSchema(base, base.napcat, (path) => `插件选项 ${path}`, warn)
   const parsed: RawConfig = optionsSchema.parse(options)
+
+  // 先输出告警，避免 URL 缺失时把已经发现的问题一起吞掉。
+  for (const warning of warnings) onWarning(warning)
 
   const url = parsed.napcat.url
   if (!url) {
@@ -330,6 +409,11 @@ export function resolveConfig(
     )
   }
 
-  for (const warning of warnings) onWarning(warning)
-  return { ...parsed, napcat: { url, token: parsed.napcat.token } }
+  return {
+    ...parsed,
+    groups: [...parsed.groups],
+    proactive: { ...parsed.proactive },
+    reminder: { ...parsed.reminder },
+    napcat: { url, token: parsed.napcat.token },
+  }
 }

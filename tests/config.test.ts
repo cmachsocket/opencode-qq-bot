@@ -159,4 +159,56 @@ describe("resolveConfig", () => {
     expect(config.proactive.enabled).toBe(false)
     expect(config.proactive.tickSeconds).toBe(DEFAULT_CONFIG.proactive.tickSeconds)
   })
+
+  it("deduplicates groups and warns about invalid entries", () => {
+    const warnings: string[] = []
+    const config = resolveConfig({ groups: [1, 1, -2, 3] }, ENV, (message) =>
+      warnings.push(message),
+    )
+    expect(config.groups).toEqual([1, 3])
+    expect(warnings.join("\n")).toContain("非法群号")
+  })
+
+  it("falls back for out of range numeric options", () => {
+    const warnings: string[] = []
+    const config = resolveConfig(
+      {
+        warnLength: 0,
+        busyTimeoutMs: -1,
+        reminder: { max: -1 },
+        proactive: { startProbability: 2, probabilityPerHour: -0.1 },
+      },
+      ENV,
+      (message) => warnings.push(message),
+    )
+    expect(config.warnLength).toBe(DEFAULT_CONFIG.warnLength)
+    expect(config.busyTimeoutMs).toBe(DEFAULT_CONFIG.busyTimeoutMs)
+    expect(config.reminder.max).toBe(DEFAULT_CONFIG.reminder.max)
+    expect(config.proactive.startProbability).toBe(DEFAULT_CONFIG.proactive.startProbability)
+    expect(config.proactive.probabilityPerHour).toBe(DEFAULT_CONFIG.proactive.probabilityPerHour)
+    expect(warnings).toHaveLength(5)
+  })
+
+  it("warns about unknown plugin options", () => {
+    const warnings: string[] = []
+    resolveConfig({ unknown: true, proactive: { typo: 1 } }, ENV, (message) =>
+      warnings.push(message),
+    )
+    expect(warnings.join("\n")).toContain("unknown")
+    expect(warnings.join("\n")).toContain("proactive.typo")
+  })
+
+  it("emits warnings before throwing for a missing URL", () => {
+    const warnings: string[] = []
+    expect(() =>
+      resolveConfig({ sendDelayMs: "abc" }, {}, (message) => warnings.push(message)),
+    ).toThrow(/NAPCAT_WS_URL/)
+    expect(warnings.join("\n")).toContain("sendDelayMs")
+  })
+
+  it("does not expose mutable default references", () => {
+    const config = resolveConfig({}, ENV)
+    config.proactive.startProbability = 0.9
+    expect(DEFAULT_CONFIG.proactive.startProbability).not.toBe(0.9)
+  })
 })
