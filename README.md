@@ -4,7 +4,7 @@
 每个群对应一个 OpenCode 会话，模型用 `qq_*` 工具把回复发回群里。
 
 - 群消息 → OpenCode 会话 → 模型回复 → 群里
-- 会话忙碌时新消息先缓存，空闲后合并成一轮再投进去
+- 每个群固定对应一个会话，会话忙碌时新消息先缓存，空闲后合并成一轮再投进去
 - 语音自动转写、图片内联进会话、引用与合并转发展开成文本块
 - 角色设定放在 `SOUL.txt`
 
@@ -92,6 +92,37 @@ cp .env.example .env
 | `qq_fetch_ptt_text`        | 语音转文字                                                                             |
 | `qq_get_login_info`        | 机器人自己的 QQ 号与昵称                                                               |
 
+## 扩展能力（可选）：SnowLuma MCP
+
+`qq_*` 只覆盖对话必需的几个动作。群资料、成员管理、消息记录等其余 OneBot 动作可以交给
+[@snowluma/mcp](https://www.npmjs.com/package/@snowluma/mcp)，插件不依赖它，也不自动加载，
+需要你在 `opencode.json(c)` 里自行配置：
+
+```jsonc
+{
+  "mcp": {
+    "snowluma": {
+      "type": "local",
+      "command": ["npx", "-y", "@snowluma/mcp"],
+      "enabled": true,
+      "environment": {
+        // OneBot HTTP 接口，不是插件使用的 WebSocket 地址
+        "SNOWLUMA_MCP_ENDPOINT": "http://127.0.0.1:3000/",
+        "SNOWLUMA_MCP_TOKEN": "",
+        // 默认只读；需要写动作时才改成 write
+        "SNOWLUMA_MCP_MODE": "read",
+      },
+    },
+  },
+}
+```
+
+- `read` 模式只暴露只读动作，`invoke_action` 不会注册；改成 `write` 后模型可以调用任意动作，
+  届时它可能绕过群绑定和 `qq_*` 的发送记账直接发消息。
+- `SNOWLUMA_MCP_ENDPOINT` 指向 NapCat 的 HTTP 接口，需要在 NapCat 里一并开启 HTTP 服务。
+- [@snowluma/mcp](https://www.npmjs.com/package/@snowluma/mcp) 采用源码可见的非商业许可，
+  本项目不分发、也不打包它，安装与许可合规由使用者自行负责。
+
 ## 行为
 
 - **回复是强制的**：系统提示要求模型每轮调用一次 `qq_send_message`，直接输出的文字会被丢弃。
@@ -132,4 +163,4 @@ tests/               vitest 用例
 
 ## License
 
-[GPL-3.0-or-later](./LICENSE)
+[CC BY-NC-SA 4.0](./LICENSE)

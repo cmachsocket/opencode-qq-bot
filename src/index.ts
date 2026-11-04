@@ -57,6 +57,21 @@ export default Plugin.define({
       await manager.handleIdle(event.sessionID, event.background.length)
     })
 
+    // 真正空闲（含后台任务结束）后，把忙碌期间缓存的消息合并成新的一轮。
+    const idleAbort = new AbortController()
+    void (async () => {
+      try {
+        for await (const event of ctx.event.subscribe({
+          types: ["session.idle"],
+          signal: idleAbort.signal,
+        })) {
+          await manager.flushBuffered(event.data.sessionID)
+        }
+      } catch (error) {
+        if (!idleAbort.signal.aborted) logger.error("订阅会话空闲事件失败", error)
+      }
+    })()
+
     const handleMessage = async (event: GroupMessageEvent) => {
       try {
         if (!config.groups.includes(event.group_id)) return
@@ -121,6 +136,7 @@ export default Plugin.define({
 
     return async () => {
       if (timer) clearInterval(timer)
+      idleAbort.abort()
       await toolRegistration.dispose()
       await contextRegistration.dispose()
       await idleRegistration.dispose()

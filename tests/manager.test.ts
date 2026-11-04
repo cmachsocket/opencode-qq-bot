@@ -18,7 +18,7 @@ interface Harness {
   synthetics: Array<{ sessionID: string; text: string }>
 }
 
-function createHarness(overrides: Partial<QQBotConfig> = {}): Harness {
+function createHarness(overrides: Partial<QQBotConfig> = {}, createId?: () => string): Harness {
   const prompts: Harness["prompts"] = []
   const synthetics: Harness["synthetics"] = []
   let created = 0
@@ -27,6 +27,7 @@ function createHarness(overrides: Partial<QQBotConfig> = {}): Harness {
     location: { directory: "/tmp" },
     session: {
       create: vi.fn(async () => {
+        if (createId) return { id: createId() }
         created += 1
         return { id: `session-${created}` }
       }),
@@ -95,7 +96,11 @@ describe("SessionManager", () => {
     await manager.enqueue(100, { text: "第二条", files: [], atMe: false })
     expect(prompts).toHaveLength(1)
 
+    // idle 钩子里不投递，等真正空闲后再合并成新一轮。
     await manager.handleIdle("session-1")
+    expect(prompts).toHaveLength(1)
+
+    await manager.flushBuffered("session-1")
     expect(prompts).toHaveLength(2)
     expect(prompts[1]?.text).toBe("第二条")
   })
@@ -107,8 +112,20 @@ describe("SessionManager", () => {
     await manager.enqueue(100, { text: "第三条", files: [], atMe: false })
 
     await manager.handleIdle("session-1")
+    await manager.flushBuffered("session-1")
     expect(prompts).toHaveLength(2)
     expect(prompts[1]?.text).toBe("第二条\n第三条")
+  })
+
+  it("refuses to bind one session to two groups", async () => {
+    const { manager, prompts } = createHarness({}, () => "session-1")
+    await manager.enqueue(100, { text: "第一条", files: [], atMe: false })
+    expect(prompts).toHaveLength(1)
+
+    // 复用同一个会话 ID 时必须拒绝，否则两个群会共用一条会话。
+    await manager.enqueue(200, { text: "第二条", files: [], atMe: false })
+    expect(prompts).toHaveLength(1)
+    expect(manager.groupForSession("session-1")).toBe(100)
   })
 
   it("reminds the model when it never called the send tool", async () => {
@@ -164,8 +181,21 @@ describe("SessionManager", () => {
     expect(prompts).toHaveLength(1)
 
     await manager.handleIdle("session-1")
+    expect(prompts).toHaveLength(1)
+
+    await manager.flushBuffered("session-1")
     expect(prompts).toHaveLength(2)
     expect(prompts[1]?.text).toBe("第二条")
+  })
+
+  it("does not flush the same buffered messages twice", async () => {
+    const { manager, prompts } = createHarness()
+    await manager.enqueue(100, { text: "第一条", files: [], atMe: false })
+    await manager.enqueue(100, { text: "第二条", files: [], atMe: false })
+
+    await manager.flushBuffered("session-1")
+    await manager.flushBuffered("session-1")
+    expect(prompts).toHaveLength(2)
   })
 
   it("gives every user turn a fresh reminder budget", async () => {

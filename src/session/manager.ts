@@ -45,8 +45,8 @@ export function mergeTurns(turns: readonly Turn[]): Turn {
 /**
  * 管理 QQ 群与 OpenCode 会话的映射。
  *
- * 一个群对应一个会话；会话忙碌时新到的消息先缓存，
- * 等会话进入 idle 之后再合并成一次 prompt 发进去。
+ * 一个群固定对应一个会话，一个会话只能绑定一个群；
+ * 会话忙碌时新到的消息先缓存，等会话真正空闲之后再合并成新的一轮 prompt 发进去。
  */
 export class SessionManager {
   private readonly groups = new Map<number, GroupState>()
@@ -162,8 +162,8 @@ export class SessionManager {
   }
 
   /**
-   * 会话进入 idle：清掉忙碌标记，合并缓存的消息再投一轮；
-   * 若模型这一轮完全没调用发送工具，则提醒它补一次。
+   * 会话即将空闲：若有缓存消息，保持忙碌等 session.idle 后再投递；
+   * 否则清掉忙碌标记，若模型这一轮没调用发送工具则提醒它补一次。
    *
    * `background` 是仍在运行的后台任务数；后台任务还在跑时会话并没有真正空闲，
    * 这时保持忙碌标记，等真正空闲（后台任务结束后再次触发 idle）再处理，
@@ -178,17 +178,15 @@ export class SessionManager {
       return
     }
 
+    if (state.buffer.length > 0) {
+      // 在 idle 钩子里投递会被并入旧的一轮；保持忙碌，等真正空闲后再开始新一轮。
+      this.logger.debug(`群 ${state.groupId} 空闲，等待投递 ${state.buffer.length} 条缓存消息`)
+      return
+    }
+
     state.busy = false
     state.busySince = 0
     state.current = undefined
-
-    if (state.buffer.length > 0) {
-      const turns = state.buffer
-      state.buffer = []
-      this.logger.debug(`群 ${state.groupId} 空闲，合并 ${turns.length} 条缓存消息`)
-      await this.dispatch(state.groupId, state, mergeTurns(turns))
-      return
-    }
 
     if (
       state.awaitingSend &&
@@ -213,6 +211,20 @@ export class SessionManager {
     }
   }
 
+  /** 会话真正空闲后，把忙碌期间缓存的消息合并成新的一轮投递。 */
+  async flushBuffered(sessionID: string): Promise<void> {
+    const state = this.sessions.get(sessionID)
+    if (!state || state.buffer.length === 0) return
+
+    const turns = state.buffer
+    state.buffer = []
+    state.busy = false
+    state.busySince = 0
+    state.current = undefined
+    this.logger.debug(`群 ${state.groupId} 空闲，合并 ${turns.length} 条缓存消息`)
+    await this.dispatch(state.groupId, state, mergeTurns(turns))
+  }
+
   /** 取得（必要时创建）群对应的会话。 */
   async ensureSession(groupId: number): Promise<string | undefined> {
     const state = this.state(groupId)
@@ -220,9 +232,8 @@ export class SessionManager {
 
     if (this.config.reuseSession) {
       const reused = await this.findExistingSession(groupId)
-      if (reused) {
-        state.sessionID = reused
-        this.sessions.set(reused, state)
+      // 会话已经绑给别的群时不能复用，改为新建一个会话。
+      if (reused && this.bindSession(state, reused)) {
         this.logger.info(`群 ${groupId} 复用已有会话 ${reused}`)
         return reused
       }
@@ -234,10 +245,26 @@ export class SessionManager {
       ...(this.config.model ? { model: this.config.model } : {}),
       metadata: { qqGroupId: groupId },
     })
-    state.sessionID = created.id
-    this.sessions.set(created.id, state)
+    if (!this.bindSession(state, created.id)) {
+      this.logger.error(`群 ${groupId} 新建会话 ${created.id} 已被其他群占用`)
+      return undefined
+    }
     this.logger.info(`群 ${groupId} 新建会话 ${created.id}`)
     return created.id
+  }
+
+  /** 绑定会话到群；一个会话只能绑定一个群。 */
+  private bindSession(state: GroupState, sessionID: string): boolean {
+    const owner = this.sessions.get(sessionID)
+    if (owner && owner.groupId !== state.groupId) {
+      this.logger.error(
+        `会话 ${sessionID} 已绑定群 ${owner.groupId}，不能再次绑定群 ${state.groupId}`,
+      )
+      return false
+    }
+    state.sessionID = sessionID
+    this.sessions.set(sessionID, state)
+    return true
   }
 
   /** 查找带相同群号标记的历史会话。 */

@@ -29,7 +29,11 @@
 
 ### Changed
 
-- 许可证统一为 GPL-3.0-or-later：`package.json` 原先声明的是 `MIT`。
+- 许可证改为 CC BY-NC-SA 4.0：非商业使用，衍生作品必须按同一许可共享；
+  `package.json` 与 `LICENSE` 同步更新。
+- 群与会话严格一对一：一个会话只能绑定一个群，复用到已绑定其他群的会话时改为新建会话。
+- 合并的消息改为在会话真正空闲（`session.idle`）后作为新的一轮投递，
+  不再挤进上一轮的钩子里。
 - 真实群号不再提交：`opencode.json` 改为本地配置并被 `.gitignore` 忽略，
   仓库只保留 `opencode.example.json` 模板。
 
