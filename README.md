@@ -4,7 +4,7 @@
 每个群对应一个 OpenCode 会话，模型用 `qq_*` 工具把回复发回群里。
 
 - 群消息 → OpenCode 会话 → 模型回复 → 群里
-- 每个群固定对应一个会话，会话忙碌时新消息先缓存，空闲后合并成一轮再投进去
+- 每个群固定对应一个会话，会话忙碌时新消息先缓存，空闲后合并成一轮再投进去；绑定写入插件存储，重启后自动沿用原会话
 - 语音自动转写、图片内联进会话、引用与合并转发展开成文本块
 - 角色设定放在 `SOUL.txt`
 
@@ -60,7 +60,7 @@ cp .env.example .env
 | `model`                             | `QQ_BOT_MODEL`                  | OpenCode 默认   | 会话使用的模型，格式 `provider/model[/variant]` |
 | `sendDelayMs`                       | `QQ_SEND_DELAY_MS`              | `1000`          | 拆行发送时每条之间的间隔                        |
 | `warnLength`                        | `QQ_WARN_LENGTH`                | `20`            | 单条消息超过该长度时告警                        |
-| `reuseSession`                      | `QQ_REUSE_SESSION`              | `false`         | 重启后复用上一次的会话                          |
+| `reuseSession`                      | `QQ_REUSE_SESSION`              | `false`         | 没有保存的绑定时，按会话标记找回上一次的会话    |
 | `busyTimeoutMs`                     | `QQ_BUSY_TIMEOUT_MS`            | `300000`        | 会话超过该时长未结束视为卡死，强制放行缓存消息  |
 | `proactive.enabled`                 | `QQ_PROACTIVE_ENABLED`          | `true`          | 是否启用主动说话                                |
 | `proactive.silenceThresholdSeconds` | `QQ_PROACTIVE_SILENCE_SECONDS`  | `10800`         | 沉默多久后才开始计算主动说话概率                |

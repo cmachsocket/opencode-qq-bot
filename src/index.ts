@@ -38,6 +38,7 @@ export default Plugin.define({
 
     const client = new QQClient(config.napcat, logger)
     const manager = new SessionManager(ctx, config, logger)
+    await manager.load()
     const toolRegistration = await registerTools({ ctx, config, logger, manager, client })
 
     // 系统提示：角色设定、当前时间、本轮是否被 @。

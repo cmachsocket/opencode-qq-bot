@@ -16,15 +16,29 @@ interface Harness {
   manager: SessionManager
   prompts: Array<{ sessionID: string; text: string }>
   synthetics: Array<{ sessionID: string; text: string }>
+  storage: {
+    get: ReturnType<typeof vi.fn>
+    set: ReturnType<typeof vi.fn>
+  }
 }
 
-function createHarness(overrides: Partial<QQBotConfig> = {}, createId?: () => string): Harness {
+function createHarness(
+  overrides: Partial<QQBotConfig> = {},
+  createId?: () => string,
+  stored?: Record<string, string>,
+): Harness {
   const prompts: Harness["prompts"] = []
   const synthetics: Harness["synthetics"] = []
   let created = 0
 
+  const storage: Harness["storage"] = {
+    get: vi.fn(async () => stored),
+    set: vi.fn(async () => {}),
+  }
+
   const ctx = {
     location: { directory: "/tmp" },
+    storage,
     session: {
       create: vi.fn(async () => {
         if (createId) return { id: createId() }
@@ -52,6 +66,7 @@ function createHarness(overrides: Partial<QQBotConfig> = {}, createId?: () => st
     manager: new SessionManager(ctx, config, logger),
     prompts,
     synthetics,
+    storage,
   }
 }
 
@@ -88,6 +103,30 @@ describe("SessionManager", () => {
     expect(prompts).toHaveLength(1)
     expect(prompts[0]?.text).toBe("你好")
     expect(manager.groupForSession("session-1")).toBe(100)
+  })
+
+  it("restores the session binding from storage", async () => {
+    const { manager, prompts } = createHarness({}, undefined, { "100": "session-restored" })
+    await manager.load()
+    await manager.enqueue(100, { text: "你好", files: [], atMe: false })
+    expect(prompts[0]?.sessionID).toBe("session-restored")
+    expect(manager.groupForSession("session-restored")).toBe(100)
+  })
+
+  it("persists a new session binding", async () => {
+    const { manager, storage } = createHarness()
+    await manager.enqueue(100, { text: "你好", files: [], atMe: false })
+    await vi.waitFor(() => {
+      expect(storage.set).toHaveBeenCalledWith("bindings", { "100": "session-1" })
+    })
+  })
+
+  it("ignores malformed stored bindings", async () => {
+    const stored = { oops: "session-x", "100": 42 } as unknown as Record<string, string>
+    const { manager, prompts } = createHarness({}, undefined, stored)
+    await manager.load()
+    await manager.enqueue(100, { text: "你好", files: [], atMe: false })
+    expect(prompts[0]?.sessionID).toBe("session-1")
   })
 
   it("buffers messages while the session is busy and flushes them on idle", async () => {

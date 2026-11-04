@@ -3,6 +3,9 @@ import type { QQBotConfig } from "../config"
 import type { Logger } from "../logger"
 import { limitFiles, type PromptFile } from "../naplink/render"
 
+/** 插件存储里保存群与会话绑定的键。 */
+const BINDINGS_KEY = "bindings"
+
 export interface Turn {
   /** 交给模型的文本。 */
   text: string
@@ -51,12 +54,62 @@ export function mergeTurns(turns: readonly Turn[]): Turn {
 export class SessionManager {
   private readonly groups = new Map<number, GroupState>()
   private readonly sessions = new Map<string, GroupState>()
+  private bindingsLoaded: Promise<void> | undefined
+  private saveQueue: Promise<void> = Promise.resolve()
 
   constructor(
     private readonly ctx: Plugin.Context,
     private readonly config: QQBotConfig,
     private readonly logger: Logger,
   ) {}
+
+  /** 载入上次运行时保存的群与会话绑定。 */
+  async load(): Promise<void> {
+    await this.ensureBindings()
+  }
+
+  private ensureBindings(): Promise<void> {
+    this.bindingsLoaded ??= this.readBindings()
+    return this.bindingsLoaded
+  }
+
+  /** 从插件存储恢复绑定；读取失败只告警，不影响正常使用。 */
+  private async readBindings(): Promise<void> {
+    let stored: unknown
+    try {
+      stored = await this.ctx.storage.get(BINDINGS_KEY)
+    } catch (error) {
+      this.logger.warn("读取会话绑定失败", error)
+      return
+    }
+    if (!stored || typeof stored !== "object" || Array.isArray(stored)) return
+
+    let restored = 0
+    for (const [key, value] of Object.entries(stored)) {
+      const groupId = Number(key)
+      if (!Number.isInteger(groupId) || typeof value !== "string" || value.length === 0) continue
+      if (!this.bindSession(this.state(groupId), value)) continue
+      restored += 1
+    }
+    if (restored > 0) this.logger.debug(`已恢复 ${restored} 个群的会话绑定`)
+  }
+
+  /** 绑定变化后写回插件存储，串行执行避免互相覆盖。 */
+  private scheduleSave(): void {
+    this.saveQueue = this.saveQueue.then(() => this.writeBindings())
+  }
+
+  private async writeBindings(): Promise<void> {
+    const bindings: Record<string, string> = {}
+    for (const [groupId, state] of this.groups) {
+      if (state.sessionID) bindings[String(groupId)] = state.sessionID
+    }
+    try {
+      await this.ctx.storage.set(BINDINGS_KEY, bindings)
+    } catch (error) {
+      this.logger.error("保存会话绑定失败", error)
+    }
+  }
 
   private state(groupId: number): GroupState {
     let state = this.groups.get(groupId)
@@ -227,6 +280,7 @@ export class SessionManager {
 
   /** 取得（必要时创建）群对应的会话。 */
   async ensureSession(groupId: number): Promise<string | undefined> {
+    await this.ensureBindings()
     const state = this.state(groupId)
     if (state.sessionID) return state.sessionID
 
@@ -234,6 +288,7 @@ export class SessionManager {
       const reused = await this.findExistingSession(groupId)
       // 会话已经绑给别的群时不能复用，改为新建一个会话。
       if (reused && this.bindSession(state, reused)) {
+        this.scheduleSave()
         this.logger.info(`群 ${groupId} 复用已有会话 ${reused}`)
         return reused
       }
@@ -249,6 +304,7 @@ export class SessionManager {
       this.logger.error(`群 ${groupId} 新建会话 ${created.id} 已被其他群占用`)
       return undefined
     }
+    this.scheduleSave()
     this.logger.info(`群 ${groupId} 新建会话 ${created.id}`)
     return created.id
   }
