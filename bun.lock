@@ -5,18 +5,19 @@
     "": {
       "name": "opencode-qq-bot",
       "dependencies": {
-        "@naplink/naplink": "^1.2.0",
+        "@naplink/naplink": "latest",
         "@opencode/plugin": "latest",
-        "@opencode/schema": "2.2.5",
+        "@opencode/schema": "latest",
+        "zod": "latest",
       },
       "devDependencies": {
         "@types/bun": "latest",
-        "@vitest/coverage-v8": "^5.1.0",
-        "eslint": "^10.14.0",
-        "prettier": "^3.9.10",
+        "@vitest/coverage-v8": "latest",
+        "eslint": "latest",
+        "prettier": "latest",
         "typescript": "^6.0.3",
-        "typescript-eslint": "^8.72.1",
-        "vitest": "^5.1.0",
+        "typescript-eslint": "latest",
+        "vitest": "latest",
       },
       "peerDependencies": {
         "typescript": ">=5.9.0 <6.1.0",
@@ -809,6 +810,8 @@
     "yallist": ["yallist@5.0.0", "", {}, "sha512-YgvUTfwqyc7UXVMrB+SImsVYSmTS8X/tSrtdNZMImM+n7+QTriRXyXim0mBrTXNeqzVF0KWGgHPeiyViFFrNDw=="],
 
     "yocto-queue": ["yocto-queue@0.1.0", "", {}, "sha512-rVksvsnNCdJ/ohGc6xgPwyN8eheCxsiLM8mxuE/t/mOVqJewPuO1miLpTHQiRgTKCLexL4MeAFVagts7HmNZ2Q=="],
+
+    "zod": ["zod@4.6.7", "", {}, "sha512-g8W2D2kU6a8untc053fX1uVBKzM7yqAxW/3zwk83+6RyF2+SKOuV+c0wBDhUwzV1PaGapmZH+rmcUzPf+3CGwg=="],
 
     "@aws-crypto/sha256-browser/@smithy/util-utf8": ["@smithy/util-utf8@2.3.0", "", { "dependencies": { "@smithy/util-buffer-from": "^2.2.0", "tslib": "^2.6.2" } }, "sha512-R8Rdn8Hy72KKcebgLiv8jQcQkXoLMOGGv5uI1/k0l+snqkOzQ1R0ChUBCxWMlBsFMekWjq0wRudIweFs7sKT5A=="],
 

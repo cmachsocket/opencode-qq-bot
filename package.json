@@ -27,18 +27,19 @@
   ],
   "license": "GPL-3.0-or-later",
   "dependencies": {
-    "@naplink/naplink": "^1.2.0",
+    "@naplink/naplink": "latest",
     "@opencode/plugin": "latest",
-    "@opencode/schema": "2.2.5"
+    "@opencode/schema": "latest",
+    "zod": "latest"
   },
   "devDependencies": {
     "@types/bun": "latest",
-    "@vitest/coverage-v8": "^5.1.0",
-    "eslint": "^10.14.0",
-    "prettier": "^3.9.10",
+    "@vitest/coverage-v8": "latest",
+    "eslint": "latest",
+    "prettier": "latest",
     "typescript": "^6.0.3",
-    "typescript-eslint": "^8.72.1",
-    "vitest": "^5.1.0"
+    "typescript-eslint": "latest",
+    "vitest": "latest"
   },
   "peerDependencies": {
     "typescript": ">=5.9.0 <6.1.0"

@@ -1,4 +1,5 @@
 import { Model } from "@opencode/schema"
+import { z } from "zod"
 
 /**
  * Plugin configuration: merges OpenCode plugin options, environment variables
@@ -8,10 +9,9 @@ import { Model } from "@opencode/schema"
  * must be supplied through the environment or through plugin options.
  */
 
-/** 环境变量里可用的真值写法。 */
+const NUMBER = /^-?(?:\d+\.?\d*|\.\d+)$/
 const TRUTHY = new Set(["1", "true", "yes", "on"])
-/** 环境变量里可用的假值写法。 */
-const FALSY = new Set(["0", "false", "no", "off"])
+const BOOLEAN_SPELLINGS = ["1", "0", "true", "false", "yes", "no", "on", "off"] as const
 
 export interface NapcatConfig {
   /** NapCat 正向 WebSocket 地址，必填。 */
@@ -88,63 +88,12 @@ export const DEFAULT_CONFIG: Omit<QQBotConfig, "napcat"> = {
 /** 配置告警回调。 */
 export type ConfigWarning = (message: string) => void
 
-function asString(value: unknown): string | undefined {
-  return typeof value === "string" && value.length > 0 ? value : undefined
-}
-
-/** 解析数字：接受原生 number，也接受环境变量里的数字字符串。 */
-function asNumber(value: unknown): number | undefined {
-  if (typeof value === "number") return Number.isFinite(value) ? value : undefined
-  if (typeof value === "string") {
-    const raw = value.trim()
-    if (!raw) return undefined
-    const parsed = Number(raw)
-    return Number.isFinite(parsed) ? parsed : undefined
-  }
-  return undefined
-}
-
-/** 解析布尔值：接受原生 boolean，也接受环境变量里的 true/false/1/0/yes/no/on/off。 */
-function asBoolean(value: unknown): boolean | undefined {
-  if (typeof value === "boolean") return value
-  if (typeof value === "string") {
-    const raw = value.trim().toLowerCase()
-    if (TRUTHY.has(raw)) return true
-    if (FALSY.has(raw)) return false
-  }
-  return undefined
-}
-
-function asGroupList(value: unknown): number[] | undefined {
-  const source = Array.isArray(value)
-    ? value
-    : typeof value === "string"
-      ? value.split(",")
-      : undefined
-  if (!source) return undefined
-  const groups: number[] = []
-  for (const entry of source) {
-    const raw = typeof entry === "number" ? String(entry) : asString(entry)?.trim()
-    if (!raw) continue
-    const parsed = Number(raw)
-    if (Number.isInteger(parsed)) groups.push(parsed)
-  }
-  return groups
-}
-
-/**
- * 解析 "provider/model" 或 "provider/model/variant"，复用 SDK 的模型引用解析。
- *
- * 写法不合法时通过 `onInvalid` 上报，避免配置写错却静默失效。
- */
-function parseModelRef(value: unknown, onInvalid?: (raw: string) => void): ModelRef | undefined {
-  const raw = asString(value)?.trim()
+/** 解析 "provider/model" 或 "provider/model/variant"，复用 SDK 的模型引用解析。 */
+function parseModelRef(value: unknown): ModelRef | undefined {
+  const raw = typeof value === "string" ? value.trim() : ""
   if (!raw) return undefined
   const [providerID, id, variant, ...rest] = raw.split("/").filter(Boolean)
-  if (!providerID || !id || rest.length > 0) {
-    onInvalid?.(raw)
-    return undefined
-  }
+  if (!providerID || !id || rest.length > 0) return undefined
   try {
     const ref = Model.Ref.parse(`${providerID}/${id}${variant ? `#${variant}` : ""}`)
     return {
@@ -153,136 +102,205 @@ function parseModelRef(value: unknown, onInvalid?: (raw: string) => void): Model
       ...(ref.variant ? { variant: ref.variant } : {}),
     }
   } catch {
-    onInvalid?.(raw)
     return undefined
   }
 }
 
-/** 读取布尔配置：值非法时告警并回退到默认值。 */
-function pickBoolean(label: string, raw: unknown, fallback: boolean, warnings: string[]): boolean {
-  if (raw === undefined || raw === null || raw === "") return fallback
-  const parsed = asBoolean(raw)
-  if (parsed === undefined) {
-    warnings.push(`${label} 不是合法的布尔值：${String(raw)}`)
-    return fallback
-  }
-  return parsed
+/** 判断值是否算“已提供”，用于区分空值与写错的值。 */
+function present(value: unknown): boolean {
+  return value !== undefined && value !== null && value !== ""
 }
 
-/** 读取数字配置：值非法时告警并回退到默认值。 */
-function pickNumber(label: string, raw: unknown, fallback: number, warnings: string[]): number {
-  if (raw === undefined || raw === null || raw === "") return fallback
-  const parsed = asNumber(raw)
-  if (parsed === undefined) {
-    warnings.push(`${label} 不是合法的数字：${String(raw)}`)
-    return fallback
+/** 把数字数组或逗号分隔字符串整理成整数列表。 */
+function toGroups(value: unknown): number[] | undefined {
+  const source = Array.isArray(value)
+    ? value
+    : typeof value === "string"
+      ? value.split(",")
+      : undefined
+  if (!source) return undefined
+  const groups: number[] = []
+  for (const entry of source) {
+    const raw =
+      typeof entry === "number" ? String(entry) : typeof entry === "string" ? entry.trim() : ""
+    if (!raw) continue
+    const parsed = Number(raw)
+    if (Number.isInteger(parsed)) groups.push(parsed)
   }
-  return parsed
+  return groups
 }
 
-/** 读取正数配置：非正数会让心跳退化成热循环，告警并回退到默认值。 */
-function pickPositive(label: string, raw: unknown, fallback: number, warnings: string[]): number {
-  const value = pickNumber(label, raw, fallback, warnings)
-  if (value <= 0) {
-    warnings.push(`${label} 必须大于 0，当前为 ${value}，已回退到 ${fallback}`)
-    return fallback
-  }
-  return value
+interface PartialNapcatConfig {
+  url?: string
+  token?: string
 }
 
-interface EnvConfig extends Omit<QQBotConfig, "napcat"> {
-  napcat: { url?: string; token?: string }
-}
+type RawConfig = Omit<QQBotConfig, "napcat"> & { napcat: PartialNapcatConfig }
 
-function fromEnv(env: Record<string, string | undefined>, warnings: string[]): EnvConfig {
-  const groups = asGroupList(env["QQ_TARGET_GROUPS"])
-  if (env["QQ_TARGET_GROUPS"] && groups?.length === 0) {
-    warnings.push(`QQ_TARGET_GROUPS 解析不出群号：${env["QQ_TARGET_GROUPS"]}`)
-  }
-  const model = parseModelRef(env["QQ_BOT_MODEL"], (raw) =>
-    warnings.push(`QQ_BOT_MODEL 格式无效：${raw}（应为 provider/model[/variant]）`),
-  )
+/**
+ * 用同一份字段清单生成配置 schema。
+ *
+ * `defaults` 是被覆盖层的兜底值，因此环境变量层用 `DEFAULT_CONFIG`，
+ * 插件选项层用解析后的环境变量配置，天然实现“选项 > 环境变量 > 默认值”。
+ */
+function createConfigSchema(
+  defaults: Omit<QQBotConfig, "napcat">,
+  napcat: PartialNapcatConfig,
+  label: (path: string) => string,
+  warn: ConfigWarning,
+): z.ZodType<RawConfig> {
+  const number = (path: string, fallback: number) =>
+    z
+      .union([z.number(), z.string().trim().regex(NUMBER).transform(Number)])
+      .pipe(z.number().finite())
+      .catch((ctx) => {
+        if (present(ctx.value)) warn(`${label(path)} 不是合法的数字：${String(ctx.value)}`)
+        return fallback
+      })
+      .default(fallback)
 
-  return {
-    napcat: {
-      url: asString(env["NAPCAT_WS_URL"]),
-      token: asString(env["NAPCAT_WS_TOKEN"]),
-    },
-    groups: groups ?? [],
-    soulPath: asString(env["QQ_BOT_SOUL_PATH"]),
-    agent: asString(env["QQ_BOT_AGENT"]),
+  const positive = (path: string, fallback: number) =>
+    number(path, fallback)
+      .pipe(z.number().positive())
+      .catch((ctx) => {
+        if (present(ctx.value)) {
+          warn(`${label(path)} 必须大于 0，当前为 ${String(ctx.value)}，已回退到 ${fallback}`)
+        }
+        return fallback
+      })
+
+  const boolean = (path: string, fallback: boolean) =>
+    z
+      .union([z.boolean(), z.string().trim().toLowerCase().pipe(z.enum(BOOLEAN_SPELLINGS))])
+      .transform((value) => (typeof value === "boolean" ? value : TRUTHY.has(value)))
+      .catch((ctx) => {
+        if (present(ctx.value)) warn(`${label(path)} 不是合法的布尔值：${String(ctx.value)}`)
+        return fallback
+      })
+      .default(fallback)
+
+  const text = (fallback: string | undefined) =>
+    z
+      .string()
+      .trim()
+      .min(1)
+      .optional()
+      .catch(() => undefined)
+      .transform((value) => value ?? fallback)
+
+  const groups = z
+    .unknown()
+    .optional()
+    .transform((value) => {
+      if (value === undefined || value === null) return defaults.groups
+      const parsed = toGroups(value)
+      if (!parsed) {
+        if (present(value)) warn(`${label("groups")} 解析不出群号：${String(value)}`)
+        return defaults.groups
+      }
+      if (parsed.length === 0 && present(value) && !(Array.isArray(value) && value.length === 0)) {
+        warn(`${label("groups")} 解析不出群号：${String(value)}`)
+      }
+      return parsed
+    })
+
+  const model = z
+    .unknown()
+    .optional()
+    .transform((value) => {
+      if (!present(value)) return defaults.model
+      const parsed = parseModelRef(value)
+      if (!parsed) {
+        warn(`${label("model")} 格式无效：${String(value)}（应为 provider/model[/variant]）`)
+        return defaults.model
+      }
+      return parsed
+    })
+
+  return z.object({
+    napcat: z
+      .object({
+        url: text(napcat.url),
+        token: text(napcat.token),
+      })
+      .prefault({})
+      .catch({ url: napcat.url, token: napcat.token }),
+    groups,
+    soulPath: text(defaults.soulPath),
+    agent: text(defaults.agent),
     model,
-    sendDelayMs: pickNumber(
-      "QQ_SEND_DELAY_MS",
-      env["QQ_SEND_DELAY_MS"],
-      DEFAULT_CONFIG.sendDelayMs,
-      warnings,
-    ),
-    warnLength: pickNumber(
-      "QQ_WARN_LENGTH",
-      env["QQ_WARN_LENGTH"],
-      DEFAULT_CONFIG.warnLength,
-      warnings,
-    ),
-    reuseSession: pickBoolean(
-      "QQ_REUSE_SESSION",
-      env["QQ_REUSE_SESSION"],
-      DEFAULT_CONFIG.reuseSession,
-      warnings,
-    ),
-    busyTimeoutMs: pickNumber(
-      "QQ_BUSY_TIMEOUT_MS",
-      env["QQ_BUSY_TIMEOUT_MS"],
-      DEFAULT_CONFIG.busyTimeoutMs,
-      warnings,
-    ),
-    proactive: {
-      enabled: pickBoolean(
-        "QQ_PROACTIVE_ENABLED",
-        env["QQ_PROACTIVE_ENABLED"],
-        DEFAULT_CONFIG.proactive.enabled,
-        warnings,
-      ),
-      silenceThresholdSeconds: pickNumber(
-        "QQ_PROACTIVE_SILENCE_SECONDS",
-        env["QQ_PROACTIVE_SILENCE_SECONDS"],
-        DEFAULT_CONFIG.proactive.silenceThresholdSeconds,
-        warnings,
-      ),
-      startProbability: pickNumber(
-        "QQ_PROACTIVE_P_START",
-        env["QQ_PROACTIVE_P_START"],
-        DEFAULT_CONFIG.proactive.startProbability,
-        warnings,
-      ),
-      probabilityPerHour: pickNumber(
-        "QQ_PROACTIVE_P_SLOPE_PER_HOUR",
-        env["QQ_PROACTIVE_P_SLOPE_PER_HOUR"],
-        DEFAULT_CONFIG.proactive.probabilityPerHour,
-        warnings,
-      ),
-      tickSeconds: pickPositive(
-        "QQ_PROACTIVE_TICK_SECONDS",
-        env["QQ_PROACTIVE_TICK_SECONDS"],
-        DEFAULT_CONFIG.proactive.tickSeconds,
-        warnings,
-      ),
-    },
-    reminder: {
-      enabled: pickBoolean(
-        "QQ_REMINDER_ENABLED",
-        env["QQ_REMINDER_ENABLED"],
-        DEFAULT_CONFIG.reminder.enabled,
-        warnings,
-      ),
-      max: pickNumber(
-        "QQ_REMINDER_MAX",
-        env["QQ_REMINDER_MAX"],
-        DEFAULT_CONFIG.reminder.max,
-        warnings,
-      ),
-    },
+    sendDelayMs: number("sendDelayMs", defaults.sendDelayMs),
+    warnLength: number("warnLength", defaults.warnLength),
+    reuseSession: boolean("reuseSession", defaults.reuseSession),
+    busyTimeoutMs: number("busyTimeoutMs", defaults.busyTimeoutMs),
+    proactive: z
+      .object({
+        enabled: boolean("proactive.enabled", defaults.proactive.enabled),
+        silenceThresholdSeconds: number(
+          "proactive.silenceThresholdSeconds",
+          defaults.proactive.silenceThresholdSeconds,
+        ),
+        startProbability: number("proactive.startProbability", defaults.proactive.startProbability),
+        probabilityPerHour: number(
+          "proactive.probabilityPerHour",
+          defaults.proactive.probabilityPerHour,
+        ),
+        tickSeconds: positive("proactive.tickSeconds", defaults.proactive.tickSeconds),
+      })
+      .prefault({})
+      .catch(defaults.proactive),
+    reminder: z
+      .object({
+        enabled: boolean("reminder.enabled", defaults.reminder.enabled),
+        max: number("reminder.max", defaults.reminder.max),
+      })
+      .prefault({})
+      .catch(defaults.reminder),
+  })
+}
+
+const ENV_VARS = {
+  "napcat.url": "NAPCAT_WS_URL",
+  "napcat.token": "NAPCAT_WS_TOKEN",
+  groups: "QQ_TARGET_GROUPS",
+  soulPath: "QQ_BOT_SOUL_PATH",
+  agent: "QQ_BOT_AGENT",
+  model: "QQ_BOT_MODEL",
+  sendDelayMs: "QQ_SEND_DELAY_MS",
+  warnLength: "QQ_WARN_LENGTH",
+  reuseSession: "QQ_REUSE_SESSION",
+  busyTimeoutMs: "QQ_BUSY_TIMEOUT_MS",
+  "proactive.enabled": "QQ_PROACTIVE_ENABLED",
+  "proactive.silenceThresholdSeconds": "QQ_PROACTIVE_SILENCE_SECONDS",
+  "proactive.startProbability": "QQ_PROACTIVE_P_START",
+  "proactive.probabilityPerHour": "QQ_PROACTIVE_P_SLOPE_PER_HOUR",
+  "proactive.tickSeconds": "QQ_PROACTIVE_TICK_SECONDS",
+  "reminder.enabled": "QQ_REMINDER_ENABLED",
+  "reminder.max": "QQ_REMINDER_MAX",
+} as const
+
+function envLabel(path: string): string {
+  return ENV_VARS[path as keyof typeof ENV_VARS] ?? path
+}
+
+function fromEnv(env: Record<string, string | undefined>): Record<string, unknown> {
+  const config: Record<string, unknown> = {}
+  for (const [path, name] of Object.entries(ENV_VARS)) {
+    const value = env[name]
+    if (value === undefined) continue
+    const keys = path.split(".")
+    const leaf = keys.pop()
+    if (!leaf) continue
+    let target = config
+    for (const key of keys) {
+      const child = target[key]
+      const next = child && typeof child === "object" ? (child as Record<string, unknown>) : {}
+      target[key] = next
+      target = next
+    }
+    target[leaf] = value
   }
+  return config
 }
 
 /**
@@ -298,97 +316,20 @@ export function resolveConfig(
   onWarning: ConfigWarning = () => {},
 ): QQBotConfig {
   const warnings: string[] = []
-  const base = fromEnv(env, warnings)
-  const napcat = (options["napcat"] ?? {}) as Record<string, unknown>
-  const proactive = (options["proactive"] ?? {}) as Record<string, unknown>
-  const reminder = (options["reminder"] ?? {}) as Record<string, unknown>
+  const warn: ConfigWarning = (message) => warnings.push(message)
 
-  const url = asString(napcat["url"]) ?? base.napcat.url
+  const envSchema = createConfigSchema(DEFAULT_CONFIG, {}, envLabel, warn)
+  const base: RawConfig = envSchema.parse(fromEnv(env))
+  const optionsSchema = createConfigSchema(base, base.napcat, (path) => `插件选项 ${path}`, warn)
+  const parsed: RawConfig = optionsSchema.parse(options)
+
+  const url = parsed.napcat.url
   if (!url) {
     throw new Error(
       "未配置 NapCat WebSocket 地址：请设置环境变量 NAPCAT_WS_URL 或插件选项 napcat.url",
     )
   }
 
-  const optionGroups = asGroupList(options["groups"])
-  if (options["groups"] !== undefined && optionGroups?.length === 0) {
-    warnings.push(`插件选项 groups 解析不出群号：${JSON.stringify(options["groups"])}`)
-  }
-  const model = parseModelRef(options["model"], (raw) =>
-    warnings.push(`插件选项 model 格式无效：${raw}（应为 provider/model[/variant]）`),
-  )
-
-  const config: QQBotConfig = {
-    napcat: {
-      url,
-      token: asString(napcat["token"]) ?? base.napcat.token,
-    },
-    groups: optionGroups ?? base.groups,
-    soulPath: asString(options["soulPath"]) ?? base.soulPath,
-    agent: asString(options["agent"]) ?? base.agent,
-    model: model ?? base.model,
-    sendDelayMs: pickNumber(
-      "插件选项 sendDelayMs",
-      options["sendDelayMs"],
-      base.sendDelayMs,
-      warnings,
-    ),
-    warnLength: pickNumber("插件选项 warnLength", options["warnLength"], base.warnLength, warnings),
-    reuseSession: pickBoolean(
-      "插件选项 reuseSession",
-      options["reuseSession"],
-      base.reuseSession,
-      warnings,
-    ),
-    busyTimeoutMs: pickNumber(
-      "插件选项 busyTimeoutMs",
-      options["busyTimeoutMs"],
-      base.busyTimeoutMs,
-      warnings,
-    ),
-    proactive: {
-      enabled: pickBoolean(
-        "插件选项 proactive.enabled",
-        proactive["enabled"],
-        base.proactive.enabled,
-        warnings,
-      ),
-      silenceThresholdSeconds: pickNumber(
-        "插件选项 proactive.silenceThresholdSeconds",
-        proactive["silenceThresholdSeconds"],
-        base.proactive.silenceThresholdSeconds,
-        warnings,
-      ),
-      startProbability: pickNumber(
-        "插件选项 proactive.startProbability",
-        proactive["startProbability"],
-        base.proactive.startProbability,
-        warnings,
-      ),
-      probabilityPerHour: pickNumber(
-        "插件选项 proactive.probabilityPerHour",
-        proactive["probabilityPerHour"],
-        base.proactive.probabilityPerHour,
-        warnings,
-      ),
-      tickSeconds: pickPositive(
-        "插件选项 proactive.tickSeconds",
-        proactive["tickSeconds"],
-        base.proactive.tickSeconds,
-        warnings,
-      ),
-    },
-    reminder: {
-      enabled: pickBoolean(
-        "插件选项 reminder.enabled",
-        reminder["enabled"],
-        base.reminder.enabled,
-        warnings,
-      ),
-      max: pickNumber("插件选项 reminder.max", reminder["max"], base.reminder.max, warnings),
-    },
-  }
-
   for (const warning of warnings) onWarning(warning)
-  return config
+  return { ...parsed, napcat: { url, token: parsed.napcat.token } }
 }
