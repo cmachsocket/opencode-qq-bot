@@ -1,5 +1,8 @@
-import { describe, expect, it, vi } from "vitest"
+import { afterAll, describe, expect, it, vi } from "vitest"
 import type { GroupMessageEvent, MessageSegment, OneBotApi } from "@naplink/naplink"
+import { mkdtemp, rm } from "node:fs/promises"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import {
   limitFiles,
   mentionsUser,
@@ -7,8 +10,8 @@ import {
   renderMessage,
   resolveUserName,
   shouldProcess,
-  toInlineImage,
 } from "../src/naplink/render"
+import { createMediaStore } from "../src/naplink/media"
 import type { Logger } from "../src/logger"
 
 const logger: Logger = {
@@ -17,6 +20,16 @@ const logger: Logger = {
   warn: () => {},
   error: () => {},
 }
+
+const mediaRoot = await mkdtemp(join(tmpdir(), "qq-render-test-"))
+const media = await createMediaStore(logger, { root: mediaRoot })
+
+afterAll(async () => {
+  await rm(mediaRoot, { recursive: true, force: true })
+})
+
+const PNG = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0])
+const JPEG = new Uint8Array([0xff, 0xd8, 0xff, 0xe0, 0, 0])
 
 /** NapCat 的 forward 段没有官方类型定义，测试里按运行时结构构造。 */
 function forwardSegment(id: string): MessageSegment {
@@ -64,7 +77,7 @@ function makeApi(overrides: Partial<OneBotApi> = {}): OneBotApi {
   } as unknown as OneBotApi
 }
 
-const ctx = (api: OneBotApi) => ({ api, groupId: 100, logger })
+const ctx = (api: OneBotApi) => ({ api, groupId: 100, logger, media })
 
 describe("shouldProcess", () => {
   it("accepts text messages", () => {
@@ -143,34 +156,48 @@ describe("resolveUserName", () => {
   })
 })
 
-describe("toInlineImage", () => {
-  it("converts a base64 url into a data url", async () => {
-    const url = await toInlineImage("base64://AAAA", logger)
-    expect(url).toBe("data:image/png;base64,AAAA")
+describe("MediaStore.storeImage", () => {
+  it("stores a base64 image as a file reference", async () => {
+    const stored = await media.storeImage(`base64://${Buffer.from(PNG).toString("base64")}`)
+    expect(stored?.uri).toMatch(/^file:/)
+    expect(stored?.name).toMatch(/\.png$/)
+    expect(stored?.bytes).toBe(PNG.byteLength)
+    expect(stored?.source).toEqual({ type: "uri", uri: stored?.uri })
   })
 
-  it("passes data urls through", async () => {
-    const url = await toInlineImage("data:image/jpeg;base64,BBBB", logger)
-    expect(url).toBe("data:image/jpeg;base64,BBBB")
+  it("stores a data url as a file reference", async () => {
+    const stored = await media.storeImage(
+      `data:image/jpeg;base64,${Buffer.from(JPEG).toString("base64")}`,
+    )
+    expect(stored?.name).toMatch(/\.jpg$/)
+    expect(stored?.bytes).toBe(JPEG.byteLength)
   })
 
   it("ignores unsupported schemes", async () => {
-    expect(await toInlineImage("/local/a.jpg", logger)).toBeUndefined()
+    expect(await media.storeImage("/local/a.jpg")).toBeUndefined()
   })
 
   it("sniffs the mime type when the content type is not an image", async () => {
     vi.stubGlobal(
       "fetch",
       vi.fn(
-        async () =>
-          new Response(new Uint8Array([0xff, 0xd8, 0xff, 0xe0]), {
-            headers: { "content-type": "application/octet-stream" },
-          }),
+        async () => new Response(JPEG, { headers: { "content-type": "application/octet-stream" } }),
       ),
     )
     try {
-      const url = await toInlineImage("https://example.com/a.jpg", logger)
-      expect(url).toMatch(/^data:image\/jpeg;base64,/)
+      const stored = await media.storeImage("https://example.com/a.jpg")
+      expect(stored?.name).toMatch(/\.jpg$/)
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it("rejects private hosts before fetching", async () => {
+    const fetchMock = vi.fn()
+    vi.stubGlobal("fetch", fetchMock)
+    try {
+      expect(await media.storeImage("http://127.0.0.1/a.png")).toBeUndefined()
+      expect(fetchMock).not.toHaveBeenCalled()
     } finally {
       vi.unstubAllGlobals()
     }
@@ -187,7 +214,7 @@ describe("toInlineImage", () => {
       ),
     )
     try {
-      expect(await toInlineImage("https://example.com/big.png", logger)).toBeUndefined()
+      expect(await media.storeImage("https://example.com/big.png")).toBeUndefined()
     } finally {
       vi.unstubAllGlobals()
     }
@@ -211,7 +238,7 @@ describe("toInlineImage", () => {
       ),
     )
     try {
-      expect(await toInlineImage("https://example.com/big.png", logger)).toBeUndefined()
+      expect(await media.storeImage("https://example.com/big.png")).toBeUndefined()
     } finally {
       vi.unstubAllGlobals()
     }
@@ -297,7 +324,7 @@ describe("renderMessage", () => {
     expect(rendered.files).toEqual([])
   })
 
-  it("inlines a remote image using the declared content type", async () => {
+  it("stores a remote image as a file reference", async () => {
     vi.stubGlobal(
       "fetch",
       vi.fn(
@@ -313,8 +340,9 @@ describe("renderMessage", () => {
         makeEvent([{ type: "image", data: { file: "a.jpg", url: "https://example.com/a.jpg" } }]),
       )
       expect(rendered.files).toHaveLength(1)
-      expect(rendered.files[0]?.uri).toMatch(/^data:image\/jpeg;base64,/)
+      expect(rendered.files[0]?.uri).toMatch(/^file:/)
       expect(rendered.files[0]?.name).toBe("qq-image-1.jpg")
+      expect(rendered.files[0]?.bytes).toBe(3)
     } finally {
       vi.unstubAllGlobals()
     }
@@ -341,7 +369,7 @@ describe("renderMessage", () => {
     }
   })
 
-  it("caps the number of inlined images per message", async () => {
+  it("caps the number of referenced images per message", async () => {
     vi.stubGlobal(
       "fetch",
       vi.fn(

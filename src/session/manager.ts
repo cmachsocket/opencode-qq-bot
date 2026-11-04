@@ -61,7 +61,10 @@ export function mergeTurns(turns: readonly Turn[]): Turn {
 }
 
 function turnBytes(turn: Turn): number {
-  return turn.text.length * 2 + turn.files.reduce((total, file) => total + file.uri.length, 0)
+  return (
+    turn.text.length * 2 +
+    turn.files.reduce((total, file) => total + (file.bytes ?? file.uri.length), 0)
+  )
 }
 
 /**

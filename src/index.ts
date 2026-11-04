@@ -3,6 +3,7 @@ import type { GroupMessageEvent } from "@naplink/naplink"
 import { resolveConfig, type QQBotConfig } from "./config"
 import { createLogger } from "./logger"
 import { QQClient } from "./naplink/client"
+import { createMediaStore } from "./naplink/media"
 import { mentionsUser, renderMessage, resolveUserName, shouldProcess } from "./naplink/render"
 import { SessionManager } from "./session/manager"
 import {
@@ -46,6 +47,15 @@ export default Plugin.define({
     const client = new QQClient(config.napcat, logger)
     const manager = new SessionManager(ctx, config, logger)
     await manager.load()
+    const media = await createMediaStore(logger)
+    const mediaCleanup = setInterval(
+      () => {
+        void media.cleanup()
+      },
+      60 * 60 * 1000,
+    )
+    const mediaHandle = mediaCleanup as { unref?: () => void }
+    mediaHandle.unref?.()
     const toolRegistration = await registerTools({ ctx, config, logger, manager, client })
     const nameCache = new Map<string, { name: string; expires: number }>()
 
@@ -100,7 +110,13 @@ export default Plugin.define({
         if (!shouldProcess(event.message, selfId)) return
 
         await client.hydrate(event.message)
-        const renderCtx = { api: client.api, groupId: event.group_id, logger, names: nameCache }
+        const renderCtx = {
+          api: client.api,
+          groupId: event.group_id,
+          logger,
+          media,
+          names: nameCache,
+        }
         const rendered = await renderMessage(renderCtx, event)
         if (!rendered.text.trim()) return
 
@@ -179,6 +195,7 @@ export default Plugin.define({
 
     return async () => {
       if (timer) clearInterval(timer)
+      clearInterval(mediaCleanup)
       idleAbort.abort()
       await manager.flush()
       await toolRegistration.dispose()

@@ -1,0 +1,311 @@
+import { createHash } from "node:crypto"
+import { access, mkdir, readdir, stat, unlink, writeFile } from "node:fs/promises"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
+import { pathToFileURL } from "node:url"
+import type { Logger } from "../logger"
+
+/** 单张图片下载与落盘的字节上限。 */
+export const MAX_IMAGE_BYTES = 5 * 1024 * 1024
+/** 下载远端图片的超时时间。 */
+export const IMAGE_FETCH_TIMEOUT_MS = 15_000
+/** 临时图片的保留时间。 */
+export const MEDIA_TTL_MS = 7 * 24 * 60 * 60 * 1000
+
+export interface PromptFile {
+  uri: string
+  name: string
+  /** 原始字节数，用于图片预算与缓存上限。 */
+  bytes?: number
+  /** 文件来源；file: 引用会标记为 uri。 */
+  source?: { type: "inline" } | { type: "uri"; uri: string }
+}
+
+export interface StoredImage extends PromptFile {
+  /** 图片扩展名，不含点。 */
+  ext: string
+}
+
+interface ImageBytes {
+  bytes: Uint8Array
+  mime: string
+}
+
+const MIME_EXTENSIONS: Record<string, string> = {
+  "image/png": "png",
+  "image/jpeg": "jpg",
+  "image/gif": "gif",
+  "image/webp": "webp",
+}
+
+/** 从魔数判断图片类型。 */
+export function mimeFromBytes(bytes: Uint8Array): string | undefined {
+  if (
+    bytes.length >= 8 &&
+    bytes[0] === 0x89 &&
+    bytes[1] === 0x50 &&
+    bytes[2] === 0x4e &&
+    bytes[3] === 0x47 &&
+    bytes[4] === 0x0d &&
+    bytes[5] === 0x0a &&
+    bytes[6] === 0x1a &&
+    bytes[7] === 0x0a
+  ) {
+    return "image/png"
+  }
+  if (bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) {
+    return "image/jpeg"
+  }
+  if (bytes.length >= 6 && bytes[0] === 0x47 && bytes[1] === 0x49 && bytes[2] === 0x46) {
+    return "image/gif"
+  }
+  if (
+    bytes.length >= 12 &&
+    bytes[8] === 0x57 &&
+    bytes[9] === 0x45 &&
+    bytes[10] === 0x42 &&
+    bytes[11] === 0x50
+  ) {
+    return "image/webp"
+  }
+  return undefined
+}
+
+/** 估算 data URL 里原始图片的字节数。 */
+export function inlineImageBytes(uri: string): number {
+  const comma = uri.indexOf(",")
+  if (comma < 0) return 0
+  return Math.floor(((uri.length - comma - 1) * 3) / 4)
+}
+
+/** 按 Unicode 码点截断，避免切断代理对。 */
+function truncateCodePoints(text: string, max: number): string {
+  return Array.from(text).slice(0, max).join("")
+}
+
+/** 判断主机名是否指向本机或内网，避免下载请求打内网服务。 */
+export function isPrivateHost(hostname: string): boolean {
+  let host = hostname.trim().toLowerCase()
+  if (host.startsWith("[") && host.endsWith("]")) host = host.slice(1, -1)
+  if (host === "localhost" || host.endsWith(".localhost") || host.endsWith(".local")) return true
+  if (host === "::1" || host === "::") return true
+  if (host.startsWith("fc") || host.startsWith("fd") || host.startsWith("fe80")) return true
+
+  const parts = host.split(".")
+  if (parts.length !== 4) return false
+  const octets = parts.map(Number)
+  if (octets.some((value) => !Number.isInteger(value) || value < 0 || value > 255)) return false
+  const [first, second] = octets
+  return (
+    first === 0 ||
+    first === 10 ||
+    first === 127 ||
+    (first === 169 && second === 254) ||
+    (first === 172 && second !== undefined && second >= 16 && second <= 31) ||
+    (first === 192 && second === 168)
+  )
+}
+
+async function readCapped(response: Response, limit: number): Promise<Uint8Array | undefined> {
+  const body = response.body
+  if (!body) {
+    const buffer = new Uint8Array(await response.arrayBuffer())
+    return buffer.byteLength > limit ? undefined : buffer
+  }
+  const reader = body.getReader()
+  const chunks: Uint8Array[] = []
+  let total = 0
+  try {
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) break
+      if (!value) continue
+      total += value.byteLength
+      if (total > limit) {
+        await reader.cancel().catch(() => {})
+        return undefined
+      }
+      chunks.push(value)
+    }
+  } finally {
+    reader.releaseLock()
+  }
+  const buffer = new Uint8Array(total)
+  let offset = 0
+  for (const chunk of chunks) {
+    buffer.set(chunk, offset)
+    offset += chunk.byteLength
+  }
+  return buffer
+}
+
+function decodeBase64(value: string): Uint8Array | undefined {
+  if (!/^[A-Za-z0-9+/]*={0,2}$/u.test(value)) return undefined
+  const bytes = Buffer.from(value, "base64")
+  return bytes.byteLength > MAX_IMAGE_BYTES ? undefined : new Uint8Array(bytes)
+}
+
+function parseDataUrl(uri: string): ImageBytes | undefined {
+  const match = /^data:([^;,]+)?(?:;[^,]*)*;base64,(.*)$/s.exec(uri)
+  if (!match) return undefined
+  const bytes = decodeBase64(match[2] ?? "")
+  if (!bytes) return undefined
+  const declared = match[1]?.trim()
+  const mime =
+    declared?.startsWith("image/") === true ? declared : (mimeFromBytes(bytes) ?? undefined)
+  if (!mime) return undefined
+  return { bytes, mime }
+}
+
+/**
+ * 受控的图片文件存储。
+ *
+ * 图片下载后写入临时目录，prompt 里只传 `file:` 引用，
+ * 避免 base64 字符串进入插件缓存与会话参数。
+ */
+export class MediaStore {
+  private ready: Promise<void> | undefined
+
+  constructor(
+    private readonly root: string,
+    private readonly logger: Logger,
+    private readonly ttlMs = MEDIA_TTL_MS,
+  ) {}
+
+  private async ensureRoot(): Promise<void> {
+    this.ready ??= mkdir(this.root, { recursive: true, mode: 0o700 }).then(() => undefined)
+    await this.ready
+  }
+
+  /** 下载或解码图片并写入临时文件；失败时返回 undefined。 */
+  async storeImage(url: string): Promise<StoredImage | undefined> {
+    const image = await this.readImage(url)
+    if (!image) return undefined
+    return this.storeBytes(image.bytes, image.mime)
+  }
+
+  private async readImage(url: string): Promise<ImageBytes | undefined> {
+    if (url.startsWith("base64://")) {
+      const bytes = decodeBase64(url.slice("base64://".length))
+      if (!bytes) {
+        this.logger.warn("base64 图片无效或超过大小上限")
+        return undefined
+      }
+      const mime = mimeFromBytes(bytes)
+      if (!mime) {
+        this.logger.warn("base64 图片类型无法识别")
+        return undefined
+      }
+      return { bytes, mime }
+    }
+    if (url.startsWith("data:")) return parseDataUrl(url)
+    if (!url.startsWith("http://") && !url.startsWith("https://")) return undefined
+
+    let parsed: URL
+    try {
+      parsed = new URL(url)
+    } catch {
+      return undefined
+    }
+    if (isPrivateHost(parsed.hostname)) {
+      this.logger.warn(`拒绝下载内网图片 host=${parsed.hostname}`)
+      return undefined
+    }
+
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), IMAGE_FETCH_TIMEOUT_MS)
+    try {
+      const response = await fetch(url, {
+        signal: controller.signal,
+        redirect: "error",
+      })
+      if (!response.ok) {
+        this.logger.warn(`下载图片失败 status=${response.status} url=${url}`)
+        return undefined
+      }
+      const lengthHeader = response.headers.get("content-length")
+      const declaredLength = lengthHeader === null ? undefined : Number(lengthHeader)
+      if (declaredLength !== undefined && Number.isFinite(declaredLength)) {
+        if (declaredLength > MAX_IMAGE_BYTES) {
+          this.logger.warn(`图片过大，跳过下载 bytes=${declaredLength} url=${url}`)
+          return undefined
+        }
+      }
+      const bytes = await readCapped(response, MAX_IMAGE_BYTES)
+      if (!bytes) {
+        this.logger.warn(`图片过大，跳过下载 url=${url}`)
+        return undefined
+      }
+      const declared = response.headers.get("content-type")?.split(";")[0]?.trim()
+      const mime =
+        declared?.startsWith("image/") === true ? declared : (mimeFromBytes(bytes) ?? undefined)
+      if (!mime) {
+        this.logger.warn(`图片类型无法识别 url=${url}`)
+        return undefined
+      }
+      return { bytes, mime }
+    } catch (error) {
+      this.logger.warn(`下载图片异常 url=${url}`, error)
+      return undefined
+    } finally {
+      clearTimeout(timer)
+    }
+  }
+
+  private async storeBytes(bytes: Uint8Array, mime: string): Promise<StoredImage> {
+    await this.ensureRoot()
+    const hash = createHash("sha256").update(bytes).digest("hex")
+    const ext = MIME_EXTENSIONS[mime] ?? "bin"
+    const path = join(this.root, `${hash}.${ext}`)
+    try {
+      await access(path)
+    } catch {
+      await writeFile(path, bytes, { mode: 0o600 })
+    }
+    const uri = pathToFileURL(path).href
+    return {
+      uri,
+      name: `qq-image-${hash.slice(0, 8)}.${ext}`,
+      bytes: bytes.byteLength,
+      source: { type: "uri", uri },
+      ext,
+    }
+  }
+
+  /** 删除超过 TTL 的临时图片。 */
+  async cleanup(now = Date.now()): Promise<number> {
+    let removed = 0
+    try {
+      const entries = await readdir(this.root)
+      for (const entry of entries) {
+        const path = join(this.root, entry)
+        try {
+          const info = await stat(path)
+          if (!info.isFile() || now - info.mtimeMs <= this.ttlMs) continue
+          await unlink(path)
+          removed += 1
+        } catch {
+          // 文件可能已被其它实例删除。
+        }
+      }
+    } catch {
+      // 目录不存在时无需清理。
+    }
+    if (removed > 0) this.logger.debug(`已清理 ${removed} 个过期图片文件`)
+    return removed
+  }
+}
+
+/** 创建默认的临时图片存储，并立即清理一次过期文件。 */
+export async function createMediaStore(
+  logger: Logger,
+  options: { root?: string; ttlMs?: number } = {},
+): Promise<MediaStore> {
+  const root = options.root ?? join(tmpdir(), "opencode-qq-bot-media")
+  const store = new MediaStore(root, logger, options.ttlMs)
+  await store.cleanup()
+  return store
+}
+
+/** 供需要按码点截断的渲染代码复用。 */
+export { truncateCodePoints }
