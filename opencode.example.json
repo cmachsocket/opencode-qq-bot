@@ -4,6 +4,10 @@
     {
       "package": "./",
       "options": {
+        "napcat": {
+          "url": "ws://127.0.0.1:3001",
+          "token": "your-token"
+        },
         "groups": [123456789],
         "users": [987654321]
       }

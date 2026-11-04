@@ -30,6 +30,10 @@ bun install
       "package": "./",
       "options": {
         // 不配置或留空数组时，对应的群聊或私聊不响应
+        "napcat": {
+          "url": "ws://127.0.0.1:3001",
+          "token": "your-token",
+        },
         "groups": [123456789],
         "users": [987654321],
       },
@@ -44,12 +48,11 @@ bun install
 
 插件选项优先于环境变量，环境变量优先于默认值。
 
-**凭证不写进仓库**：NapCat 地址与令牌只能来自环境变量或插件选项，仓库里只保留占位符。
-复制 `.env.example` 为 `.env` 并填入真实值，`.env` 已被 `.gitignore` 忽略。
+**凭证不写进仓库**：把 NapCat 地址、令牌和真实群号/QQ 号写进本地 `opencode.json` 的插件
+`options`，该文件已被 `.gitignore` 忽略；仓库只保留 `opencode.example.json` 模板。
 
-```sh
-cp .env.example .env
-```
+插件不会读取项目 `.env`。如果选择用环境变量配置，必须把变量注入 OpenCode 服务进程本身，
+可参考 `.env.example`；`cp .env.example .env` 不会生效。
 
 | 选项                                | 环境变量                        | 默认值          | 说明                                            |
 | ----------------------------------- | ------------------------------- | --------------- | ----------------------------------------------- |
@@ -158,6 +161,7 @@ bun run format      # prettier --write .
 src/
   config.ts          配置合并与校验
   index.ts           插件入口
+  instance.ts        插件重载时的实例接管
   logger.ts          日志
   naplink/client.ts  NapLink 连接与 API 门面
   naplink/render.ts  消息段 → 文本与图片附件

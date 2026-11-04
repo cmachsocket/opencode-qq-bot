@@ -2,6 +2,7 @@ import { Plugin } from "@opencode/plugin"
 import type { GroupMessageEvent, MessageEvent } from "@naplink/naplink"
 import { type ChatTarget, configuredTargets, isTargetEnabled, targetKey, targetLabel } from "./chat"
 import { resolveConfig, type QQBotConfig } from "./config"
+import { claimInstance } from "./instance"
 import { createLogger } from "./logger"
 import { QQClient } from "./naplink/client"
 import { createMediaStore } from "./naplink/media"
@@ -40,6 +41,16 @@ export default Plugin.define({
       logger.warn(
         "未配置目标群号或私聊 QQ 号，插件不会响应任何消息（请设置 groups/users 或 QQ_TARGET_GROUPS/QQ_TARGET_USERS）",
       )
+    }
+
+    // OpenCode 重新加载插件时未必调用旧的清理函数，接管同一连接的单例并主动卸载旧实例。
+    const { previous, lease } = claimInstance(`${ctx.location.directory}\n${config.napcat.url}`)
+    if (previous?.dispose) {
+      try {
+        await previous.dispose()
+      } catch (error) {
+        logger.error("卸载旧插件实例失败", error)
+      }
     }
 
     const soulPath = resolveSoulPath(config.soulPath, packageDirectory(), process.cwd())
@@ -213,7 +224,10 @@ export default Plugin.define({
       agent: config.agent ?? "(默认)",
     })
 
-    return async () => {
+    let disposed = false
+    const dispose = async () => {
+      if (disposed) return
+      disposed = true
       if (timer) clearInterval(timer)
       clearInterval(mediaCleanup)
       idleAbort.abort()
@@ -222,7 +236,10 @@ export default Plugin.define({
       await contextRegistration.dispose()
       await idleRegistration.dispose()
       client.dispose()
+      lease.release()
       logger.info("插件已卸载")
     }
+    lease.setDispose(dispose)
+    return dispose
   },
 })
