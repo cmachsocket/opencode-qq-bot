@@ -84,6 +84,14 @@ describe("shouldProcess", () => {
   it("rejects unsupported segments", () => {
     expect(shouldProcess([{ type: "face", data: { id: "1" } }])).toBe(false)
   })
+
+  it("accepts a message that only mentions the bot", () => {
+    expect(shouldProcess([{ type: "at", data: { qq: "999" } }], "999")).toBe(true)
+  })
+
+  it("accepts a reply without text", () => {
+    expect(shouldProcess([{ type: "reply", data: { id: "5" } }])).toBe(true)
+  })
 })
 
 describe("mentionsUser", () => {
@@ -124,6 +132,14 @@ describe("resolveUserName", () => {
     })
     const name = await resolveUserName(ctx(api), "200")
     expect(name).toBe("未知用户")
+  })
+
+  it("caches names per group", async () => {
+    const api = makeApi()
+    const renderCtx = { ...ctx(api), names: new Map() }
+    await resolveUserName(renderCtx, "200")
+    await resolveUserName(renderCtx, "200")
+    expect(api.getGroupMemberInfo).toHaveBeenCalledTimes(1)
   })
 })
 
@@ -249,6 +265,16 @@ describe("renderMessage", () => {
     expect(rendered.text).toContain("<forward>")
     expect(rendered.text).toContain("甲群名片：转发内容")
     expect(rendered.text).toContain("</forward>")
+  })
+
+  it("keeps forward nodes without a sender", async () => {
+    const api = makeApi({
+      getForwardMessage: vi.fn(async () => ({
+        messages: [{ message: [{ type: "text", data: { text: "匿名内容" } }] }],
+      })),
+    })
+    const rendered = await renderMessage(ctx(api), makeEvent([forwardSegment("9")]))
+    expect(rendered.text).toContain("未知用户：匿名内容")
   })
 
   it("replaces an at segment with the user name", async () => {
