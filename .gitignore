@@ -1,0 +1,10 @@
+node_modules/
+dist/
+coverage/
+*.log
+.DS_Store
+
+# 凭证：只保留 .env.example 模板
+.env
+.env.*
+!.env.example

@@ -1,0 +1,163 @@
+import { describe, expect, it, vi } from "vitest"
+import type { Plugin } from "@opencode/plugin"
+import { SessionManager, mergeTurns } from "../src/session/manager"
+import { DEFAULT_CONFIG, type QQBotConfig } from "../src/config"
+import type { Logger } from "../src/logger"
+
+const logger: Logger = {
+  debug: () => {},
+  info: () => {},
+  warn: () => {},
+  error: () => {},
+}
+
+interface Harness {
+  manager: SessionManager
+  prompts: Array<{ sessionID: string; text: string }>
+  synthetics: Array<{ sessionID: string; text: string }>
+}
+
+function createHarness(overrides: Partial<QQBotConfig> = {}): Harness {
+  const prompts: Harness["prompts"] = []
+  const synthetics: Harness["synthetics"] = []
+  let created = 0
+
+  const ctx = {
+    location: { directory: "/tmp" },
+    session: {
+      create: vi.fn(async () => {
+        created += 1
+        return { id: `session-${created}` }
+      }),
+      prompt: vi.fn(async (input: { sessionID: string; text: string }) => {
+        prompts.push(input)
+      }),
+      synthetic: vi.fn(async (input: { sessionID: string; text: string }) => {
+        synthetics.push(input)
+      }),
+      list: vi.fn(async () => ({ data: [], cursor: {} })),
+    },
+  } as unknown as Plugin.Context
+
+  const config: QQBotConfig = {
+    ...DEFAULT_CONFIG,
+    napcat: { url: "ws://127.0.0.1:3001" },
+    groups: [100],
+    ...overrides,
+  }
+
+  return {
+    manager: new SessionManager(ctx, config, logger),
+    prompts,
+    synthetics,
+  }
+}
+
+describe("mergeTurns", () => {
+  it("joins texts, collects files and keeps the at flag", () => {
+    const merged = mergeTurns([
+      { text: "第一条", files: [{ uri: "data:image/png;base64,AA", name: "a.png" }], atMe: false },
+      { text: "第二条", files: [{ uri: "data:image/png;base64,BB", name: "b.png" }], atMe: true },
+    ])
+    expect(merged.text).toBe("第一条\n第二条")
+    expect(merged.files).toHaveLength(2)
+    expect(merged.atMe).toBe(true)
+  })
+
+  it("drops empty turns", () => {
+    const merged = mergeTurns([{ text: "  ", files: [], atMe: false }])
+    expect(merged.text).toBe("")
+  })
+})
+
+describe("SessionManager", () => {
+  it("creates a session and dispatches the first message", async () => {
+    const { manager, prompts } = createHarness()
+    await manager.enqueue(100, { text: "你好", files: [], atMe: false })
+    expect(prompts).toHaveLength(1)
+    expect(prompts[0]?.text).toBe("你好")
+    expect(manager.groupForSession("session-1")).toBe(100)
+  })
+
+  it("buffers messages while the session is busy and flushes them on idle", async () => {
+    const { manager, prompts } = createHarness()
+    await manager.enqueue(100, { text: "第一条", files: [], atMe: false })
+    await manager.enqueue(100, { text: "第二条", files: [], atMe: false })
+    expect(prompts).toHaveLength(1)
+
+    await manager.handleIdle("session-1")
+    expect(prompts).toHaveLength(2)
+    expect(prompts[1]?.text).toBe("第二条")
+  })
+
+  it("merges several buffered messages into one prompt", async () => {
+    const { manager, prompts } = createHarness()
+    await manager.enqueue(100, { text: "第一条", files: [], atMe: false })
+    await manager.enqueue(100, { text: "第二条", files: [], atMe: false })
+    await manager.enqueue(100, { text: "第三条", files: [], atMe: false })
+
+    await manager.handleIdle("session-1")
+    expect(prompts).toHaveLength(2)
+    expect(prompts[1]?.text).toBe("第二条\n第三条")
+  })
+
+  it("reminds the model when it never called the send tool", async () => {
+    const { manager, synthetics } = createHarness()
+    await manager.enqueue(100, { text: "你好", files: [], atMe: false })
+    await manager.handleIdle("session-1")
+    expect(synthetics).toHaveLength(1)
+    expect(synthetics[0]?.text).toContain("qq_send_message")
+  })
+
+  it("stops reminding once the send tool was called", async () => {
+    const { manager, synthetics } = createHarness()
+    await manager.enqueue(100, { text: "你好", files: [], atMe: false })
+    manager.markMessageSent("session-1")
+    await manager.handleIdle("session-1")
+    expect(synthetics).toHaveLength(0)
+  })
+
+  it("caps the number of reminders", async () => {
+    const { manager, synthetics } = createHarness({ reminder: { enabled: true, max: 1 } })
+    await manager.enqueue(100, { text: "你好", files: [], atMe: false })
+    await manager.handleIdle("session-1")
+    await manager.handleIdle("session-1")
+    expect(synthetics).toHaveLength(1)
+  })
+
+  it("ignores idle events of unrelated sessions", async () => {
+    const { manager, synthetics } = createHarness()
+    await manager.handleIdle("unknown")
+    expect(synthetics).toHaveLength(0)
+  })
+
+  it("reuses an existing session when reuseSession is enabled", async () => {
+    const { manager, prompts } = createHarness({ reuseSession: true })
+    await manager.enqueue(100, { text: "你好", files: [], atMe: false })
+    expect(prompts).toHaveLength(1)
+  })
+
+  it("skips the reminder while background work is still running", async () => {
+    const { manager, synthetics } = createHarness()
+    await manager.enqueue(100, { text: "你好", files: [], atMe: false })
+    await manager.handleIdle("session-1", 1)
+    expect(synthetics).toHaveLength(0)
+  })
+
+  it("releases buffered messages when the session stays busy past the timeout", async () => {
+    vi.useFakeTimers()
+    try {
+      const { manager, prompts } = createHarness({ busyTimeoutMs: 1000 })
+      await manager.enqueue(100, { text: "第一条", files: [], atMe: false })
+      await manager.enqueue(100, { text: "第二条", files: [], atMe: false })
+      expect(prompts).toHaveLength(1)
+
+      vi.advanceTimersByTime(1500)
+      await manager.enqueue(100, { text: "第三条", files: [], atMe: false })
+      expect(prompts).toHaveLength(2)
+      expect(prompts[1]?.text).toBe("第二条\n第三条")
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+})

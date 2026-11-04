@@ -1,0 +1,272 @@
+import type { Plugin } from "@opencode/plugin"
+import type { QQBotConfig } from "../config"
+import type { Logger } from "../logger"
+import type { PromptFile } from "../naplink/render"
+
+export interface Turn {
+  /** 交给模型的文本。 */
+  text: string
+  /** 图片附件。 */
+  files: PromptFile[]
+  /** 本轮是否 @ 了机器人。 */
+  atMe: boolean
+}
+
+interface GroupState {
+  groupId: number
+  sessionID?: string
+  /** 会话是否正在跑模型（收到消息到 idle 之间）。 */
+  busy: boolean
+  /** 进入忙碌状态的时间戳（毫秒），用于识别卡死的会话。 */
+  busySince: number
+  /** 忙碌期间攒下的消息，空闲后合并成一次 prompt。 */
+  buffer: Turn[]
+  /** 当前轮次的消息，供系统提示注入 @ 提示。 */
+  current?: Turn
+  /** 当前轮次模型是否还没调用发送工具。 */
+  awaitingSend: boolean
+  /** 连续提醒次数，防止死循环。 */
+  reminders: number
+  /** 最近一次真实用户消息的时间戳（毫秒）。 */
+  lastUserMessageAt: number
+}
+
+export function mergeTurns(turns: readonly Turn[]): Turn {
+  return {
+    text: turns
+      .map((turn) => turn.text.trim())
+      .filter((text) => text.length > 0)
+      .join("\n"),
+    files: turns.flatMap((turn) => turn.files),
+    atMe: turns.some((turn) => turn.atMe),
+  }
+}
+
+/**
+ * 管理 QQ 群与 OpenCode 会话的映射。
+ *
+ * 一个群对应一个会话；会话忙碌时新到的消息先缓存，
+ * 等会话进入 idle 之后再合并成一次 prompt 发进去。
+ */
+export class SessionManager {
+  private readonly groups = new Map<number, GroupState>()
+  private readonly sessions = new Map<string, GroupState>()
+
+  constructor(
+    private readonly ctx: Plugin.Context,
+    private readonly config: QQBotConfig,
+    private readonly logger: Logger,
+  ) {}
+
+  private state(groupId: number): GroupState {
+    let state = this.groups.get(groupId)
+    if (!state) {
+      state = {
+        groupId,
+        busy: false,
+        busySince: 0,
+        buffer: [],
+        awaitingSend: false,
+        reminders: 0,
+        lastUserMessageAt: Date.now(),
+      }
+      this.groups.set(groupId, state)
+    }
+    return state
+  }
+
+  /** 会话 ID 反查群号。 */
+  groupForSession(sessionID: string): number | undefined {
+    return this.sessions.get(sessionID)?.groupId
+  }
+
+  /** 当前轮次的消息。 */
+  currentTurn(sessionID: string): Turn | undefined {
+    return this.sessions.get(sessionID)?.current
+  }
+
+  /** 标记模型已经调用过发送工具。 */
+  markMessageSent(sessionID: string): void {
+    const state = this.sessions.get(sessionID)
+    if (!state) return
+    state.awaitingSend = false
+    state.reminders = 0
+  }
+
+  /** 记录一次真实用户消息的时间。 */
+  touch(groupId: number): void {
+    this.state(groupId).lastUserMessageAt = Date.now()
+  }
+
+  /** 距上次用户消息的沉默时长（秒）。 */
+  silenceSeconds(groupId: number): number {
+    return (Date.now() - this.state(groupId).lastUserMessageAt) / 1000
+  }
+
+  /**
+   * 收到一条群消息：空闲则直接投进会话，忙则先缓存。
+   */
+  async enqueue(groupId: number, turn: Turn): Promise<void> {
+    const state = this.state(groupId)
+    if (state.busy) {
+      // 会话异常中断时 idle 回调不会触发，超过超时阈值就当卡死处理。
+      if (Date.now() - state.busySince <= this.config.busyTimeoutMs) {
+        state.buffer.push(turn)
+        this.logger.debug(`群 ${groupId} 忙碌中，消息已缓存（累计 ${state.buffer.length} 条）`)
+        return
+      }
+      this.logger.warn(`群 ${groupId} 会话超时未结束，强制放行缓存消息`)
+      state.busy = false
+      state.busySince = 0
+      state.current = undefined
+      const buffered = state.buffer
+      state.buffer = []
+      await this.dispatch(groupId, state, mergeTurns([...buffered, turn]))
+      return
+    }
+    await this.dispatch(groupId, state, turn)
+  }
+
+  /** 把一轮消息投进 OpenCode 会话。 */
+  private async dispatch(groupId: number, state: GroupState, turn: Turn): Promise<void> {
+    if (state.busy) return
+    // 先同步占位，避免并发消息重复投递
+    state.busy = true
+    state.busySince = Date.now()
+    state.current = turn
+    state.awaitingSend = true
+    try {
+      const sessionID = await this.ensureSession(groupId)
+      if (!sessionID) {
+        state.busy = false
+        state.busySince = 0
+        state.current = undefined
+        state.awaitingSend = false
+        return
+      }
+      await this.ctx.session.prompt({
+        sessionID,
+        text: turn.text,
+        ...(turn.files.length > 0 ? { files: turn.files } : {}),
+      })
+      this.logger.debug(`群 ${groupId} 已投递消息到会话 ${sessionID}`)
+    } catch (error) {
+      state.busy = false
+      state.busySince = 0
+      state.current = undefined
+      state.awaitingSend = false
+      this.logger.error(`群 ${groupId} 投递消息失败`, error)
+    }
+  }
+
+  /**
+   * 会话进入 idle：清掉忙碌标记，合并缓存的消息再投一轮；
+   * 若模型这一轮完全没调用发送工具，则提醒它补一次。
+   *
+   * `background` 是仍在运行的后台任务数；后台任务会把会话再次唤醒，
+   * 这时先不提醒，等真正空闲再说。
+   */
+  async handleIdle(sessionID: string, background = 0): Promise<void> {
+    const state = this.sessions.get(sessionID)
+    if (!state) return
+
+    state.busy = false
+    state.busySince = 0
+    state.current = undefined
+
+    if (state.buffer.length > 0) {
+      const turns = state.buffer
+      state.buffer = []
+      this.logger.debug(`群 ${state.groupId} 空闲，合并 ${turns.length} 条缓存消息`)
+      await this.dispatch(state.groupId, state, mergeTurns(turns))
+      return
+    }
+
+    if (background > 0) return
+
+    if (
+      state.awaitingSend &&
+      this.config.reminder.enabled &&
+      state.reminders < this.config.reminder.max
+    ) {
+      state.reminders += 1
+      this.logger.warn(`群 ${state.groupId} 模型未调用发送工具，提醒第 ${state.reminders} 次`)
+      try {
+        await this.ctx.session.synthetic({
+          sessionID,
+          text: `[提醒] 你这一轮没有调用 ${"qq_send_message"} 工具，直接输出的文字会被丢弃。请调用 qq_send_message 工具：想回复就 reply=true 并给出 content，不想回复就 reply=false。`,
+        })
+      } catch (error) {
+        this.logger.error(`群 ${state.groupId} 发送提醒失败`, error)
+      }
+    }
+  }
+
+  /** 取得（必要时创建）群对应的会话。 */
+  async ensureSession(groupId: number): Promise<string | undefined> {
+    const state = this.state(groupId)
+    if (state.sessionID) return state.sessionID
+
+    if (this.config.reuseSession) {
+      const reused = await this.findExistingSession(groupId)
+      if (reused) {
+        state.sessionID = reused
+        this.sessions.set(reused, state)
+        this.logger.info(`群 ${groupId} 复用已有会话 ${reused}`)
+        return reused
+      }
+    }
+
+    const created = await this.ctx.session.create({
+      title: `QQ 群 ${groupId}`,
+      ...(this.config.agent ? { agent: this.config.agent } : {}),
+      ...(this.config.model ? { model: this.config.model } : {}),
+      metadata: { qqGroupId: groupId },
+    })
+    state.sessionID = created.id
+    this.sessions.set(created.id, state)
+    this.logger.info(`群 ${groupId} 新建会话 ${created.id}`)
+    return created.id
+  }
+
+  /** 查找带相同群号标记的历史会话。 */
+  private async findExistingSession(groupId: number): Promise<string | undefined> {
+    try {
+      const page = await this.ctx.session.list({
+        directory: this.ctx.location.directory,
+        limit: 100,
+      })
+      const hit = page.data.find((session) => session.metadata?.["qqGroupId"] === groupId)
+      return hit?.id
+    } catch (error) {
+      this.logger.warn(`查找历史会话失败 group=${groupId}`, error)
+      return undefined
+    }
+  }
+
+  /** 该群是否已经建立过会话（主动说话需要历史上下文）。 */
+  hasSession(groupId: number): boolean {
+    return this.groups.get(groupId)?.sessionID !== undefined
+  }
+
+  /** 主动说话：向群里对应的会话投递一条合成消息。 */
+  async proactive(groupId: number, text: string): Promise<void> {
+    const state = this.state(groupId)
+    if (state.busy) return
+    const sessionID = await this.ensureSession(groupId)
+    if (!sessionID) return
+    state.busy = true
+    state.busySince = Date.now()
+    state.current = { text, files: [], atMe: false }
+    state.awaitingSend = true
+    try {
+      await this.ctx.session.synthetic({ sessionID, text })
+    } catch (error) {
+      state.busy = false
+      state.busySince = 0
+      state.current = undefined
+      state.awaitingSend = false
+      this.logger.error(`群 ${groupId} 主动说话失败`, error)
+    }
+  }
+}

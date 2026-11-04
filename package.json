@@ -1,0 +1,45 @@
+{
+  "name": "opencode-qq-bot",
+  "version": "0.1.0",
+  "description": "OpenCode V2 plugin bridging a QQ group chat (NapCat via NapLink) to an OpenCode session.",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "files": [
+    "src",
+    "SOUL.txt",
+    "README.md"
+  ],
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "format": "prettier --write .",
+    "test": "vitest run"
+  },
+  "keywords": [
+    "opencode",
+    "opencode-plugin",
+    "napcat",
+    "naplink",
+    "onebot",
+    "qq"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "@naplink/naplink": "^1.2.0",
+    "@opencode/plugin": "latest"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "@vitest/coverage-v8": "^5.1.0",
+    "eslint": "^10.14.0",
+    "prettier": "^3.9.10",
+    "typescript": "^6.0.3",
+    "typescript-eslint": "^8.72.1",
+    "vitest": "^5.1.0"
+  },
+  "peerDependencies": {
+    "typescript": ">=5.9.0 <6.1.0"
+  }
+}
