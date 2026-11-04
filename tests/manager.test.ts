@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest"
 import type { Plugin } from "@opencode/plugin"
-import { SessionManager, mergeTurns } from "../src/session/manager"
+import { MAX_BUFFER_TURNS, SessionManager, mergeTurns } from "../src/session/manager"
 import { DEFAULT_CONFIG, type QQBotConfig } from "../src/config"
 import { MAX_PROMPT_IMAGES } from "../src/naplink/render"
 import type { Logger } from "../src/logger"
@@ -20,6 +20,7 @@ interface Harness {
     get: ReturnType<typeof vi.fn>
     set: ReturnType<typeof vi.fn>
   }
+  sessionGet: ReturnType<typeof vi.fn>
 }
 
 function createHarness(
@@ -35,6 +36,7 @@ function createHarness(
     get: vi.fn(async () => stored),
     set: vi.fn(async () => {}),
   }
+  const sessionGet = vi.fn(async (input: { sessionID: string }) => ({ id: input.sessionID }))
 
   const ctx = {
     location: { directory: "/tmp" },
@@ -45,6 +47,8 @@ function createHarness(
         created += 1
         return { id: `session-${created}` }
       }),
+      get: sessionGet,
+      remove: vi.fn(async () => {}),
       prompt: vi.fn(async (input: { sessionID: string; text: string }) => {
         prompts.push(input)
       }),
@@ -67,6 +71,7 @@ function createHarness(
     prompts,
     synthetics,
     storage,
+    sessionGet,
   }
 }
 
@@ -206,14 +211,14 @@ describe("SessionManager", () => {
   it("skips the reminder while background work is still running", async () => {
     const { manager, synthetics } = createHarness()
     await manager.enqueue(100, { text: "你好", files: [], atMe: false })
-    await manager.handleIdle("session-1", 1)
+    await manager.handleIdle("session-1", [{ sessionID: "session-1" }])
     expect(synthetics).toHaveLength(0)
   })
 
-  it("keeps the session busy while background work is still running", async () => {
+  it("keeps the session busy while its own background work is still running", async () => {
     const { manager, prompts } = createHarness()
     await manager.enqueue(100, { text: "第一条", files: [], atMe: false })
-    await manager.handleIdle("session-1", 1)
+    await manager.handleIdle("session-1", [{ sessionID: "session-1" }])
 
     // 后台任务还在跑，新消息必须排队，不能插进正在执行的会话。
     await manager.enqueue(100, { text: "第二条", files: [], atMe: false })
@@ -225,6 +230,26 @@ describe("SessionManager", () => {
     await manager.flushBuffered("session-1")
     expect(prompts).toHaveLength(2)
     expect(prompts[1]?.text).toBe("第二条")
+  })
+
+  it("ignores background work owned by descendant sessions", async () => {
+    const { manager, prompts } = createHarness()
+    await manager.enqueue(100, { text: "第一条", files: [], atMe: false })
+    manager.markMessageSent("session-1")
+    await manager.handleIdle("session-1", [{ sessionID: "child-session" }])
+
+    await manager.enqueue(100, { text: "第二条", files: [], atMe: false })
+    expect(prompts).toHaveLength(2)
+    expect(prompts[1]?.text).toBe("第二条")
+  })
+
+  it("releases stale busy state on an idle event without buffered messages", async () => {
+    const { manager, prompts } = createHarness()
+    await manager.enqueue(100, { text: "第一条", files: [], atMe: false })
+    // 模拟控制类工作只发 session.idle、不触发 idle 钩子。
+    await manager.flushBuffered("session-1")
+    await manager.enqueue(100, { text: "第二条", files: [], atMe: false })
+    expect(prompts).toHaveLength(2)
   })
 
   it("does not flush the same buffered messages twice", async () => {
@@ -258,12 +283,74 @@ describe("SessionManager", () => {
       await manager.enqueue(100, { text: "第二条", files: [], atMe: false })
       expect(prompts).toHaveLength(1)
 
-      vi.advanceTimersByTime(1500)
-      await manager.enqueue(100, { text: "第三条", files: [], atMe: false })
+      // 即使群里没有新消息，看门狗也会在超时后放行缓存。
+      await vi.advanceTimersByTimeAsync(1500)
       expect(prompts).toHaveLength(2)
-      expect(prompts[1]?.text).toBe("第二条\n第三条")
+      expect(prompts[1]?.text).toBe("第二条")
     } finally {
       vi.useRealTimers()
     }
+  })
+
+  it("releases the busy state when the model execution fails", async () => {
+    const { manager, prompts } = createHarness()
+    await manager.enqueue(100, { text: "第一条", files: [], atMe: false })
+    await manager.enqueue(100, { text: "第二条", files: [], atMe: false })
+    expect(prompts).toHaveLength(1)
+
+    await manager.handleExecutionEnd("session-1", "session.execution.failed")
+    expect(prompts).toHaveLength(2)
+    expect(prompts[1]?.text).toBe("第二条")
+  })
+
+  it("creates only one session for concurrent ensureSession calls", async () => {
+    const { manager } = createHarness()
+    const [first, second] = await Promise.all([
+      manager.ensureSession(100),
+      manager.ensureSession(100),
+    ])
+    expect(first).toBe("session-1")
+    expect(second).toBe("session-1")
+  })
+
+  it("rebuilds a binding when the restored session no longer exists", async () => {
+    const { manager, prompts, sessionGet } = createHarness({}, undefined, { "100": "gone" })
+    sessionGet.mockRejectedValueOnce(new Error("not found"))
+    await manager.load()
+    await manager.enqueue(100, { text: "你好", files: [], atMe: false })
+    expect(prompts[0]?.sessionID).toBe("session-1")
+    expect(manager.groupForSession("gone")).toBeUndefined()
+  })
+
+  it("does not create a proactive turn while the group is busy", async () => {
+    const { manager, synthetics } = createHarness()
+    await manager.enqueue(100, { text: "你好", files: [], atMe: false })
+    await manager.proactive(100, "主动话题")
+    expect(synthetics).toHaveLength(0)
+  })
+
+  it("drops the oldest buffered messages when the buffer is full", async () => {
+    const { manager, prompts } = createHarness()
+    await manager.enqueue(100, { text: "first", files: [], atMe: false })
+    for (let index = 0; index < MAX_BUFFER_TURNS + 5; index += 1) {
+      await manager.enqueue(100, { text: `buffered-${index}`, files: [], atMe: false })
+    }
+    await manager.handleIdle("session-1")
+    await manager.flushBuffered("session-1")
+    const merged = prompts[1]?.text ?? ""
+    expect(merged).not.toContain("buffered-0")
+    expect(merged).toContain(`buffered-${MAX_BUFFER_TURNS + 4}`)
+  })
+
+  it("flushes bindings and activity to storage", async () => {
+    const { manager, storage } = createHarness()
+    manager.touch(100)
+    await manager.enqueue(100, { text: "你好", files: [], atMe: false })
+    await manager.flush()
+    expect(storage.set).toHaveBeenCalledWith("bindings", { "100": "session-1" })
+    expect(storage.set).toHaveBeenCalledWith(
+      "activity",
+      expect.objectContaining({ "100": expect.any(Number) }),
+    )
   })
 })
