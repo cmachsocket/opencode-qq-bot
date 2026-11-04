@@ -1,5 +1,4 @@
 import {
-  ConnectionState,
   NapLink,
   type GroupMessageEvent,
   type MessageSegment,
@@ -12,6 +11,7 @@ import type { NapcatConfig } from "../config"
 export class QQClient {
   private readonly link: NapLink
   private botId: string | undefined
+  private botIdRequest: Promise<void> | undefined
 
   constructor(
     private readonly config: NapcatConfig,
@@ -25,10 +25,16 @@ export class QQClient {
       },
       reconnect: {
         enabled: true,
-        maxAttempts: 10,
+        maxAttempts: Number.POSITIVE_INFINITY,
         backoff: { initial: 1000, max: 30_000, multiplier: 2 },
       },
-      logging: { level: "warn" },
+      logging: { level: "warn", logger },
+    })
+    // 每次（重）连成功都刷新机器人 QQ 号，自动重连后 selfId 依然可用。
+    this.link.on("connect", () => {
+      void this.refreshBotId().then(() => {
+        this.logger.info("NapCat 已连接", this.config.url, this.botId ? `bot=${this.botId}` : "")
+      })
     })
   }
 
@@ -43,20 +49,29 @@ export class QQClient {
   async connect(): Promise<void> {
     await this.link.connect()
     await this.refreshBotId()
-    this.logger.info("NapCat 已连接", this.config.url, this.botId ? `bot=${this.botId}` : "")
   }
 
-  /** 读取机器人自己的 QQ 号。 */
-  private async refreshBotId(): Promise<void> {
-    const info = (await this.api.getLoginInfo()) as { user_id?: number | string } | undefined
-    this.botId = info?.user_id !== undefined ? String(info.user_id) : undefined
+  /** 读取机器人自己的 QQ 号，并发调用时复用同一个请求。 */
+  private refreshBotId(): Promise<void> {
+    this.botIdRequest ??= this.loadBotId().finally(() => {
+      this.botIdRequest = undefined
+    })
+    return this.botIdRequest
+  }
+
+  private async loadBotId(): Promise<void> {
+    try {
+      const info = (await this.api.getLoginInfo()) as { user_id?: number | string } | undefined
+      this.botId = info?.user_id !== undefined ? String(info.user_id) : undefined
+    } catch (error) {
+      this.logger.warn("读取机器人 QQ 号失败", error)
+    }
   }
 
   /**
    * 连接 NapCat，失败时只记录日志。
    *
-   * 插件加载不应该因为 NapCat 暂时离线而失败，
-   * 后续由重连循环或下一次调用补上连接。
+   * 后续重连由 NapLink 自己负责，插件加载不应该因为 NapCat 暂时离线而失败。
    */
   async connectSafe(): Promise<boolean> {
     try {
@@ -64,21 +79,6 @@ export class QQClient {
       return true
     } catch (error) {
       this.logger.error("连接 NapCat 失败", error)
-      return false
-    }
-  }
-
-  /** 未连接时尝试补一次连接，成功后刷新机器人 QQ 号。 */
-  async ensureConnected(): Promise<boolean> {
-    const state = this.link.getState()
-    if (state === ConnectionState.CONNECTED) return true
-    // NapLink 自己在重连时不插手，避免重复建连。
-    if (state === ConnectionState.CONNECTING || state === ConnectionState.RECONNECTING) return false
-    try {
-      await this.connect()
-      return true
-    } catch (error) {
-      this.logger.warn("重连 NapCat 失败", error)
       return false
     }
   }

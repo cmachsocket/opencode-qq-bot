@@ -28,7 +28,8 @@
   "license": "MIT",
   "dependencies": {
     "@naplink/naplink": "^1.2.0",
-    "@opencode/plugin": "latest"
+    "@opencode/plugin": "latest",
+    "@opencode/schema": "2.2.5"
   },
   "devDependencies": {
     "@types/bun": "latest",

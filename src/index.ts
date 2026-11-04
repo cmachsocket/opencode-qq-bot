@@ -15,9 +15,6 @@ import {
 } from "./session/prompt"
 import { registerTools } from "./tools/qq"
 
-/** NapCat 掉线后的重连间隔（毫秒）。 */
-const RECONNECT_INTERVAL_MS = 30_000
-
 export default Plugin.define({
   id: "opencode-qq-bot",
   async setup(ctx) {
@@ -92,19 +89,6 @@ export default Plugin.define({
       void handleMessage(event)
     })
 
-    // 重连循环：NapCat 离线时定期补一次连接。
-    let reconnecting = false
-    const reconnectTimer = setInterval(() => {
-      if (reconnecting) return
-      reconnecting = true
-      void client
-        .ensureConnected()
-        .catch(() => false)
-        .finally(() => {
-          reconnecting = false
-        })
-    }, RECONNECT_INTERVAL_MS)
-
     // 主动说话心跳。
     let timer: ReturnType<typeof setInterval> | undefined
     if (config.proactive.enabled) {
@@ -136,7 +120,6 @@ export default Plugin.define({
 
     return async () => {
       if (timer) clearInterval(timer)
-      clearInterval(reconnectTimer)
       await toolRegistration.dispose()
       await contextRegistration.dispose()
       await idleRegistration.dispose()

@@ -27,27 +27,27 @@ export interface RenderContext {
   logger: Logger
 }
 
-function segmentType(segment: MessageSegment): string {
-  return (segment as { type?: string }).type ?? "unknown"
+/** NapCat 的 forward 段不在 SDK 类型里，这里补进判别联合。 */
+interface ForwardSegment {
+  type: "forward"
+  data: { id?: string }
 }
 
-/** NapCat 的 forward 段没有类型定义，这里做一次宽松读取。 */
-function forwardId(segment: MessageSegment): string | undefined {
-  const data = (segment as { data?: { id?: string } }).data
-  return data?.id
+type Segment = MessageSegment | ForwardSegment
+
+function segments(message: readonly MessageSegment[]): readonly Segment[] {
+  return message as readonly Segment[]
 }
 
 /** 判断消息是否含有值得交给模型的内容。 */
 export function shouldProcess(message: readonly MessageSegment[]): boolean {
-  return message.some((segment) => {
-    switch (segmentType(segment)) {
-      case "text": {
-        const text = (segment as { data: { text?: string } }).data.text ?? ""
-        return text.trim().length > 0
-      }
+  return segments(message).some((segment) => {
+    switch (segment.type) {
+      case "text":
+        return segment.data.text.trim().length > 0
       case "image":
-      case "forward":
       case "record":
+      case "forward":
         return true
       default:
         return false
@@ -61,35 +61,21 @@ export function mentionsUser(
   userId: string | undefined,
 ): boolean {
   if (!userId) return false
-  return message.some(
-    (segment) =>
-      segmentType(segment) === "at" &&
-      String((segment as { data: { qq?: string } }).data.qq ?? "") === userId,
-  )
+  return segments(message).some((segment) => segment.type === "at" && segment.data.qq === userId)
 }
 
-function mimeFromBytes(bytes: Uint8Array): string {
-  if (
-    bytes.length >= 8 &&
-    bytes[0] === 0x89 &&
-    bytes[1] === 0x50 &&
-    bytes[2] === 0x4e &&
-    bytes[3] === 0x47
-  )
-    return "image/png"
-  if (bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff)
-    return "image/jpeg"
-  if (bytes.length >= 6) {
-    const header = String.fromCharCode(...bytes.slice(0, 6))
-    if (header === "GIF87a" || header === "GIF89a") return "image/gif"
-  }
-  if (
-    bytes.length >= 12 &&
-    String.fromCharCode(...bytes.slice(0, 4)) === "RIFF" &&
-    String.fromCharCode(...bytes.slice(8, 12)) === "WEBP"
-  )
-    return "image/webp"
-  return "image/png"
+const MIME_EXTENSIONS: Record<string, string> = {
+  "image/png": "png",
+  "image/jpeg": "jpg",
+  "image/gif": "gif",
+  "image/webp": "webp",
+}
+
+/** 从 data URL 的 MIME 推断文件扩展名。 */
+function extensionFor(dataUrl: string): string {
+  if (!dataUrl.startsWith("data:")) return "png"
+  const mime = dataUrl.slice("data:".length, dataUrl.indexOf(";"))
+  return MIME_EXTENSIONS[mime] ?? "png"
 }
 
 /**
@@ -114,7 +100,7 @@ export async function toInlineImage(url: string, logger: Logger): Promise<string
       return undefined
     }
     const declared = response.headers.get("content-type")?.split(";")[0]?.trim()
-    const mime = declared?.startsWith("image/") ? declared : mimeFromBytes(buffer)
+    const mime = declared?.startsWith("image/") ? declared : "image/png"
     return `data:${mime};base64,${Buffer.from(buffer).toString("base64")}`
   } catch (error) {
     logger.warn(`下载图片异常 url=${url}`, error)
@@ -143,23 +129,22 @@ interface ForwardContent {
 
 async function renderForwardSegments(
   ctx: RenderContext,
-  segments: readonly MessageSegment[],
+  message: readonly MessageSegment[],
   depth: number,
 ): Promise<ForwardContent> {
   const parts: string[] = []
   const images: string[] = []
-  for (const segment of segments) {
-    switch (segmentType(segment)) {
+  for (const segment of segments(message)) {
+    switch (segment.type) {
       case "text":
-        parts.push((segment as { data: { text?: string } }).data.text ?? "")
+        parts.push(segment.data.text)
         break
       case "at":
-        parts.push(`@${(segment as { data: { qq?: string } }).data.qq ?? ""} `)
+        parts.push(`@${segment.data.qq} `)
         break
       case "image": {
         parts.push("[图片]")
-        const data = (segment as { data: { url?: string; file?: string } }).data
-        const url = data.url || data.file || ""
+        const url = segment.data.url || segment.data.file
         if (url && images.length < MAX_FORWARD_IMAGES) {
           const inline = await toInlineImage(url, ctx.logger)
           if (inline) images.push(inline)
@@ -175,11 +160,9 @@ async function renderForwardSegments(
       case "audio":
         parts.push("[音频]")
         break
-      case "file": {
-        const data = (segment as { data: { file?: string; name?: string } }).data
-        parts.push(`[文件]${data.name || data.file || ""}`)
+      case "file":
+        parts.push(`[文件]${segment.data.name || segment.data.file}`)
         break
-      }
       case "face":
         parts.push("[表情]")
         break
@@ -200,7 +183,7 @@ async function renderForwardSegments(
           parts.push("[嵌套合并转发]")
           break
         }
-        const nested = await renderForward(ctx, forwardId(segment), depth + 1)
+        const nested = await renderForward(ctx, segment.data.id, depth + 1)
         parts.push(nested.text)
         images.push(...nested.images.slice(0, MAX_FORWARD_IMAGES - images.length))
         break
@@ -288,77 +271,73 @@ export async function renderMessage(
 ): Promise<RenderedMessage> {
   const textBuffer: string[] = []
   const files: PromptFile[] = []
+  const message = segments(event.message)
 
-  const replySegments = event.message.filter((segment) => segmentType(segment) === "reply")
+  const replySegments = message.filter((segment) => segment.type === "reply")
   if (replySegments.length > 0) {
     const quoteLines = ["<quote>"]
     for (const segment of replySegments) {
-      const id = (segment as { data: { id?: string } }).data.id
-      if (!id) continue
+      if (!segment.data.id) continue
       try {
-        const data = (await ctx.api.getMessage(id)) as
+        const data = (await ctx.api.getMessage(segment.data.id)) as
           { sender?: { user_id?: number }; message?: MessageSegment[] } | undefined
         if (!data) continue
         const name = data.sender?.user_id
           ? await resolveUserName(ctx, String(data.sender.user_id))
           : "未知用户"
         const quoted = (data.message ?? [])
-          .filter((entry) => segmentType(entry) === "text")
-          .map((entry) => (entry as { data: { text?: string } }).data.text ?? "")
+          .filter((entry) => entry.type === "text")
+          .map((entry) => entry.data.text)
           .join("")
         quoteLines.push(`${name}：${quoted}`)
       } catch (error) {
-        ctx.logger.warn(`获取引用消息失败 id=${id}`, error)
+        ctx.logger.warn(`获取引用消息失败 id=${segment.data.id}`, error)
       }
     }
     quoteLines.push("</quote>")
     textBuffer.push(`${quoteLines.join("\n")}\n`)
   }
 
-  const hasRecord = event.message.some((segment) => segmentType(segment) === "record")
+  const hasRecord = message.some((segment) => segment.type === "record")
   const voiceText = hasRecord ? await fetchVoiceText(ctx, event.message_id) : ""
 
   let imageIndex = 0
-  for (const segment of event.message) {
-    switch (segmentType(segment)) {
-      case "text": {
-        const text = (segment as { data: { text?: string } }).data.text ?? ""
-        textBuffer.push(text)
+  for (const segment of message) {
+    switch (segment.type) {
+      case "text":
+        textBuffer.push(segment.data.text)
         break
-      }
-      case "at": {
-        const qq = String((segment as { data: { qq?: string } }).data.qq ?? "")
-        const name = await resolveUserName(ctx, qq)
-        textBuffer.push(`@${name} `)
+      case "at":
+        textBuffer.push(`@${await resolveUserName(ctx, segment.data.qq)} `)
         break
-      }
       case "image": {
-        const data = (segment as { data: { url?: string; file?: string } }).data
-        const url = data.url || data.file || ""
         textBuffer.push("[图片] ")
+        const url = segment.data.url || segment.data.file
         if (!url) break
         const inline = await toInlineImage(url, ctx.logger)
         if (!inline) break
         imageIndex += 1
-        files.push({ uri: inline, name: `qq-image-${imageIndex}.png` })
+        files.push({ uri: inline, name: `qq-image-${imageIndex}.${extensionFor(inline)}` })
         break
       }
       case "record": {
-        const voice = voiceText ? `[语音] ${voiceText}` : "[语音]"
-        textBuffer.push(voice)
+        textBuffer.push(voiceText ? `[语音] ${voiceText}` : "[语音]")
         break
       }
       case "reply":
         // 已在外层 quote 块处理过
         break
       case "forward": {
-        const forward = await renderForward(ctx, forwardId(segment))
+        const forward = await renderForward(ctx, segment.data.id)
         const prefix =
           textBuffer.length > 0 && !textBuffer[textBuffer.length - 1]?.endsWith("\n") ? "\n" : ""
         textBuffer.push(`${prefix}${forward.text}\n`)
         for (const image of forward.images) {
           imageIndex += 1
-          files.push({ uri: image, name: `qq-forward-${imageIndex}.png` })
+          files.push({
+            uri: image,
+            name: `qq-forward-${imageIndex}.${extensionFor(image)}`,
+          })
         }
         break
       }
@@ -368,11 +347,9 @@ export async function renderMessage(
       case "audio":
         textBuffer.push("[音频]")
         break
-      case "file": {
-        const data = (segment as { data: { file?: string; name?: string } }).data
-        textBuffer.push(`[文件]${data.name || data.file || ""}`)
+      case "file":
+        textBuffer.push(`[文件]${segment.data.name || segment.data.file}`)
         break
-      }
       case "face":
         textBuffer.push("[表情]")
         break
@@ -386,7 +363,7 @@ export async function renderMessage(
         textBuffer.push("[Markdown消息]")
         break
       default:
-        ctx.logger.debug(`跳过未知消息段 type=${segmentType(segment)}`)
+        ctx.logger.debug(`跳过未知消息段 type=${(segment as { type: string }).type}`)
         break
     }
   }

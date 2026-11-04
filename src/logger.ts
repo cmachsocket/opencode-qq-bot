@@ -16,7 +16,8 @@ export function createLogger(prefix: string, level: LogLevel = "info"): Logger {
     if (LEVEL_ORDER[lvl] < threshold) return
     const stamp = new Date().toISOString()
     const line = `[${stamp}] ${lvl.toUpperCase()} ${prefix} ${message}`
-    if (meta.length > 0) console[stream](line, ...meta)
+    const details = meta.filter((entry) => entry !== undefined)
+    if (details.length > 0) console[stream](line, ...details)
     else console[stream](line)
   }
 

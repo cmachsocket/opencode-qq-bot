@@ -1,7 +1,6 @@
 import { readFile } from "node:fs/promises"
 import { existsSync } from "node:fs"
 import { dirname, isAbsolute, join, resolve } from "node:path"
-import { fileURLToPath } from "node:url"
 
 /** 群里发消息用的工具名（命名空间 qq 下的 send_message）。 */
 export const SEND_MESSAGE_TOOL = "qq_send_message"
@@ -64,13 +63,22 @@ export function buildSystemPrompt(soul: string): string {
   return base ? `${base}\n${GUIDELINES}` : GUIDELINES.trim()
 }
 
+const TIME_FORMAT = new Intl.DateTimeFormat("sv-SE", {
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit",
+  hour: "2-digit",
+  minute: "2-digit",
+  second: "2-digit",
+  hour12: false,
+})
+
 /** 当前时间文本，注入到系统提示里让模型知道现在几点。 */
 export function currentTimeText(now = new Date()): string {
-  const pad = (value: number) => String(value).padStart(2, "0")
-  return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())} ${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`
+  return TIME_FORMAT.format(now)
 }
 
 /** 供测试与其它模块定位包内 SOUL.txt。 */
 export function packageDirectory(): string {
-  return dirname(fileURLToPath(import.meta.url))
+  return import.meta.dirname
 }

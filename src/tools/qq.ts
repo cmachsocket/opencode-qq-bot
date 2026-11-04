@@ -109,7 +109,7 @@ export async function registerTools(deps: ToolDeps): Promise<{ dispose(): Promis
           if (!trimmed) continue
           await client.api.sendGroupMessage(groupId, trimmed)
           if (config.sendDelayMs > 0) {
-            await new Promise((resolve) => setTimeout(resolve, config.sendDelayMs))
+            await Bun.sleep(config.sendDelayMs)
           }
         }
         manager.markMessageSent(context.sessionID)

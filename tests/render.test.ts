@@ -195,4 +195,27 @@ describe("renderMessage", () => {
     expect(rendered.text).toContain("[图片]")
     expect(rendered.files).toEqual([])
   })
+
+  it("inlines a remote image using the declared content type", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () =>
+          new Response(new Uint8Array([0xff, 0xd8, 0xff]), {
+            headers: { "content-type": "image/jpeg" },
+          }),
+      ),
+    )
+    try {
+      const rendered = await renderMessage(
+        ctx(makeApi()),
+        makeEvent([{ type: "image", data: { file: "a.jpg", url: "https://example.com/a.jpg" } }]),
+      )
+      expect(rendered.files).toHaveLength(1)
+      expect(rendered.files[0]?.uri).toMatch(/^data:image\/jpeg;base64,/)
+      expect(rendered.files[0]?.name).toBe("qq-image-1.jpg")
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
 })

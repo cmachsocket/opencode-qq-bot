@@ -1,3 +1,5 @@
+import { Model } from "@opencode/schema"
+
 /**
  * Plugin configuration: merges OpenCode plugin options, environment variables
  * and built-in defaults into a single validated object.
@@ -107,16 +109,22 @@ function asGroupList(value: unknown): number[] | undefined {
   return groups
 }
 
-/** 解析 "provider/model" 或 "provider/model/variant"。 */
+/** 解析 "provider/model" 或 "provider/model/variant"，复用 SDK 的模型引用解析。 */
 function parseModelRef(value: unknown): ModelRef | undefined {
   const raw = asString(value)?.trim()
   if (!raw) return undefined
-  const parts = raw.split("/").filter(Boolean)
-  const providerID = parts[0]
-  const id = parts[1]
-  if (!providerID || !id) return undefined
-  const variant = parts[2]
-  return variant ? { providerID, id, variant } : { providerID, id }
+  const [providerID, id, variant, ...rest] = raw.split("/").filter(Boolean)
+  if (!providerID || !id || rest.length > 0) return undefined
+  try {
+    const ref = Model.Ref.parse(`${providerID}/${id}${variant ? `#${variant}` : ""}`)
+    return {
+      providerID: ref.providerID,
+      id: ref.id,
+      ...(ref.variant ? { variant: ref.variant } : {}),
+    }
+  } catch {
+    return undefined
+  }
 }
 
 interface EnvConfig extends Omit<QQBotConfig, "napcat"> {
