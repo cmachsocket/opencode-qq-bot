@@ -109,7 +109,7 @@ cp .env.example .env
         // OneBot HTTP 接口，不是插件使用的 WebSocket 地址
         "SNOWLUMA_MCP_ENDPOINT": "http://127.0.0.1:3000/",
         "SNOWLUMA_MCP_TOKEN": "",
-        // 默认只读；需要写动作时才改成 write
+        // 尽量保持 read 模式，避免模型绕过群绑定直接发消息
         "SNOWLUMA_MCP_MODE": "read",
       },
     },
