@@ -28,7 +28,7 @@ export class QQClient {
         maxAttempts: Number.POSITIVE_INFINITY,
         backoff: { initial: 1000, max: 30_000, multiplier: 2 },
       },
-      logging: { level: "warn", logger },
+      logging: { level: "info", logger },
     })
     // 每次（重）连成功都刷新机器人 QQ 号，自动重连后 selfId 依然可用。
     this.link.on("connect", () => {

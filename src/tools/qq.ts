@@ -65,7 +65,8 @@ export async function registerTools(deps: ToolDeps): Promise<{ dispose(): Promis
   return await ctx.tool.transform((editor) => {
     editor.namespace({
       name: TOOL_NAMESPACE,
-      description: "QQ 群聊工具：发送消息、图片、语音、合并转发，以及查询群成员信息。",
+      description:
+        "QQ 群聊工具：发送消息、图片、语音、合并转发，以及查询群成员信息。仅在 QQ 群会话里可用，其他会话调用会返回错误。",
     })
 
     editor.add({

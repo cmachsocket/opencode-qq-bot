@@ -8,3 +8,6 @@ coverage/
 .env
 .env.*
 !.env.example
+
+# 本地 OpenCode 配置：含真实群号，只保留 opencode.example.json 模板
+opencode.json

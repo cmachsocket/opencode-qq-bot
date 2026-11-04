@@ -21,7 +21,7 @@ export default Plugin.define({
     const logger = createLogger("[qq-bot]")
     let config: QQBotConfig
     try {
-      config = resolveConfig(ctx.options, process.env)
+      config = resolveConfig(ctx.options, process.env, (message) => logger.warn(message))
     } catch (error) {
       logger.error(error instanceof Error ? error.message : String(error))
       return
@@ -37,8 +37,6 @@ export default Plugin.define({
     const systemPrompt = buildSystemPrompt(soul)
 
     const client = new QQClient(config.napcat, logger)
-    await client.connectSafe()
-
     const manager = new SessionManager(ctx, config, logger)
     const toolRegistration = await registerTools({ ctx, config, logger, manager, client })
 
@@ -85,9 +83,12 @@ export default Plugin.define({
       }
     }
 
+    // 先注册监听再连接：NapCat 连接期间推送的消息也会被收到。
     client.onGroupMessage((event) => {
       void handleMessage(event)
     })
+
+    await client.connectSafe()
 
     // 主动说话心跳。
     let timer: ReturnType<typeof setInterval> | undefined

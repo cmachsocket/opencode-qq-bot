@@ -1,7 +1,7 @@
 import type { Plugin } from "@opencode/plugin"
 import type { QQBotConfig } from "../config"
 import type { Logger } from "../logger"
-import type { PromptFile } from "../naplink/render"
+import { limitFiles, type PromptFile } from "../naplink/render"
 
 export interface Turn {
   /** 交给模型的文本。 */
@@ -37,7 +37,7 @@ export function mergeTurns(turns: readonly Turn[]): Turn {
       .map((turn) => turn.text.trim())
       .filter((text) => text.length > 0)
       .join("\n"),
-    files: turns.flatMap((turn) => turn.files),
+    files: limitFiles(turns.flatMap((turn) => turn.files)),
     atMe: turns.some((turn) => turn.atMe),
   }
 }
@@ -135,6 +135,8 @@ export class SessionManager {
     state.busySince = Date.now()
     state.current = turn
     state.awaitingSend = true
+    // 新的用户轮次重新给一份提醒预算，否则连续几轮不调工具就再也提醒不了。
+    state.reminders = 0
     try {
       const sessionID = await this.ensureSession(groupId)
       if (!sessionID) {
@@ -163,12 +165,18 @@ export class SessionManager {
    * 会话进入 idle：清掉忙碌标记，合并缓存的消息再投一轮；
    * 若模型这一轮完全没调用发送工具，则提醒它补一次。
    *
-   * `background` 是仍在运行的后台任务数；后台任务会把会话再次唤醒，
-   * 这时先不提醒，等真正空闲再说。
+   * `background` 是仍在运行的后台任务数；后台任务还在跑时会话并没有真正空闲，
+   * 这时保持忙碌标记，等真正空闲（后台任务结束后再次触发 idle）再处理，
+   * 否则新消息会被立刻投进正在执行的会话，打乱消息顺序。
    */
   async handleIdle(sessionID: string, background = 0): Promise<void> {
     const state = this.sessions.get(sessionID)
     if (!state) return
+
+    if (background > 0) {
+      this.logger.debug(`群 ${state.groupId} 仍有后台任务，保持忙碌状态`)
+      return
+    }
 
     state.busy = false
     state.busySince = 0
@@ -182,14 +190,15 @@ export class SessionManager {
       return
     }
 
-    if (background > 0) return
-
     if (
       state.awaitingSend &&
       this.config.reminder.enabled &&
       state.reminders < this.config.reminder.max
     ) {
       state.reminders += 1
+      // 合成消息会唤醒会话再跑一轮，先占位避免新消息插队。
+      state.busy = true
+      state.busySince = Date.now()
       this.logger.warn(`群 ${state.groupId} 模型未调用发送工具，提醒第 ${state.reminders} 次`)
       try {
         await this.ctx.session.synthetic({
@@ -197,6 +206,8 @@ export class SessionManager {
           text: `[提醒] 你这一轮没有调用 ${"qq_send_message"} 工具，直接输出的文字会被丢弃。请调用 qq_send_message 工具：想回复就 reply=true 并给出 content，不想回复就 reply=false。`,
         })
       } catch (error) {
+        state.busy = false
+        state.busySince = 0
         this.logger.error(`群 ${state.groupId} 发送提醒失败`, error)
       }
     }

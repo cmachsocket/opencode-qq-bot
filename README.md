@@ -30,7 +30,7 @@ bun install
       "package": "./",
       "options": {
         // 不配置或留空数组时，所有群都不响应
-        "groups": [1093424135],
+        "groups": [123456789],
       },
     },
   ],
@@ -38,6 +38,7 @@ bun install
 ```
 
 `package` 可以是本地路径，也可以是发布到 npm 的包名。
+
 
 ## 配置
 
@@ -66,11 +67,15 @@ cp .env.example .env
 | `proactive.silenceThresholdSeconds` | `QQ_PROACTIVE_SILENCE_SECONDS`  | `10800`         | 沉默多久后才开始计算主动说话概率                |
 | `proactive.startProbability`        | `QQ_PROACTIVE_P_START`          | `0.01`          | 刚跨过阈值时的概率                              |
 | `proactive.probabilityPerHour`      | `QQ_PROACTIVE_P_SLOPE_PER_HOUR` | `0.05`          | 每多沉默一小时概率的增量                        |
-| `proactive.tickSeconds`             | `QQ_PROACTIVE_TICK_SECONDS`     | `3600`          | 心跳间隔                                        |
+| `proactive.tickSeconds`             | `QQ_PROACTIVE_TICK_SECONDS`     | `3600`          | 心跳间隔，必须大于 0                            |
 | `reminder.enabled`                  | `QQ_REMINDER_ENABLED`           | `true`          | 模型一轮没调用发送工具时是否提醒                |
 | `reminder.max`                      | `QQ_REMINDER_MAX`               | `2`             | 连续提醒次数上限                                |
 
 没配置 `groups` 时插件不会响应任何消息（默认全部关闭）。
+
+布尔环境变量接受 `true/false`、`1/0`、`yes/no`、`on/off`；数值直接写数字。
+写错的配置项会输出告警并回退到默认值，不会静默失效。
+取值规则与图片内联限制见 [docs/configuration.md](docs/configuration.md)。
 
 ## 工具
 
@@ -93,8 +98,11 @@ cp .env.example .env
 - **回复是强制的**：系统提示要求模型每轮调用一次 `qq_send_message`，直接输出的文字会被丢弃。
 - **被 @ 才必须回**：没被 @ 时模型可以调用 `reply=false` 选择已读不回。
 - **消息合并**：会话正在跑模型时新到的消息进缓存，会话空闲后合并成一轮再投进去。
-- **提醒**：模型一轮完全没调用发送工具时，插件会补一条合成消息提醒它，最多 `reminder.max` 次。
+- **提醒**：模型一轮完全没调用发送工具时，插件会补一条合成消息提醒它，最多 `reminder.max` 次，
+  每个新的用户轮次都会重新给一份预算。
 - **主动说话**：群沉默超过阈值后，按概率发起话题。
+- **图片**：远端图片会下载后内联进提示，单张不超过 5MB、单轮最多 8 张、总量不超过 16MB，
+  超出的图片只保留 `[图片]` 占位文本。
 
 ## 开发
 
@@ -118,5 +126,11 @@ src/
   session/prompt.ts  角色设定与系统提示
   session/manager.ts 群 ↔ 会话映射、消息缓存
   tools/qq.ts        QQ 工具注册
+docs/
+  configuration.md   配置取值规则与限制
 tests/               vitest 用例
 ```
+
+## License
+
+[GPL-3.0-or-later](./LICENSE)

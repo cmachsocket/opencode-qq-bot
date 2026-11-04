@@ -1,0 +1,185 @@
+import { describe, expect, it, vi } from "vitest"
+import type { Plugin } from "@opencode/plugin"
+import { registerTools, TOOL_NAMESPACE } from "../src/tools/qq"
+import { DEFAULT_CONFIG, type QQBotConfig } from "../src/config"
+import type { Logger } from "../src/logger"
+import type { QQClient } from "../src/naplink/client"
+import type { SessionManager } from "../src/session/manager"
+
+interface ToolDefinition {
+  name: string
+  execute: (raw: unknown, context: { sessionID: string }) => Promise<{ content: string }>
+}
+
+interface Harness {
+  tools: Map<string, ToolDefinition>
+  api: Record<string, ReturnType<typeof vi.fn>>
+  manager: { groupForSession: ReturnType<typeof vi.fn>; markMessageSent: ReturnType<typeof vi.fn> }
+  logger: Record<keyof Logger, ReturnType<typeof vi.fn>>
+}
+
+async function createHarness(groupId: number | null = 100): Promise<Harness> {
+  const tools = new Map<string, ToolDefinition>()
+  const api = {
+    sendGroupMessage: vi.fn(async () => ({})),
+    sendGroupForwardMessage: vi.fn(async () => ({})),
+    sendGroupPoke: vi.fn(async () => ({})),
+    deleteMessage: vi.fn(async () => ({})),
+    getGroupMemberInfo: vi.fn(async () => ({ card: "名片", nickname: "昵称" })),
+    fetchPttText: vi.fn(async () => ({ text: "语音转写" })),
+    getLoginInfo: vi.fn(async () => ({ user_id: 123, nickname: "机器人" })),
+  }
+  const manager = {
+    groupForSession: vi.fn(() => (groupId === null ? undefined : groupId)),
+    markMessageSent: vi.fn(),
+  }
+  const logger = {
+    debug: vi.fn(),
+    info: vi.fn(),
+    warn: vi.fn(),
+    error: vi.fn(),
+  }
+  const ctx = {
+    tool: {
+      transform: vi.fn(async (callback: (editor: unknown) => void) => {
+        callback({
+          namespace: vi.fn(),
+          add: (tool: ToolDefinition & { options?: { namespace?: string } }) => {
+            tools.set(`${tool.options?.namespace ?? ""}_${tool.name}`, tool)
+          },
+        })
+        return { dispose: async () => {} }
+      }),
+    },
+  } as unknown as Plugin.Context
+
+  const config: QQBotConfig = {
+    ...DEFAULT_CONFIG,
+    napcat: { url: "ws://127.0.0.1:3001" },
+    groups: [100],
+    sendDelayMs: 0,
+  }
+
+  await registerTools({
+    ctx,
+    config,
+    logger: logger as unknown as Logger,
+    manager: manager as unknown as SessionManager,
+    client: { api } as unknown as QQClient,
+  })
+
+  return { tools, api, manager, logger }
+}
+
+const context = { sessionID: "session-1" }
+
+describe("registerTools", () => {
+  it("registers every tool under the qq namespace", async () => {
+    const { tools } = await createHarness()
+    expect([...tools.keys()].sort()).toEqual([
+      "qq_delete_message",
+      "qq_fetch_ptt_text",
+      "qq_get_group_member_info",
+      "qq_get_login_info",
+      "qq_send_forward",
+      "qq_send_image",
+      "qq_send_message",
+      "qq_send_poke",
+      "qq_send_record",
+    ])
+  })
+
+  it("sends the message split into lines", async () => {
+    const { tools, api } = await createHarness()
+    const result = await tools
+      .get(`${TOOL_NAMESPACE}_send_message`)
+      ?.execute({ content: "第一行\n\n第二行" }, context)
+    expect(result?.content).toBe("sent")
+    expect(api["sendGroupMessage"]).toHaveBeenCalledTimes(2)
+    expect(api["sendGroupMessage"]).toHaveBeenNthCalledWith(1, "100", "第一行")
+    expect(api["sendGroupMessage"]).toHaveBeenNthCalledWith(2, "100", "第二行")
+  })
+
+  it("skips sending when the model chooses not to reply", async () => {
+    const { tools, api, manager } = await createHarness()
+    const result = await tools
+      .get(`${TOOL_NAMESPACE}_send_message`)
+      ?.execute({ content: "算了", reply: false }, context)
+    expect(result?.content).toBe("skipped")
+    expect(api["sendGroupMessage"]).not.toHaveBeenCalled()
+    expect(manager.markMessageSent).toHaveBeenCalledWith("session-1")
+  })
+
+  it("skips sending empty content", async () => {
+    const { tools, api } = await createHarness()
+    const result = await tools
+      .get(`${TOOL_NAMESPACE}_send_message`)
+      ?.execute({ content: "   " }, context)
+    expect(result?.content).toBe("skipped")
+    expect(api["sendGroupMessage"]).not.toHaveBeenCalled()
+  })
+
+  it("warns about content longer than the limit", async () => {
+    const { tools, logger } = await createHarness()
+    await tools
+      .get(`${TOOL_NAMESPACE}_send_message`)
+      ?.execute({ content: "长".repeat(DEFAULT_CONFIG.warnLength + 1) }, context)
+    expect(logger.warn).toHaveBeenCalled()
+  })
+
+  it("reports an error for sessions without a group", async () => {
+    const { tools, api } = await createHarness(null)
+    const result = await tools
+      .get(`${TOOL_NAMESPACE}_send_message`)
+      ?.execute({ content: "你好" }, context)
+    expect(result?.content).toContain("error")
+    expect(api["sendGroupMessage"]).not.toHaveBeenCalled()
+  })
+
+  it("sends an image segment", async () => {
+    const { tools, api } = await createHarness()
+    const result = await tools
+      .get(`${TOOL_NAMESPACE}_send_image`)
+      ?.execute({ file: "https://example.com/a.png" }, context)
+    expect(result?.content).toBe("sent")
+    expect(api["sendGroupMessage"]).toHaveBeenCalledWith("100", [
+      { type: "image", data: { file: "https://example.com/a.png" } },
+    ])
+  })
+
+  it("rejects an image without a file", async () => {
+    const { tools } = await createHarness()
+    const result = await tools.get(`${TOOL_NAMESPACE}_send_image`)?.execute({}, context)
+    expect(result?.content).toContain("error")
+  })
+
+  it("rejects a forward without nodes", async () => {
+    const { tools } = await createHarness()
+    const result = await tools
+      .get(`${TOOL_NAMESPACE}_send_forward`)
+      ?.execute({ nodes: [] }, context)
+    expect(result?.content).toContain("error")
+  })
+
+  it("returns the group member info", async () => {
+    const { tools } = await createHarness()
+    const result = await tools
+      .get(`${TOOL_NAMESPACE}_get_group_member_info`)
+      ?.execute({ user_id: "200" }, context)
+    expect(result?.content).toContain("名片")
+  })
+
+  it("transcribes a voice message", async () => {
+    const { tools } = await createHarness()
+    const result = await tools
+      .get(`${TOOL_NAMESPACE}_fetch_ptt_text`)
+      ?.execute({ message_id: "5" }, context)
+    expect(result?.content).toBe("语音转写")
+  })
+
+  it("returns the login info", async () => {
+    const { tools } = await createHarness()
+    const result = await tools.get(`${TOOL_NAMESPACE}_get_login_info`)?.execute({}, context)
+    expect(result?.content).toContain("123")
+  })
+})

@@ -1,7 +1,9 @@
 import { describe, expect, it, vi } from "vitest"
 import type { GroupMessageEvent, MessageSegment, OneBotApi } from "@naplink/naplink"
 import {
+  limitFiles,
   mentionsUser,
+  MAX_PROMPT_IMAGES,
   renderMessage,
   resolveUserName,
   shouldProcess,
@@ -89,6 +91,10 @@ describe("mentionsUser", () => {
     expect(mentionsUser([{ type: "at", data: { qq: "999" } }], "999")).toBe(true)
   })
 
+  it("detects an at segment whose qq id is a number", () => {
+    expect(mentionsUser([{ type: "at", data: { qq: 999 as unknown as string } }], "999")).toBe(true)
+  })
+
   it("ignores at segments for other users", () => {
     expect(mentionsUser([{ type: "at", data: { qq: "123" } }], "999")).toBe(false)
   })
@@ -134,6 +140,75 @@ describe("toInlineImage", () => {
 
   it("ignores unsupported schemes", async () => {
     expect(await toInlineImage("/local/a.jpg", logger)).toBeUndefined()
+  })
+
+  it("sniffs the mime type when the content type is not an image", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () =>
+          new Response(new Uint8Array([0xff, 0xd8, 0xff, 0xe0]), {
+            headers: { "content-type": "application/octet-stream" },
+          }),
+      ),
+    )
+    try {
+      const url = await toInlineImage("https://example.com/a.jpg", logger)
+      expect(url).toMatch(/^data:image\/jpeg;base64,/)
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it("skips images larger than the limit", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () =>
+          new Response(new Uint8Array(1024), {
+            headers: { "content-type": "image/png", "content-length": String(64 * 1024 * 1024) },
+          }),
+      ),
+    )
+    try {
+      expect(await toInlineImage("https://example.com/big.png", logger)).toBeUndefined()
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it("stops reading an oversized body without a content length", async () => {
+    const chunk = new Uint8Array(1024 * 1024)
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () =>
+          new Response(
+            new ReadableStream({
+              start(controller) {
+                for (let index = 0; index < 8; index += 1) controller.enqueue(chunk)
+                controller.close()
+              },
+            }),
+            { headers: { "content-type": "image/png" } },
+          ),
+      ),
+    )
+    try {
+      expect(await toInlineImage("https://example.com/big.png", logger)).toBeUndefined()
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+})
+
+describe("limitFiles", () => {
+  it("keeps at most the allowed number of images", () => {
+    const files = Array.from({ length: MAX_PROMPT_IMAGES + 4 }, (_, index) => ({
+      uri: `data:image/png;base64,${"A".repeat(16)}`,
+      name: `image-${index}.png`,
+    }))
+    expect(limitFiles(files)).toHaveLength(MAX_PROMPT_IMAGES)
   })
 })
 
@@ -214,6 +289,50 @@ describe("renderMessage", () => {
       expect(rendered.files).toHaveLength(1)
       expect(rendered.files[0]?.uri).toMatch(/^data:image\/jpeg;base64,/)
       expect(rendered.files[0]?.name).toBe("qq-image-1.jpg")
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it("names the attachment after the sniffed mime type", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () =>
+          new Response(new Uint8Array([0xff, 0xd8, 0xff]), {
+            headers: { "content-type": "application/octet-stream" },
+          }),
+      ),
+    )
+    try {
+      const rendered = await renderMessage(
+        ctx(makeApi()),
+        makeEvent([{ type: "image", data: { file: "a.jpg", url: "https://example.com/a.jpg" } }]),
+      )
+      expect(rendered.files[0]?.name).toBe("qq-image-1.jpg")
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it("caps the number of inlined images per message", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () =>
+          new Response(new Uint8Array([0xff, 0xd8, 0xff]), {
+            headers: { "content-type": "image/jpeg" },
+          }),
+      ),
+    )
+    try {
+      const message = Array.from({ length: MAX_PROMPT_IMAGES + 5 }, (_, index) => ({
+        type: "image" as const,
+        data: { file: `a${index}.jpg`, url: `https://example.com/a${index}.jpg` },
+      }))
+      const rendered = await renderMessage(ctx(makeApi()), makeEvent(message))
+      expect(rendered.files).toHaveLength(MAX_PROMPT_IMAGES)
+      expect(rendered.text.match(/\[图片\]/g)).toHaveLength(MAX_PROMPT_IMAGES + 5)
     } finally {
       vi.unstubAllGlobals()
     }

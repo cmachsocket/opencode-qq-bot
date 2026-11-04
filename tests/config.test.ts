@@ -33,11 +33,13 @@ describe("resolveConfig", () => {
     expect(config.sendDelayMs).toBe(10)
   })
 
-  it("enables exactly the groups declared in opencode.json", () => {
-    const raw = JSON.parse(readFileSync(new URL("../opencode.json", import.meta.url), "utf8"))
+  it("enables exactly the groups declared in the config template", () => {
+    const raw = JSON.parse(
+      readFileSync(new URL("../opencode.example.json", import.meta.url), "utf8"),
+    )
     const options = raw.plugins.find((entry: { package: string }) => entry.package === "./").options
     const config = resolveConfig(options, ENV)
-    expect(config.groups).toEqual([1093424135])
+    expect(config.groups).toEqual(options.groups)
   })
 
   it("reads groups from the environment as a comma separated list", () => {
@@ -63,6 +65,93 @@ describe("resolveConfig", () => {
   it("ignores an incomplete model reference", () => {
     const config = resolveConfig({}, { ...ENV, QQ_BOT_MODEL: "openai" })
     expect(config.model).toBeUndefined()
+  })
+
+  it("reads boolean environment variables as strings", () => {
+    const config = resolveConfig(
+      {},
+      {
+        ...ENV,
+        QQ_REUSE_SESSION: "true",
+        QQ_PROACTIVE_ENABLED: "false",
+        QQ_REMINDER_ENABLED: "false",
+      },
+    )
+    expect(config.reuseSession).toBe(true)
+    expect(config.proactive.enabled).toBe(false)
+    expect(config.reminder.enabled).toBe(false)
+  })
+
+  it("accepts the common boolean spellings", () => {
+    for (const raw of ["1", "true", "TRUE", "yes", "on"]) {
+      expect(resolveConfig({}, { ...ENV, QQ_REUSE_SESSION: raw }).reuseSession).toBe(true)
+    }
+    for (const raw of ["0", "false", "FALSE", "no", "off"]) {
+      expect(resolveConfig({}, { ...ENV, QQ_REUSE_SESSION: raw }).reuseSession).toBe(false)
+    }
+  })
+
+  it("reads numeric environment variables as strings", () => {
+    const config = resolveConfig(
+      {},
+      {
+        ...ENV,
+        QQ_SEND_DELAY_MS: "250",
+        QQ_WARN_LENGTH: "80",
+        QQ_BUSY_TIMEOUT_MS: "1000",
+        QQ_PROACTIVE_SILENCE_SECONDS: "60",
+        QQ_PROACTIVE_P_START: "0.5",
+        QQ_PROACTIVE_P_SLOPE_PER_HOUR: "0.2",
+        QQ_PROACTIVE_TICK_SECONDS: "120",
+        QQ_REMINDER_MAX: "5",
+      },
+    )
+    expect(config.sendDelayMs).toBe(250)
+    expect(config.warnLength).toBe(80)
+    expect(config.busyTimeoutMs).toBe(1000)
+    expect(config.proactive.silenceThresholdSeconds).toBe(60)
+    expect(config.proactive.startProbability).toBe(0.5)
+    expect(config.proactive.probabilityPerHour).toBe(0.2)
+    expect(config.proactive.tickSeconds).toBe(120)
+    expect(config.reminder.max).toBe(5)
+  })
+
+  it("falls back to the defaults for malformed environment values", () => {
+    const config = resolveConfig(
+      {},
+      { ...ENV, QQ_SEND_DELAY_MS: "abc", QQ_REUSE_SESSION: "maybe", QQ_REMINDER_MAX: "" },
+    )
+    expect(config.sendDelayMs).toBe(DEFAULT_CONFIG.sendDelayMs)
+    expect(config.reuseSession).toBe(DEFAULT_CONFIG.reuseSession)
+    expect(config.reminder.max).toBe(DEFAULT_CONFIG.reminder.max)
+  })
+
+  it("reports malformed environment values", () => {
+    const warnings: string[] = []
+    resolveConfig({}, { ...ENV, QQ_SEND_DELAY_MS: "abc", QQ_REUSE_SESSION: "maybe" }, (message) =>
+      warnings.push(message),
+    )
+    expect(warnings).toHaveLength(2)
+    expect(warnings.join("\n")).toContain("QQ_SEND_DELAY_MS")
+    expect(warnings.join("\n")).toContain("QQ_REUSE_SESSION")
+  })
+
+  it("reports an invalid model reference", () => {
+    const warnings: string[] = []
+    const config = resolveConfig({}, { ...ENV, QQ_BOT_MODEL: "openai" }, (message) =>
+      warnings.push(message),
+    )
+    expect(config.model).toBeUndefined()
+    expect(warnings.join("\n")).toContain("QQ_BOT_MODEL")
+  })
+
+  it("rejects a non positive heartbeat interval", () => {
+    const warnings: string[] = []
+    const config = resolveConfig({ proactive: { tickSeconds: 0 } }, ENV, (message) =>
+      warnings.push(message),
+    )
+    expect(config.proactive.tickSeconds).toBe(DEFAULT_CONFIG.proactive.tickSeconds)
+    expect(warnings.join("\n")).toContain("tickSeconds")
   })
 
   it("merges nested proactive options with the defaults", () => {

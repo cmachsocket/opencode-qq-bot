@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest"
 import type { Plugin } from "@opencode/plugin"
 import { SessionManager, mergeTurns } from "../src/session/manager"
 import { DEFAULT_CONFIG, type QQBotConfig } from "../src/config"
+import { MAX_PROMPT_IMAGES } from "../src/naplink/render"
 import type { Logger } from "../src/logger"
 
 const logger: Logger = {
@@ -67,6 +68,15 @@ describe("mergeTurns", () => {
   it("drops empty turns", () => {
     const merged = mergeTurns([{ text: "  ", files: [], atMe: false }])
     expect(merged.text).toBe("")
+  })
+
+  it("caps the number of merged image files", () => {
+    const files = Array.from({ length: MAX_PROMPT_IMAGES + 3 }, (_, index) => ({
+      uri: `data:image/png;base64,${"A".repeat(16)}`,
+      name: `image-${index}.png`,
+    }))
+    const merged = mergeTurns([{ text: "看图", files, atMe: false }])
+    expect(merged.files).toHaveLength(MAX_PROMPT_IMAGES)
   })
 })
 
@@ -142,6 +152,33 @@ describe("SessionManager", () => {
     await manager.enqueue(100, { text: "你好", files: [], atMe: false })
     await manager.handleIdle("session-1", 1)
     expect(synthetics).toHaveLength(0)
+  })
+
+  it("keeps the session busy while background work is still running", async () => {
+    const { manager, prompts } = createHarness()
+    await manager.enqueue(100, { text: "第一条", files: [], atMe: false })
+    await manager.handleIdle("session-1", 1)
+
+    // 后台任务还在跑，新消息必须排队，不能插进正在执行的会话。
+    await manager.enqueue(100, { text: "第二条", files: [], atMe: false })
+    expect(prompts).toHaveLength(1)
+
+    await manager.handleIdle("session-1")
+    expect(prompts).toHaveLength(2)
+    expect(prompts[1]?.text).toBe("第二条")
+  })
+
+  it("gives every user turn a fresh reminder budget", async () => {
+    const { manager, synthetics } = createHarness({ reminder: { enabled: true, max: 1 } })
+    await manager.enqueue(100, { text: "第一条", files: [], atMe: false })
+    await manager.handleIdle("session-1")
+    await manager.handleIdle("session-1")
+    expect(synthetics).toHaveLength(1)
+
+    // 新的用户轮次重新获得提醒预算。
+    await manager.enqueue(100, { text: "第二条", files: [], atMe: false })
+    await manager.handleIdle("session-1")
+    expect(synthetics).toHaveLength(2)
   })
 
   it("releases buffered messages when the session stays busy past the timeout", async () => {

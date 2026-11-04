@@ -25,7 +25,7 @@
     "onebot",
     "qq"
   ],
-  "license": "MIT",
+  "license": "GPL-3.0-or-later",
   "dependencies": {
     "@naplink/naplink": "^1.2.0",
     "@opencode/plugin": "latest",

@@ -5,9 +5,12 @@ import type { Logger } from "../logger"
 export const MAX_FORWARD_DEPTH = 3
 export const MAX_FORWARD_NODES = 50
 export const MAX_FORWARD_CHARS = 4000
-export const MAX_FORWARD_IMAGES = 8
 /** 单张图片内联进 prompt 的字节上限，超过则降级为占位文本。 */
 export const MAX_IMAGE_BYTES = 5 * 1024 * 1024
+/** 单轮提示里最多内联的图片数量，超出的图片只保留占位文本。 */
+export const MAX_PROMPT_IMAGES = 8
+/** 单轮提示里内联图片的原始字节总量上限，超出的图片只保留占位文本。 */
+export const MAX_PROMPT_IMAGE_BYTES = 16 * 1024 * 1024
 
 export interface PromptFile {
   uri: string
@@ -61,7 +64,9 @@ export function mentionsUser(
   userId: string | undefined,
 ): boolean {
   if (!userId) return false
-  return segments(message).some((segment) => segment.type === "at" && segment.data.qq === userId)
+  return segments(message).some(
+    (segment) => segment.type === "at" && String(segment.data.qq) === userId,
+  )
 }
 
 const MIME_EXTENSIONS: Record<string, string> = {
@@ -76,6 +81,120 @@ function extensionFor(dataUrl: string): string {
   if (!dataUrl.startsWith("data:")) return "png"
   const mime = dataUrl.slice("data:".length, dataUrl.indexOf(";"))
   return MIME_EXTENSIONS[mime] ?? "png"
+}
+
+/**
+ * 通过魔数判断图片类型。
+ *
+ * NapCat 经常把图片的 content-type 写成 application/octet-stream，
+ * 这时只能用魔数兜底，否则扩展名与 MIME 都会错。
+ */
+function mimeFromBytes(bytes: Uint8Array): string | undefined {
+  if (
+    bytes.length >= 8 &&
+    bytes[0] === 0x89 &&
+    bytes[1] === 0x50 &&
+    bytes[2] === 0x4e &&
+    bytes[3] === 0x47 &&
+    bytes[4] === 0x0d &&
+    bytes[5] === 0x0a &&
+    bytes[6] === 0x1a &&
+    bytes[7] === 0x0a
+  ) {
+    return "image/png"
+  }
+  if (bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) {
+    return "image/jpeg"
+  }
+  if (bytes.length >= 6 && bytes[0] === 0x47 && bytes[1] === 0x49 && bytes[2] === 0x46) {
+    return "image/gif"
+  }
+  if (
+    bytes.length >= 12 &&
+    bytes[8] === 0x57 &&
+    bytes[9] === 0x45 &&
+    bytes[10] === 0x42 &&
+    bytes[11] === 0x50
+  ) {
+    return "image/webp"
+  }
+  return undefined
+}
+
+/** 内联图片的预算：数量与字节总量，渲染过程中边用边扣。 */
+export interface ImageBudget {
+  images: number
+  bytes: number
+}
+
+/** 创建一份默认图片预算。 */
+export function createImageBudget(): ImageBudget {
+  return { images: MAX_PROMPT_IMAGES, bytes: MAX_PROMPT_IMAGE_BYTES }
+}
+
+/** 估算 data URL 里原始图片的字节数。 */
+export function inlineImageBytes(uri: string): number {
+  const comma = uri.indexOf(",")
+  if (comma < 0) return 0
+  return Math.floor(((uri.length - comma - 1) * 3) / 4)
+}
+
+/** 从预算里扣掉一张图片；预算不足时不扣。 */
+function takeImage(budget: ImageBudget, uri: string): boolean {
+  const bytes = inlineImageBytes(uri)
+  if (budget.images <= 0 || budget.bytes < bytes) return false
+  budget.images -= 1
+  budget.bytes -= bytes
+  return true
+}
+
+/** 按预算裁剪图片附件列表（数量与字节总量）。 */
+export function limitFiles(files: readonly PromptFile[]): PromptFile[] {
+  const budget = createImageBudget()
+  const kept: PromptFile[] = []
+  for (const file of files) {
+    if (!takeImage(budget, file.uri)) continue
+    kept.push(file)
+  }
+  return kept
+}
+
+/**
+ * 读取响应体，超过上限就中断。
+ *
+ * 先按 content-length 判断，读的时候再限长，避免超大图片先撑爆内存。
+ */
+async function readCapped(response: Response, limit: number): Promise<Uint8Array | undefined> {
+  const body = response.body
+  if (!body) {
+    const buffer = new Uint8Array(await response.arrayBuffer())
+    return buffer.byteLength > limit ? undefined : buffer
+  }
+  const reader = body.getReader()
+  const chunks: Uint8Array[] = []
+  let total = 0
+  try {
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) break
+      if (!value) continue
+      total += value.byteLength
+      if (total > limit) {
+        await reader.cancel().catch(() => {})
+        return undefined
+      }
+      chunks.push(value)
+    }
+  } finally {
+    reader.releaseLock()
+  }
+  const buffer = new Uint8Array(total)
+  let offset = 0
+  for (const chunk of chunks) {
+    buffer.set(chunk, offset)
+    offset += chunk.byteLength
+  }
+  return buffer
 }
 
 /**
@@ -94,13 +213,21 @@ export async function toInlineImage(url: string, logger: Logger): Promise<string
       logger.warn(`下载图片失败 status=${response.status} url=${url}`)
       return undefined
     }
-    const buffer = new Uint8Array(await response.arrayBuffer())
-    if (buffer.byteLength > MAX_IMAGE_BYTES) {
-      logger.warn(`图片过大，跳过内联 bytes=${buffer.byteLength} url=${url}`)
+    const lengthHeader = response.headers.get("content-length")
+    const declaredLength = lengthHeader === null ? undefined : Number(lengthHeader)
+    if (declaredLength !== undefined && Number.isFinite(declaredLength)) {
+      if (declaredLength > MAX_IMAGE_BYTES) {
+        logger.warn(`图片过大，跳过内联 bytes=${declaredLength} url=${url}`)
+        return undefined
+      }
+    }
+    const buffer = await readCapped(response, MAX_IMAGE_BYTES)
+    if (!buffer) {
+      logger.warn(`图片过大，跳过内联 url=${url}`)
       return undefined
     }
     const declared = response.headers.get("content-type")?.split(";")[0]?.trim()
-    const mime = declared?.startsWith("image/") ? declared : "image/png"
+    const mime = declared?.startsWith("image/") ? declared : (mimeFromBytes(buffer) ?? "image/png")
     return `data:${mime};base64,${Buffer.from(buffer).toString("base64")}`
   } catch (error) {
     logger.warn(`下载图片异常 url=${url}`, error)
@@ -131,6 +258,7 @@ async function renderForwardSegments(
   ctx: RenderContext,
   message: readonly MessageSegment[],
   depth: number,
+  budget: ImageBudget,
 ): Promise<ForwardContent> {
   const parts: string[] = []
   const images: string[] = []
@@ -145,10 +273,10 @@ async function renderForwardSegments(
       case "image": {
         parts.push("[图片]")
         const url = segment.data.url || segment.data.file
-        if (url && images.length < MAX_FORWARD_IMAGES) {
-          const inline = await toInlineImage(url, ctx.logger)
-          if (inline) images.push(inline)
-        }
+        if (!url || budget.images <= 0) break
+        const inline = await toInlineImage(url, ctx.logger)
+        if (!inline || !takeImage(budget, inline)) break
+        images.push(inline)
         break
       }
       case "record":
@@ -183,9 +311,9 @@ async function renderForwardSegments(
           parts.push("[嵌套合并转发]")
           break
         }
-        const nested = await renderForward(ctx, segment.data.id, depth + 1)
+        const nested = await renderForward(ctx, segment.data.id, depth + 1, budget)
         parts.push(nested.text)
-        images.push(...nested.images.slice(0, MAX_FORWARD_IMAGES - images.length))
+        images.push(...nested.images)
         break
       }
       default:
@@ -200,6 +328,7 @@ export async function renderForward(
   ctx: RenderContext,
   id: string | undefined,
   depth = 0,
+  budget: ImageBudget = createImageBudget(),
 ): Promise<ForwardContent> {
   if (!id) return { text: "[合并转发]", images: [] }
   let nodes: { name: string; segments: MessageSegment[] }[] = []
@@ -228,9 +357,9 @@ export async function renderForward(
   const lines = ["<forward>"]
   const images: string[] = []
   for (const node of nodes.slice(0, MAX_FORWARD_NODES)) {
-    const body = await renderForwardSegments(ctx, node.segments, depth)
+    const body = await renderForwardSegments(ctx, node.segments, depth, budget)
     lines.push(`${node.name}：${body.text || "[空消息]"}`)
-    images.push(...body.images.slice(0, MAX_FORWARD_IMAGES - images.length))
+    images.push(...body.images)
   }
   if (nodes.length > MAX_FORWARD_NODES) {
     lines.push(`...（还有 ${nodes.length - MAX_FORWARD_NODES} 条）`)
@@ -301,6 +430,7 @@ export async function renderMessage(
   const hasRecord = message.some((segment) => segment.type === "record")
   const voiceText = hasRecord ? await fetchVoiceText(ctx, event.message_id) : ""
 
+  const budget = createImageBudget()
   let imageIndex = 0
   for (const segment of message) {
     switch (segment.type) {
@@ -308,14 +438,14 @@ export async function renderMessage(
         textBuffer.push(segment.data.text)
         break
       case "at":
-        textBuffer.push(`@${await resolveUserName(ctx, segment.data.qq)} `)
+        textBuffer.push(`@${await resolveUserName(ctx, String(segment.data.qq))} `)
         break
       case "image": {
         textBuffer.push("[图片] ")
         const url = segment.data.url || segment.data.file
-        if (!url) break
+        if (!url || budget.images <= 0) break
         const inline = await toInlineImage(url, ctx.logger)
-        if (!inline) break
+        if (!inline || !takeImage(budget, inline)) break
         imageIndex += 1
         files.push({ uri: inline, name: `qq-image-${imageIndex}.${extensionFor(inline)}` })
         break
@@ -328,7 +458,7 @@ export async function renderMessage(
         // 已在外层 quote 块处理过
         break
       case "forward": {
-        const forward = await renderForward(ctx, segment.data.id)
+        const forward = await renderForward(ctx, segment.data.id, 0, budget)
         const prefix =
           textBuffer.length > 0 && !textBuffer[textBuffer.length - 1]?.endsWith("\n") ? "\n" : ""
         textBuffer.push(`${prefix}${forward.text}\n`)
