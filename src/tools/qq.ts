@@ -193,7 +193,7 @@ export async function registerTools(deps: ToolDeps): Promise<{ dispose(): Promis
         }
         manager.markMessageSent(context.sessionID)
         logger.info(`${label} 已发送 ${content.length} 字`)
-        return text("sent")
+        return text("你已成功发送消息，可以选择结束对话")
       },
     })
 
@@ -220,7 +220,7 @@ export async function registerTools(deps: ToolDeps): Promise<{ dispose(): Promis
         const messageId = messageIdOf(response)
         if (messageId) manager.rememberOutgoing(target, messageId)
         manager.markMessageSent(context.sessionID)
-        return text("sent")
+        return text("你已成功发送图片，可以选择结束对话")
       },
     })
 
@@ -246,7 +246,7 @@ export async function registerTools(deps: ToolDeps): Promise<{ dispose(): Promis
         const messageId = messageIdOf(response)
         if (messageId) manager.rememberOutgoing(target, messageId)
         manager.markMessageSent(context.sessionID)
-        return text("sent")
+        return text("你已成功发送语音，可以选择结束对话")
       },
     })
 
@@ -301,7 +301,7 @@ export async function registerTools(deps: ToolDeps): Promise<{ dispose(): Promis
         const messageId = messageIdOf(response)
         if (messageId) manager.rememberOutgoing(target, messageId)
         manager.markMessageSent(context.sessionID)
-        return text("sent")
+        return text("你已成功发送合并转发消息，可以选择结束对话")
       },
     })
 
@@ -324,7 +324,7 @@ export async function registerTools(deps: ToolDeps): Promise<{ dispose(): Promis
         if (!input.user_id) return text("error: 缺少 user_id")
         await sendPoke(target, input.user_id)
         manager.markMessageSent(context.sessionID)
-        return text("sent")
+        return text("你已成功戳一下用户，可以选择结束对话")
       },
     })
 

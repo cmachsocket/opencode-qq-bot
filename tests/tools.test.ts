@@ -118,7 +118,7 @@ describe("registerTools", () => {
     const result = await tools
       .get(`${TOOL_NAMESPACE}_send_message`)
       ?.execute({ content: "第一行\n\n第二行" }, context)
-    expect(result?.content).toBe("sent")
+    expect(result?.content).toBe("你已成功发送消息，可以选择结束对话")
     expect(api["sendGroupMessage"]).toHaveBeenCalledTimes(1)
     expect(api["sendGroupMessage"]).toHaveBeenCalledWith(100, "第一行\n\n第二行")
   })
@@ -164,7 +164,7 @@ describe("registerTools", () => {
     const result = await tools
       .get(`${TOOL_NAMESPACE}_send_image`)
       ?.execute({ file: "https://example.com/a.png" }, context)
-    expect(result?.content).toBe("sent")
+    expect(result?.content).toBe("你已成功发送图片，可以选择结束对话")
     expect(api["sendGroupMessage"]).toHaveBeenCalledWith(100, [
       { type: "image", data: { file: "https://example.com/a.png" } },
     ])
@@ -277,7 +277,7 @@ describe("registerTools", () => {
       const result = await tools
         .get(`${TOOL_NAMESPACE}_send_message`)
         ?.execute({ content: "私聊你好" }, context)
-      expect(result?.content).toBe("sent")
+      expect(result?.content).toBe("你已成功发送消息，可以选择结束对话")
       expect(api["sendPrivateMessage"]).toHaveBeenCalledWith(200, "私聊你好")
       expect(api["sendGroupMessage"]).not.toHaveBeenCalled()
     })
@@ -295,7 +295,7 @@ describe("registerTools", () => {
       const result = await tools
         .get(`${TOOL_NAMESPACE}_send_forward`)
         ?.execute({ nodes: [{ user_id: "1", content: "内容" }] }, context)
-      expect(result?.content).toBe("sent")
+      expect(result?.content).toBe("你已成功发送合并转发消息，可以选择结束对话")
       expect(api["sendPrivateForwardMessage"]).toHaveBeenCalledWith({
         user_id: 200,
         messages: [
@@ -313,7 +313,7 @@ describe("registerTools", () => {
       const result = await tools
         .get(`${TOOL_NAMESPACE}_send_poke`)
         ?.execute({ user_id: "300" }, context)
-      expect(result?.content).toBe("sent")
+      expect(result?.content).toBe("你已成功戳一下用户，可以选择结束对话")
       expect(api["sendFriendPoke"]).toHaveBeenCalledWith("300")
       expect(api["sendGroupPoke"]).not.toHaveBeenCalled()
     })
