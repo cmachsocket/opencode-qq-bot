@@ -1,6 +1,7 @@
 import { Plugin } from "@opencode/plugin"
 import type { GroupMessageEvent, MessageEvent } from "@naplink/naplink"
 import { Mutex } from "async-mutex"
+import { acquireBotLock, type BotLock, botIdentity, botLockPath } from "./bot-lock"
 import { type ChatTarget, configuredTargets, isTargetEnabled, targetKey, targetLabel } from "./chat"
 import { resolveConfig, type QQBotConfig } from "./config"
 import { claimInstance } from "./instance"
@@ -16,6 +17,8 @@ import { registerAskGuard } from "./tools/ask-guard"
 import { registerTools } from "./tools/qq"
 
 const RETRY_DELAY_MS = 1000
+/** 机器人连接被别的实例占用时，多久重试一次接管。 */
+const CLAIM_RETRY_MS = 30_000
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
@@ -48,6 +51,11 @@ export default Plugin.define({
         logger.error("卸载旧插件实例失败", error)
       }
     }
+
+    // 同一台机器上只允许一个实例消费 NapCat 消息流：
+    // 多个实例各自连接，NapCat 会把同一条消息推给所有连接，模型就会收到重复消息。
+    const identity = botIdentity(config.napcat)
+    let botLock: BotLock | undefined
 
     // 角色设定：读取生效文件并监听改动，改完下一轮即生效。
     const soul = new SoulStore(
@@ -187,6 +195,8 @@ export default Plugin.define({
       return mutex
     }
     const scheduleMessage = (event: MessageEvent) => {
+      // 没有占用机器人连接时不消费消息，避免和别的实例重复投递。
+      if (!botLock) return
       const target = eventTarget(event)
       if (!isTargetEnabled(config, target)) return
       const selfId = String(event.self_id ?? client.selfId ?? "")
@@ -203,11 +213,53 @@ export default Plugin.define({
         .catch((error: unknown) => logger.error(`处理 ${targetLabel(target)} 消息失败`, error))
     }
 
-    // 先注册监听再连接：NapCat 连接期间推送的消息也会被收到。
-    client.onGroupMessage(scheduleMessage)
-    client.onPrivateMessage(scheduleMessage)
+    let subscribed = false
+    const startConsuming = async () => {
+      // 先注册监听再连接：NapCat 连接期间推送的消息也会被收到。
+      if (!subscribed) {
+        subscribed = true
+        client.onGroupMessage(scheduleMessage)
+        client.onPrivateMessage(scheduleMessage)
+      }
+      await client.connectSafe()
+    }
 
-    await client.connectSafe()
+    /**
+     * 抢占机器人连接。
+     *
+     * 拿到锁才能消费消息流；锁被占用说明别的实例已经在消费，这里保持安静。
+     */
+    const claimBot = async (): Promise<boolean> => {
+      if (botLock) return true
+      const lock = await acquireBotLock(identity, {
+        onCompromised: (error) => {
+          // 心跳失效意味着锁已不再独占，立刻停止投递，等重新抢到锁再消费。
+          logger.error("机器人连接锁失效，停止接收 QQ 消息", error)
+          botLock = undefined
+        },
+      })
+      if (!lock) return false
+      botLock = lock
+      logger.info("已占用 NapCat 机器人连接", botLockPath(identity))
+      await startConsuming()
+      return true
+    }
+
+    const claimed = await claimBot()
+    if (!claimed) {
+      logger.warn(
+        "另一个 OpenCode 实例正在使用该 NapCat 机器人，本实例不会接收 QQ 消息",
+        `锁目录：${botLockPath(identity)}`,
+      )
+    }
+
+    // 持有者退出后接管机器人，避免消息流一直无人消费。
+    const claimTimer = setInterval(() => {
+      if (botLock) return
+      void claimBot().catch((error: unknown) => logger.error("接管机器人连接失败", error))
+    }, CLAIM_RETRY_MS)
+    const claimHandle = claimTimer as { unref?: () => void }
+    claimHandle.unref?.()
 
     // 主动说话心跳。
     let timer: ReturnType<typeof setInterval> | undefined
@@ -217,6 +269,8 @@ export default Plugin.define({
         if (tickMutex.isLocked()) return
         await tickMutex.runExclusive(async () => {
           for (const target of configuredTargets(config)) {
+            // 没有机器人连接就发不出去，不主动发起话题。
+            if (!botLock) continue
             const probability = proactiveTickProbability(
               config.proactive,
               manager.silenceSeconds(target),
@@ -246,6 +300,7 @@ export default Plugin.define({
       if (disposed) return
       disposed = true
       if (timer) clearInterval(timer)
+      clearInterval(claimTimer)
       clearInterval(mediaCleanup)
       idleAbort.abort()
       await manager.flush()
@@ -255,6 +310,9 @@ export default Plugin.define({
       await contextRegistration.dispose()
       await idleRegistration.dispose()
       client.dispose()
+      // 先断开 NapCat 再释放身份锁，避免新实例接管时出现两条连接。
+      await botLock?.release()
+      botLock = undefined
       lease.release()
       logger.info("插件已卸载")
     }
