@@ -2,6 +2,14 @@
 
 本文件记录 opencode-qq-bot 的重要变更。
 
+## [0.3.3] - 2026-11-06
+
+### Fixed
+
+- `session.prompt` 的 `id` 必须是 `msg_` 开头的上游消息 ID，此前传入普通 UUID 会让
+  每次投递都报 `SchemaError: Expected a string starting with "msg_"`。现在改用
+  `@opencode/schema` 的 `SessionMessage.ID.create()` 生成，重试时继续复用同一个 ID。
+
 ## [0.3.2] - 2026-11-06
 
 ### Fixed

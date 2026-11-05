@@ -1,5 +1,5 @@
-import { randomUUID } from "node:crypto"
 import type { Plugin } from "@opencode/plugin"
+import { SessionMessage } from "@opencode/schema"
 import { Mutex } from "async-mutex"
 import { type ChatTarget, isTargetEnabled, parseTargetKey, targetKey, targetLabel } from "../chat"
 import type { QQBotConfig } from "../config"
@@ -319,7 +319,7 @@ export class SessionManager {
   /** 收到一条消息：先入队，再尝试投递；上游忙时留在队列里。 */
   async enqueue(target: ChatTarget, turn: Turn): Promise<void> {
     const state = this.state(target)
-    const queued = turn.id ? turn : { ...turn, id: randomUUID() }
+    const queued = turn.id ? turn : { ...turn, id: SessionMessage.ID.create() }
     await this.targetMutex(target).runExclusive(async () => {
       this.pushBuffered(state, queued)
       await this.drain(state)

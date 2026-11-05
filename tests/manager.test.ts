@@ -126,6 +126,8 @@ describe("SessionManager", () => {
     await manager.enqueue(group(100), { text: "你好", files: [], atMe: false })
     expect(prompts).toHaveLength(1)
     expect(prompts[0]?.text).toBe("你好")
+    // 上游要求消息 ID 以 msg_ 开头，否则 session.prompt 会直接报 SchemaError。
+    expect(prompts[0]?.id).toMatch(/^msg_/)
     expect(manager.targetForSession("session-1")).toEqual(group(100))
   })
 
@@ -292,7 +294,7 @@ describe("SessionManager", () => {
 
       const first = prompt.mock.calls[0]?.[0] as { id?: string } | undefined
       const second = prompt.mock.calls[1]?.[0] as { id?: string } | undefined
-      expect(first?.id).toEqual(expect.any(String))
+      expect(first?.id).toMatch(/^msg_/)
       expect(second?.id).toBe(first?.id)
     } finally {
       vi.useRealTimers()
