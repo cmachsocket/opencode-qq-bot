@@ -17,6 +17,7 @@ import {
   packageDirectory,
 } from "./session/prompt"
 import { proactiveTickProbability } from "./session/proactive"
+import { registerAskGuard } from "./tools/ask-guard"
 import { registerTools } from "./tools/qq"
 
 const RETRY_DELAY_MS = 1000
@@ -71,6 +72,8 @@ export default Plugin.define({
     const mediaHandle = mediaCleanup as { unref?: () => void }
     mediaHandle.unref?.()
     const toolRegistration = await registerTools({ ctx, config, logger, manager, client })
+    // QQ 会话里禁止模型调用内置 question 工具，改用 qq_send_message 询问用户。
+    const askGuardRegistration = await registerAskGuard({ ctx, logger, manager })
     const nameCache = new Map<string, { name: string; expires: number }>()
 
     // 系统提示：角色设定、当前时间、本轮是否必须回复。
@@ -233,6 +236,7 @@ export default Plugin.define({
       idleAbort.abort()
       await manager.flush()
       await toolRegistration.dispose()
+      await askGuardRegistration.dispose()
       await contextRegistration.dispose()
       await idleRegistration.dispose()
       client.dispose()

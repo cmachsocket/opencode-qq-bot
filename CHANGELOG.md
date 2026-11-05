@@ -2,6 +2,12 @@
 
 本文件记录 opencode-qq-bot 的重要变更。
 
+## [Unreleased]
+
+### Added
+
+- QQ 会话里拦截内置 `question` 工具，拒绝并要求模型改用 `qq_send_message` 询问用户。
+
 ## [0.2.0] - 2026-11-05
 
 ### Fixed

@@ -167,6 +167,7 @@ src/
   naplink/render.ts  消息段 → 文本与图片附件
   session/prompt.ts  角色设定与系统提示
   session/manager.ts 群聊 / 私聊 ↔ 会话映射、消息缓存
+  tools/ask-guard.ts 拦截内置 question 工具
   tools/qq.ts        QQ 工具注册
 docs/
   configuration.md   配置取值规则与限制
