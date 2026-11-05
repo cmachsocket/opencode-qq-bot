@@ -52,8 +52,10 @@ export interface QQBotConfig {
   groups: number[]
   /** 参与 AI 对话的私聊 QQ 号。 */
   users: number[]
-  /** 角色设定文件路径，默认使用插件包内的 SOUL.txt。 */
+  /** 角色设定文件路径，默认使用插件包内的 souls 目录。 */
   soulPath?: string
+  /** souls 目录里的角色设定文件名，默认 default.txt。 */
+  soulName?: string
   /** QQ 会话使用的 OpenCode agent。 */
   agent?: string
   /** QQ 会话使用的模型。 */
@@ -279,6 +281,7 @@ function createConfigSchema(
     groups,
     users,
     soulPath: text("soulPath", defaults.soulPath),
+    soulName: text("soulName", defaults.soulName),
     agent: text("agent", defaults.agent),
     model,
     sendDelayMs: nonNegative("sendDelayMs", defaults.sendDelayMs),
@@ -320,6 +323,7 @@ const ENV_VARS = {
   groups: "QQ_TARGET_GROUPS",
   users: "QQ_TARGET_USERS",
   soulPath: "QQ_BOT_SOUL_PATH",
+  soulName: "QQ_BOT_SOUL_NAME",
   agent: "QQ_BOT_AGENT",
   model: "QQ_BOT_MODEL",
   sendDelayMs: "QQ_SEND_DELAY_MS",
@@ -340,6 +344,7 @@ const OPTION_KEYS = new Set([
   "groups",
   "users",
   "soulPath",
+  "soulName",
   "agent",
   "model",
   "sendDelayMs",

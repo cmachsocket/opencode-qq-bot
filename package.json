@@ -13,7 +13,7 @@
   },
   "files": [
     "src",
-    "SOUL.txt",
+    "souls",
     "README.md"
   ],
   "scripts": {

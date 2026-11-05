@@ -6,7 +6,7 @@
 - 群聊 / 私聊消息 → OpenCode 会话 → 模型回复 → 对应聊天
 - 每个聊天固定对应一个会话，会话忙碌时新消息先缓存，空闲后合并成一轮再投进去；绑定写入插件存储，重启后自动沿用原会话
 - 语音自动转写、图片落盘后以文件引用进入会话、引用与合并转发展开成文本块
-- 角色设定放在 `SOUL.txt`
+- 角色设定放在 `souls/` 目录，可放多份，按文件名切换，改动后下一轮立即生效
 
 ## 环境要求
 
@@ -54,32 +54,61 @@ bun install
 插件不会读取项目 `.env`。如果选择用环境变量配置，必须把变量注入 OpenCode 服务进程本身，
 可参考 `.env.example`；`cp .env.example .env` 不会生效。
 
-| 选项                                | 环境变量                        | 默认值          | 说明                                            |
-| ----------------------------------- | ------------------------------- | --------------- | ----------------------------------------------- |
-| `napcat.url`                        | `NAPCAT_WS_URL`                 | 无（必填）      | NapCat 正向 WebSocket 地址                      |
-| `napcat.token`                      | `NAPCAT_WS_TOKEN`               | 无              | NapCat 访问令牌                                 |
-| `groups`                            | `QQ_TARGET_GROUPS`              | `[]`            | 参与对话的群号，逗号分隔                        |
-| `users`                             | `QQ_TARGET_USERS`               | `[]`            | 参与对话的私聊 QQ 号，逗号分隔                  |
-| `soulPath`                          | `QQ_BOT_SOUL_PATH`              | 包内 `SOUL.txt` | 角色设定文件路径                                |
-| `agent`                             | `QQ_BOT_AGENT`                  | OpenCode 默认   | 会话使用的 agent                                |
-| `model`                             | `QQ_BOT_MODEL`                  | OpenCode 默认   | 会话使用的模型，格式 `provider/model[/variant]` |
-| `sendDelayMs`                       | `QQ_SEND_DELAY_MS`              | `1000`          | 超长消息分段发送时每段之间的间隔                |
-| `warnLength`                        | `QQ_WARN_LENGTH`                | `20`            | 一轮回复总长度超过该值时告警                    |
-| `reuseSession`                      | `QQ_REUSE_SESSION`              | `false`         | 没有保存的绑定时，按会话标记找回上一次的会话    |
-| `busyTimeoutMs`                     | `QQ_BUSY_TIMEOUT_MS`            | `300000`        | 会话超过该时长未结束视为卡死，强制放行缓存消息  |
-| `proactive.enabled`                 | `QQ_PROACTIVE_ENABLED`          | `true`          | 是否启用主动说话                                |
-| `proactive.silenceThresholdSeconds` | `QQ_PROACTIVE_SILENCE_SECONDS`  | `10800`         | 沉默多久后才开始计算主动说话概率                |
-| `proactive.startProbability`        | `QQ_PROACTIVE_P_START`          | `0.01`          | 刚跨过阈值时的概率                              |
-| `proactive.probabilityPerHour`      | `QQ_PROACTIVE_P_SLOPE_PER_HOUR` | `0.05`          | 每多沉默一小时概率的增量                        |
-| `proactive.tickSeconds`             | `QQ_PROACTIVE_TICK_SECONDS`     | `3600`          | 心跳间隔，必须大于 0                            |
-| `reminder.enabled`                  | `QQ_REMINDER_ENABLED`           | `true`          | 模型一轮没调用发送工具时是否提醒                |
-| `reminder.max`                      | `QQ_REMINDER_MAX`               | `2`             | 连续提醒次数上限                                |
+| 选项                                | 环境变量                        | 默认值        | 说明                                            |
+| ----------------------------------- | ------------------------------- | ------------- | ----------------------------------------------- |
+| `napcat.url`                        | `NAPCAT_WS_URL`                 | 无（必填）    | NapCat 正向 WebSocket 地址                      |
+| `napcat.token`                      | `NAPCAT_WS_TOKEN`               | 无            | NapCat 访问令牌                                 |
+| `groups`                            | `QQ_TARGET_GROUPS`              | `[]`          | 参与对话的群号，逗号分隔                        |
+| `users`                             | `QQ_TARGET_USERS`               | `[]`          | 参与对话的私聊 QQ 号，逗号分隔                  |
+| `soulPath`                          | `QQ_BOT_SOUL_PATH`              | 包内 `souls/` | 角色设定文件或目录路径                          |
+| `soulName`                          | `QQ_BOT_SOUL_NAME`              | `default.txt` | `souls` 目录里的角色设定文件名                  |
+| `agent`                             | `QQ_BOT_AGENT`                  | OpenCode 默认 | 会话使用的 agent                                |
+| `model`                             | `QQ_BOT_MODEL`                  | OpenCode 默认 | 会话使用的模型，格式 `provider/model[/variant]` |
+| `sendDelayMs`                       | `QQ_SEND_DELAY_MS`              | `1000`        | 超长消息分段发送时每段之间的间隔                |
+| `warnLength`                        | `QQ_WARN_LENGTH`                | `20`          | 一轮回复总长度超过该值时告警                    |
+| `reuseSession`                      | `QQ_REUSE_SESSION`              | `false`       | 没有保存的绑定时，按会话标记找回上一次的会话    |
+| `busyTimeoutMs`                     | `QQ_BUSY_TIMEOUT_MS`            | `300000`      | 会话超过该时长未结束视为卡死，强制放行缓存消息  |
+| `proactive.enabled`                 | `QQ_PROACTIVE_ENABLED`          | `true`        | 是否启用主动说话                                |
+| `proactive.silenceThresholdSeconds` | `QQ_PROACTIVE_SILENCE_SECONDS`  | `10800`       | 沉默多久后才开始计算主动说话概率                |
+| `proactive.startProbability`        | `QQ_PROACTIVE_P_START`          | `0.01`        | 刚跨过阈值时的概率                              |
+| `proactive.probabilityPerHour`      | `QQ_PROACTIVE_P_SLOPE_PER_HOUR` | `0.05`        | 每多沉默一小时概率的增量                        |
+| `proactive.tickSeconds`             | `QQ_PROACTIVE_TICK_SECONDS`     | `3600`        | 心跳间隔，必须大于 0                            |
+| `reminder.enabled`                  | `QQ_REMINDER_ENABLED`           | `true`        | 模型一轮没调用发送工具时是否提醒                |
+| `reminder.max`                      | `QQ_REMINDER_MAX`               | `2`           | 连续提醒次数上限                                |
 
 没配置 `groups` 和 `users` 时插件不会响应任何消息（默认全部关闭）。
 
 布尔环境变量接受 `true/false`、`1/0`、`yes/no`、`on/off`；数值直接写数字。
 写错的配置项会输出告警并回退到默认值，不会静默失效。
 取值规则与图片内联限制见 [docs/configuration.md](docs/configuration.md)。
+
+### 角色设定
+
+角色设定文件放在 `souls/` 目录，一个目录里可以放多份，用 `soulName` 选生效的那份：
+
+```
+souls/
+  default.txt     默认角色
+  白羽桃.txt      另一份角色
+```
+
+```jsonc
+{
+  "plugins": [
+    {
+      "package": "./",
+      "options": {
+        "soulName": "白羽桃.txt",
+      },
+    },
+  ],
+}
+```
+
+- `soulName` 填 `souls` 目录里的文件名，默认 `default.txt`。
+- `soulPath` 可以直接给文件路径（相对路径按进程工作目录解析），也可以给目录，目录时同样用 `soulName` 选文件。
+- 生效文件的内容改动会被监听，下一轮就用新设定，不需要重启插件。
+- 改 `soulName` 换角色：写进 `opencode.json(c)` 保存后 OpenCode 会重载插件，随即生效。
 
 ## 工具
 
@@ -158,6 +187,7 @@ bun run format      # prettier --write .
 ## 目录
 
 ```
+souls/               角色设定文件（可多份，按文件名切换）
 src/
   config.ts          配置合并与校验
   index.ts           插件入口
@@ -165,7 +195,8 @@ src/
   logger.ts          日志
   naplink/client.ts  NapLink 连接与 API 门面
   naplink/render.ts  消息段 → 文本与图片附件
-  session/prompt.ts  角色设定与系统提示
+  session/prompt.ts  固定守则与系统提示
+  session/soul.ts    角色设定定位、读取与热更新
   session/manager.ts 群聊 / 私聊 ↔ 会话映射、消息缓存
   tools/ask-guard.ts 拦截内置 question 工具
   tools/qq.ts        QQ 工具注册

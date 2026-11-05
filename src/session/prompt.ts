@@ -1,7 +1,3 @@
-import { readFile } from "node:fs/promises"
-import { existsSync } from "node:fs"
-import { dirname, isAbsolute, join, resolve } from "node:path"
-
 /** 发消息用的工具名（命名空间 qq 下的 send_message）。 */
 export const SEND_MESSAGE_TOOL = "qq_send_message"
 
@@ -23,41 +19,6 @@ export const PROACTIVE_HINT = `
 你需要调用 ${SEND_MESSAGE_TOOL} 工具把话题发到当前聊天。
 `
 
-/** 从模块所在目录向上查找 SOUL.txt，兼容 src/ 与 dist/ 两种布局。 */
-export function findSoulFile(startDir: string, maxDepth = 5): string | undefined {
-  let current = resolve(startDir)
-  for (let depth = 0; depth <= maxDepth; depth += 1) {
-    const candidate = join(current, "SOUL.txt")
-    if (existsSync(candidate)) return candidate
-    const parent = dirname(current)
-    if (parent === current) break
-    current = parent
-  }
-  return undefined
-}
-
-/** 定位角色设定文件：显式路径优先，否则用包内默认。 */
-export function resolveSoulPath(
-  explicitPath: string | undefined,
-  moduleDir: string,
-  cwd: string,
-): string | undefined {
-  if (explicitPath) {
-    return isAbsolute(explicitPath) ? explicitPath : resolve(cwd, explicitPath)
-  }
-  return findSoulFile(moduleDir)
-}
-
-/** 读取角色设定，失败时返回空字符串。 */
-export async function loadSoul(path: string | undefined): Promise<string> {
-  if (!path) return ""
-  try {
-    return await readFile(path, "utf-8")
-  } catch {
-    return ""
-  }
-}
-
 /** 组装完整的系统提示词。 */
 export function buildSystemPrompt(soul: string): string {
   const base = soul.trim()
@@ -77,9 +38,4 @@ const TIME_FORMAT = new Intl.DateTimeFormat("sv-SE", {
 /** 当前时间文本，注入到系统提示里让模型知道现在几点。 */
 export function currentTimeText(now = new Date()): string {
   return TIME_FORMAT.format(now)
-}
-
-/** 供测试与其它模块定位包内 SOUL.txt。 */
-export function packageDirectory(): string {
-  return import.meta.dirname
 }

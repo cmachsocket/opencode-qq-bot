@@ -8,15 +8,9 @@ import { QQClient } from "./naplink/client"
 import { createMediaStore } from "./naplink/media"
 import { mentionsUser, renderMessage, resolveUserName, shouldProcess } from "./naplink/render"
 import { SessionManager } from "./session/manager"
-import {
-  buildSystemPrompt,
-  currentTimeText,
-  loadSoul,
-  PROACTIVE_HINT,
-  resolveSoulPath,
-  packageDirectory,
-} from "./session/prompt"
+import { currentTimeText, PROACTIVE_HINT } from "./session/prompt"
 import { proactiveTickProbability } from "./session/proactive"
+import { packageDirectory, SoulStore } from "./session/soul"
 import { registerAskGuard } from "./tools/ask-guard"
 import { registerTools } from "./tools/qq"
 
@@ -54,10 +48,17 @@ export default Plugin.define({
       }
     }
 
-    const soulPath = resolveSoulPath(config.soulPath, packageDirectory(), process.cwd())
-    const soul = await loadSoul(soulPath)
-    if (!soul) logger.warn(`角色设定读取失败：${soulPath ?? "(未找到)"}`)
-    const systemPrompt = buildSystemPrompt(soul)
+    // 角色设定：读取生效文件并监听改动，改完下一轮即生效。
+    const soul = new SoulStore(
+      {
+        soulPath: config.soulPath,
+        soulName: config.soulName,
+        moduleDir: packageDirectory(),
+        cwd: process.cwd(),
+      },
+      logger,
+    )
+    await soul.load()
 
     const client = new QQClient(config.napcat, logger)
     const manager = new SessionManager(ctx, config, logger)
@@ -80,7 +81,7 @@ export default Plugin.define({
     const contextRegistration = await ctx.session.hook("context", (event) => {
       const target = manager.targetForSession(event.sessionID)
       if (target === undefined) return
-      event.system.push({ type: "text", text: systemPrompt })
+      event.system.push({ type: "text", text: soul.prompt })
       event.system.push({ type: "text", text: `当前时间：${currentTimeText()}` })
       const turn = manager.currentTurn(event.sessionID)
       const destination = target.kind === "group" ? "群里" : "私聊里"
@@ -235,6 +236,7 @@ export default Plugin.define({
       clearInterval(mediaCleanup)
       idleAbort.abort()
       await manager.flush()
+      soul.dispose()
       await toolRegistration.dispose()
       await askGuardRegistration.dispose()
       await contextRegistration.dispose()

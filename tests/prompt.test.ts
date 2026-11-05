@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { buildSystemPrompt, currentTimeText, findSoulFile } from "../src/session/prompt"
+import { buildSystemPrompt, currentTimeText } from "../src/session/prompt"
 
 describe("buildSystemPrompt", () => {
   it("keeps the guidelines even when the soul file is missing", () => {
@@ -18,11 +18,5 @@ describe("currentTimeText", () => {
   it("formats the time as YYYY-MM-DD HH:mm:ss", () => {
     const text = currentTimeText(new Date(2026, 0, 2, 3, 4, 5))
     expect(text).toBe("2026-01-02 03:04:05")
-  })
-})
-
-describe("findSoulFile", () => {
-  it("returns undefined when no SOUL.txt exists up the tree", () => {
-    expect(findSoulFile("/")).toBeUndefined()
   })
 })

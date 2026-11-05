@@ -6,7 +6,14 @@
 
 ### Added
 
+- 角色设定支持多份并存：`souls/` 目录里可以放多个文件，用 `soulName`（环境变量
+  `QQ_BOT_SOUL_NAME`）选生效的那份，`soulPath` 可以覆盖成任意文件或目录。
+- 角色设定热更新：生效文件的内容改动会被监听，下一轮立即用新设定；文件稍后创建也会被捡到。
 - QQ 会话里拦截内置 `question` 工具，拒绝并要求模型改用 `qq_send_message` 询问用户。
+
+### Changed
+
+- 角色设定从包根目录的 `SOUL.txt` 移到 `souls/default.txt`。
 
 ## [0.2.0] - 2026-11-05
 

@@ -43,6 +43,21 @@
 `startProbability` 与 `probabilityPerHour` 表示目标每小时概率，实际每个心跳的触发概率会按
 `tickSeconds` 换算，修改心跳间隔不会改变整体触发频率。
 
+## 角色设定
+
+`souls/` 目录里可以放多份角色设定，`soulName` 选生效的那份，`soulPath` 可以覆盖成任意文件或目录。
+
+| 情况            | 生效文件                                          |
+| --------------- | ------------------------------------------------- |
+| 只配 `soulName` | `souls/<soulName>`（从插件目录向上找 `souls/`）   |
+| 只配 `soulPath` | 该路径指向的文件；指向目录时取目录下的 `soulName` |
+| 两个都配        | `soulPath` 优先                                   |
+| 都没配          | `souls/default.txt`                               |
+
+- `soulName` 默认 `default.txt`。
+- 文件内容改动会被监听，下一轮立即用新设定；文件稍后创建也会被捡到。
+- 换角色改 `soulName`：写进 `opencode.json(c)` 保存后 OpenCode 重载插件后生效。
+
 ## 图片文件
 
 OpenCode 的附件只接受 `file:` 与 `data:`。远端图片会先下载到受控临时目录，
