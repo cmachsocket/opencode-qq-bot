@@ -21,7 +21,6 @@
 | ----------------------------------- | ---------- |
 | `sendDelayMs`                       | 大于等于 0 |
 | `warnLength`                        | 大于等于 1 |
-| `busyTimeoutMs`                     | 大于 0     |
 | `reminder.max`                      | 大于等于 0 |
 | `proactive.silenceThresholdSeconds` | 大于等于 0 |
 | `proactive.startProbability`        | 0 到 1     |

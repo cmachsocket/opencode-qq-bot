@@ -118,7 +118,6 @@ describe("resolveConfig", () => {
         ...ENV,
         QQ_SEND_DELAY_MS: "250",
         QQ_WARN_LENGTH: "80",
-        QQ_BUSY_TIMEOUT_MS: "1000",
         QQ_PROACTIVE_SILENCE_SECONDS: "60",
         QQ_PROACTIVE_P_START: "0.5",
         QQ_PROACTIVE_P_SLOPE_PER_HOUR: "0.2",
@@ -128,7 +127,6 @@ describe("resolveConfig", () => {
     )
     expect(config.sendDelayMs).toBe(250)
     expect(config.warnLength).toBe(80)
-    expect(config.busyTimeoutMs).toBe(1000)
     expect(config.proactive.silenceThresholdSeconds).toBe(60)
     expect(config.proactive.startProbability).toBe(0.5)
     expect(config.proactive.probabilityPerHour).toBe(0.2)
@@ -201,7 +199,6 @@ describe("resolveConfig", () => {
     const config = resolveConfig(
       {
         warnLength: 0,
-        busyTimeoutMs: -1,
         reminder: { max: -1 },
         proactive: { startProbability: 2, probabilityPerHour: -0.1 },
       },
@@ -209,11 +206,10 @@ describe("resolveConfig", () => {
       (message) => warnings.push(message),
     )
     expect(config.warnLength).toBe(DEFAULT_CONFIG.warnLength)
-    expect(config.busyTimeoutMs).toBe(DEFAULT_CONFIG.busyTimeoutMs)
     expect(config.reminder.max).toBe(DEFAULT_CONFIG.reminder.max)
     expect(config.proactive.startProbability).toBe(DEFAULT_CONFIG.proactive.startProbability)
     expect(config.proactive.probabilityPerHour).toBe(DEFAULT_CONFIG.proactive.probabilityPerHour)
-    expect(warnings).toHaveLength(5)
+    expect(warnings).toHaveLength(4)
   })
 
   it("warns about unknown plugin options", () => {

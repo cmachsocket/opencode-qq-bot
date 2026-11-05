@@ -1,6 +1,11 @@
 import { describe, expect, it, vi } from "vitest"
 import type { Plugin } from "@opencode/plugin"
-import { MAX_BUFFER_TURNS, SessionManager, mergeTurns } from "../src/session/manager"
+import {
+  MAX_BUFFER_TURNS,
+  SUBMIT_GRACE_MS,
+  SessionManager,
+  mergeTurns,
+} from "../src/session/manager"
 import { DEFAULT_CONFIG, type QQBotConfig } from "../src/config"
 import type { ChatTarget } from "../src/chat"
 import { MAX_PROMPT_IMAGES } from "../src/naplink/render"
@@ -18,7 +23,8 @@ const privateChat = (id: number): ChatTarget => ({ kind: "private", id })
 
 interface Harness {
   manager: SessionManager
-  prompts: Array<{ sessionID: string; text: string }>
+  prompts: Array<{ sessionID: string; text: string; id?: string }>
+  prompt: ReturnType<typeof vi.fn>
   synthetics: Array<{ sessionID: string; text: string }>
   storage: {
     get: ReturnType<typeof vi.fn>
@@ -41,11 +47,18 @@ function createHarness(
     get: vi.fn(async () => stored),
     set: vi.fn(async () => {}),
   }
-  const sessionGet = vi.fn(async (input: { sessionID: string }) => ({ id: input.sessionID }))
+  const sessionGet = vi.fn(
+    async (input: { sessionID: string }): Promise<Record<string, unknown>> => ({
+      id: input.sessionID,
+    }),
+  )
   const sessionCreate = vi.fn(async () => {
     if (createId) return { id: createId() }
     created += 1
     return { id: `session-${created}` }
+  })
+  const prompt = vi.fn(async (input: { sessionID: string; text: string; id?: string }) => {
+    prompts.push(input)
   })
 
   const ctx = {
@@ -55,9 +68,7 @@ function createHarness(
       create: sessionCreate,
       get: sessionGet,
       remove: vi.fn(async () => {}),
-      prompt: vi.fn(async (input: { sessionID: string; text: string }) => {
-        prompts.push(input)
-      }),
+      prompt,
       synthetic: vi.fn(async (input: { sessionID: string; text: string }) => {
         synthetics.push(input)
       }),
@@ -75,6 +86,7 @@ function createHarness(
   return {
     manager: new SessionManager(ctx, config, logger),
     prompts,
+    prompt,
     synthetics,
     storage,
     sessionGet,
@@ -170,7 +182,7 @@ describe("SessionManager", () => {
     expect(prompts[0]?.sessionID).toBe("session-1")
   })
 
-  it("buffers messages while the session is busy and flushes them on idle", async () => {
+  it("buffers messages while upstream is still running and flushes them on idle", async () => {
     const { manager, prompts } = createHarness()
     await manager.enqueue(group(100), { text: "第一条", files: [], atMe: false })
     await manager.enqueue(group(100), { text: "第二条", files: [], atMe: false })
@@ -195,6 +207,94 @@ describe("SessionManager", () => {
     await manager.flushBuffered("session-1")
     expect(prompts).toHaveLength(2)
     expect(prompts[1]?.text).toBe("第二条\n第三条")
+  })
+
+  it("ignores a late idle hook from the previous run", async () => {
+    vi.useFakeTimers()
+    try {
+      const { manager, prompts, synthetics, sessionGet } = createHarness()
+      vi.setSystemTime(new Date(10_000))
+      await manager.enqueue(group(100), { text: "第一条", files: [], atMe: false })
+      expect(prompts).toHaveLength(1)
+
+      vi.setSystemTime(new Date(11_000))
+      await manager.enqueue(group(100), { text: "第二条", files: [], atMe: false })
+      expect(prompts).toHaveLength(1)
+
+      // 上一轮在 10.5s 结束，但结束信号直到新一轮投递后才到。
+      sessionGet.mockResolvedValue({
+        id: "session-1",
+        time: { busy: new Date(9_000), idle: new Date(10_500) },
+      })
+      await manager.flushBuffered("session-1")
+      expect(prompts).toHaveLength(2)
+
+      vi.setSystemTime(new Date(12_000))
+      await manager.handleIdle("session-1")
+      expect(synthetics).toHaveLength(0)
+      expect(manager.currentTurn("session-1")?.text).toBe("第二条")
+
+      // 上游还没记录新一轮的 busy，第三条不能被提前投递。
+      await manager.enqueue(group(100), { text: "第三条", files: [], atMe: false })
+      expect(prompts).toHaveLength(2)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it("keeps the new turn when a duplicate end event arrives", async () => {
+    vi.useFakeTimers()
+    try {
+      const { manager, prompts, sessionGet } = createHarness()
+      vi.setSystemTime(new Date(10_000))
+      await manager.enqueue(group(100), { text: "第一条", files: [], atMe: false })
+
+      vi.setSystemTime(new Date(11_000))
+      await manager.enqueue(group(100), { text: "第二条", files: [], atMe: false })
+      expect(prompts).toHaveLength(1)
+
+      sessionGet.mockResolvedValue({
+        id: "session-1",
+        time: { busy: new Date(9_000), idle: new Date(10_500) },
+      })
+      await manager.flushBuffered("session-1")
+      expect(prompts).toHaveLength(2)
+
+      // 同一次执行又发来一个结束信号，不能清掉刚投递的轮次。
+      vi.setSystemTime(new Date(11_500))
+      await manager.flushBuffered("session-1")
+      expect(manager.currentTurn("session-1")?.text).toBe("第二条")
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it("retries an ambiguous prompt with the same idempotency key", async () => {
+    vi.useFakeTimers()
+    try {
+      const { manager, prompt } = createHarness()
+      vi.setSystemTime(new Date(10_000))
+      prompt.mockRejectedValueOnce(new Error("timeout"))
+      await manager.enqueue(group(100), { text: "你好", files: [], atMe: false })
+      expect(prompt).toHaveBeenCalledTimes(1)
+
+      vi.setSystemTime(new Date(10_000 + SUBMIT_GRACE_MS + 1))
+      await manager.resumeBuffered()
+      expect(prompt).toHaveBeenCalledTimes(2)
+
+      const first = prompt.mock.calls[0]?.[0] as { id?: string } | undefined
+      const second = prompt.mock.calls[1]?.[0] as { id?: string } | undefined
+      expect(first?.id).toEqual(expect.any(String))
+      expect(second?.id).toBe(first?.id)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it("reports whether an incoming message id is new", () => {
+    const { manager } = createHarness()
+    expect(manager.rememberIncoming(group(100), "message-1")).toBe(true)
+    expect(manager.rememberIncoming(group(100), "message-1")).toBe(false)
   })
 
   it("refuses to bind one session to two targets", async () => {
@@ -251,7 +351,7 @@ describe("SessionManager", () => {
     expect(synthetics).toHaveLength(0)
   })
 
-  it("keeps the session busy while its own background work is still running", async () => {
+  it("keeps buffering while its own background work is still running", async () => {
     const { manager, prompts } = createHarness()
     await manager.enqueue(group(100), { text: "第一条", files: [], atMe: false })
     await manager.handleIdle("session-1", [{ sessionID: "session-1" }])
@@ -279,10 +379,10 @@ describe("SessionManager", () => {
     expect(prompts[1]?.text).toBe("第二条")
   })
 
-  it("releases stale busy state on an idle event without buffered messages", async () => {
+  it("resumes delivery after an idle event without buffered messages", async () => {
     const { manager, prompts } = createHarness()
     await manager.enqueue(group(100), { text: "第一条", files: [], atMe: false })
-    // 模拟控制类工作只发 session.idle、不触发 idle 钩子。
+    // 模拟控制类工作只更新会话状态、不触发 idle 钩子。
     await manager.flushBuffered("session-1")
     await manager.enqueue(group(100), { text: "第二条", files: [], atMe: false })
     expect(prompts).toHaveLength(2)
@@ -311,16 +411,20 @@ describe("SessionManager", () => {
     expect(synthetics).toHaveLength(2)
   })
 
-  it("releases buffered messages when the session stays busy past the timeout", async () => {
+  it("releases buffered messages once upstream reports idle", async () => {
     vi.useFakeTimers()
     try {
-      const { manager, prompts } = createHarness({ busyTimeoutMs: 1000 })
+      const { manager, prompts, sessionGet } = createHarness()
       await manager.enqueue(group(100), { text: "第一条", files: [], atMe: false })
       await manager.enqueue(group(100), { text: "第二条", files: [], atMe: false })
       expect(prompts).toHaveLength(1)
 
-      // 即使群里没有新消息，看门狗也会在超时后放行缓存。
-      await vi.advanceTimersByTimeAsync(1500)
+      sessionGet.mockResolvedValue({
+        id: "session-1",
+        time: { busy: new Date(1), idle: new Date(2) },
+      })
+      await vi.advanceTimersByTimeAsync(SUBMIT_GRACE_MS + 1)
+      await manager.resumeBuffered()
       expect(prompts).toHaveLength(2)
       expect(prompts[1]?.text).toBe("第二条")
     } finally {
@@ -328,7 +432,49 @@ describe("SessionManager", () => {
     }
   })
 
-  it("releases the busy state when the model execution fails", async () => {
+  it("keeps buffering while upstream is still running", async () => {
+    vi.useFakeTimers()
+    try {
+      const { manager, prompts, sessionGet } = createHarness()
+      await manager.enqueue(group(100), { text: "第一条", files: [], atMe: false })
+      await manager.enqueue(group(100), { text: "第二条", files: [], atMe: false })
+
+      // 上游还在执行：即使本地已经忙碌很久，也不能强行放行。
+      sessionGet.mockResolvedValue({
+        id: "session-1",
+        time: { busy: new Date(2), idle: undefined },
+      })
+      await vi.advanceTimersByTimeAsync(SUBMIT_GRACE_MS + 1)
+      await manager.resumeBuffered()
+      expect(prompts).toHaveLength(1)
+
+      sessionGet.mockResolvedValue({
+        id: "session-1",
+        time: { busy: new Date(2), idle: new Date(1) },
+      })
+      await manager.resumeBuffered()
+      expect(prompts).toHaveLength(1)
+
+      sessionGet.mockResolvedValue({ id: "session-1", time: { busy: 2, idle: 3 } })
+      await manager.resumeBuffered()
+      expect(prompts).toHaveLength(2)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it("does not keep its own busy flag when upstream is idle", async () => {
+    const { manager, prompts } = createHarness()
+    await manager.enqueue(group(100), { text: "第一条", files: [], atMe: false })
+    // 上游已经结束，本地不需要额外的释放动作。
+    await manager.flushBuffered("session-1")
+
+    await manager.enqueue(group(100), { text: "第二条", files: [], atMe: false })
+    expect(prompts).toHaveLength(2)
+    expect(prompts[1]?.text).toBe("第二条")
+  })
+
+  it("resumes buffered messages when the model execution fails", async () => {
     const { manager, prompts } = createHarness()
     await manager.enqueue(group(100), { text: "第一条", files: [], atMe: false })
     await manager.enqueue(group(100), { text: "第二条", files: [], atMe: false })
@@ -360,7 +506,7 @@ describe("SessionManager", () => {
     expect(manager.targetForSession("gone")).toBeUndefined()
   })
 
-  it("does not create a proactive turn while the chat is busy", async () => {
+  it("does not create a proactive turn while a turn is active", async () => {
     const { manager, synthetics } = createHarness()
     await manager.enqueue(group(100), { text: "你好", files: [], atMe: false })
     await manager.proactive(group(100), "主动话题")

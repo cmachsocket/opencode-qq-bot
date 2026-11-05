@@ -1,5 +1,6 @@
 import { Plugin } from "@opencode/plugin"
 import type { GroupMessageEvent, MessageEvent } from "@naplink/naplink"
+import { Mutex } from "async-mutex"
 import { type ChatTarget, configuredTargets, isTargetEnabled, targetKey, targetLabel } from "./chat"
 import { resolveConfig, type QQBotConfig } from "./config"
 import { claimInstance } from "./instance"
@@ -7,7 +8,7 @@ import { createLogger } from "./logger"
 import { QQClient } from "./naplink/client"
 import { createMediaStore } from "./naplink/media"
 import { mentionsUser, renderMessage, resolveUserName, shouldProcess } from "./naplink/render"
-import { SessionManager } from "./session/manager"
+import { RESUME_INTERVAL_MS, SessionManager } from "./session/manager"
 import { currentTimeText, PROACTIVE_HINT } from "./session/prompt"
 import { proactiveTickProbability } from "./session/proactive"
 import { packageDirectory, SoulStore } from "./session/soul"
@@ -102,17 +103,28 @@ export default Plugin.define({
       await manager.handleIdle(event.sessionID, event.background)
     })
 
-    // 真正空闲（含后台任务结束）后，把忙碌期间缓存的消息合并成新的一轮。
-    // 失败或中断不会触发 idle 钩子，也要在这里释放状态；订阅断掉后自动重连。
+    // 会话空闲后，把队列里缓存的消息合并成新的一轮。
+    // `session.status` 是官方推荐的状态信号；2.2.5 实际只在执行结束时发
+    // `session.execution.succeeded`，所以两者都要监听。失败或中断单独结束轮次。
+    // 订阅断掉后自动重连。
     const idleAbort = new AbortController()
     void (async () => {
       while (!idleAbort.signal.aborted) {
         try {
           for await (const event of ctx.event.subscribe({
-            types: ["session.idle", "session.execution.failed", "session.execution.interrupted"],
+            types: [
+              "session.status",
+              "session.execution.succeeded",
+              "session.execution.failed",
+              "session.execution.interrupted",
+            ],
             signal: idleAbort.signal,
           })) {
-            if (event.type === "session.idle") {
+            if (event.type === "session.status") {
+              if (event.data.status.type === "idle") {
+                await manager.flushBuffered(event.data.sessionID)
+              }
+            } else if (event.type === "session.execution.succeeded") {
               await manager.flushBuffered(event.data.sessionID)
             } else {
               await manager.handleExecutionEnd(event.data.sessionID, event.type)
@@ -165,25 +177,30 @@ export default Plugin.define({
     }
 
     // 同一会话内串行处理，避免图片下载、成员查询等异步操作打乱消息顺序。
-    const processing = new Map<string, Promise<void>>()
+    const processing = new Map<string, Mutex>()
+    const processingMutex = (key: string): Mutex => {
+      let mutex = processing.get(key)
+      if (!mutex) {
+        mutex = new Mutex()
+        processing.set(key, mutex)
+      }
+      return mutex
+    }
     const scheduleMessage = (event: MessageEvent) => {
       const target = eventTarget(event)
       if (!isTargetEnabled(config, target)) return
       const selfId = String(event.self_id ?? client.selfId ?? "")
       if (selfId && String(event.user_id) === selfId) return
 
+      if (!manager.rememberIncoming(target, String(event.message_id))) {
+        logger.debug(`忽略重复消息 ${event.message_id}`)
+        return
+      }
       manager.touch(target)
-      manager.rememberIncoming(target, String(event.message_id))
 
-      const key = targetKey(target)
-      const previous = processing.get(key) ?? Promise.resolve()
-      const task = previous
-        .then(() => handleMessage(event, target, selfId))
+      void processingMutex(targetKey(target))
+        .runExclusive(() => handleMessage(event, target, selfId))
         .catch((error: unknown) => logger.error(`处理 ${targetLabel(target)} 消息失败`, error))
-      processing.set(key, task)
-      void task.finally(() => {
-        if (processing.get(key) === task) processing.delete(key)
-      })
     }
 
     // 先注册监听再连接：NapCat 连接期间推送的消息也会被收到。
@@ -194,13 +211,11 @@ export default Plugin.define({
 
     // 主动说话心跳。
     let timer: ReturnType<typeof setInterval> | undefined
-    let ticking = false
     if (config.proactive.enabled) {
+      const tickMutex = new Mutex()
       const tick = async () => {
-        if (ticking) return
-        ticking = true
-        try {
-          await manager.recoverStale()
+        if (tickMutex.isLocked()) return
+        await tickMutex.runExclusive(async () => {
           for (const target of configuredTargets(config)) {
             const probability = proactiveTickProbability(
               config.proactive,
@@ -210,16 +225,21 @@ export default Plugin.define({
             logger.info(`${targetLabel(target)} 沉默达到阈值，主动发起话题`)
             await manager.proactive(target, PROACTIVE_HINT)
           }
-        } finally {
-          ticking = false
-        }
+        })
       }
       timer = setInterval(() => {
-        void tick()
+        void tick().catch((error: unknown) => logger.error("主动说话心跳失败", error))
       }, config.proactive.tickSeconds * 1000)
       const handle = timer as { unref?: () => void }
       handle.unref?.()
     }
+
+    // 执行结束事件丢失时，用上游会话状态兜底放行缓存；不会打断仍在运行的轮次。
+    const resumeTimer = setInterval(() => {
+      void manager.resumeBuffered()
+    }, RESUME_INTERVAL_MS)
+    const resumeHandle = resumeTimer as { unref?: () => void }
+    resumeHandle.unref?.()
 
     logger.info("插件已加载", {
       groups: config.groups,
@@ -233,6 +253,7 @@ export default Plugin.define({
       if (disposed) return
       disposed = true
       if (timer) clearInterval(timer)
+      clearInterval(resumeTimer)
       clearInterval(mediaCleanup)
       idleAbort.abort()
       await manager.flush()

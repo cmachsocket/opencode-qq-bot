@@ -66,8 +66,6 @@ export interface QQBotConfig {
   warnLength: number
   /** 重启后是否复用上一次的会话。 */
   reuseSession: boolean
-  /** 会话忙碌超过该时长（毫秒）视为卡死，强制放行缓存的消息。 */
-  busyTimeoutMs: number
   proactive: ProactiveConfig
   reminder: ReminderConfig
 }
@@ -79,7 +77,6 @@ export const DEFAULT_CONFIG: Omit<QQBotConfig, "napcat"> = {
   sendDelayMs: 1000,
   warnLength: 20,
   reuseSession: false,
-  busyTimeoutMs: 300_000,
   proactive: {
     enabled: true,
     silenceThresholdSeconds: 3 * 3600,
@@ -287,7 +284,6 @@ function createConfigSchema(
     sendDelayMs: nonNegative("sendDelayMs", defaults.sendDelayMs),
     warnLength: integer("warnLength", defaults.warnLength, 1),
     reuseSession: boolean("reuseSession", defaults.reuseSession),
-    busyTimeoutMs: positive("busyTimeoutMs", defaults.busyTimeoutMs),
     proactive: z
       .object({
         enabled: boolean("proactive.enabled", defaults.proactive.enabled),
@@ -329,7 +325,6 @@ const ENV_VARS = {
   sendDelayMs: "QQ_SEND_DELAY_MS",
   warnLength: "QQ_WARN_LENGTH",
   reuseSession: "QQ_REUSE_SESSION",
-  busyTimeoutMs: "QQ_BUSY_TIMEOUT_MS",
   "proactive.enabled": "QQ_PROACTIVE_ENABLED",
   "proactive.silenceThresholdSeconds": "QQ_PROACTIVE_SILENCE_SECONDS",
   "proactive.startProbability": "QQ_PROACTIVE_P_START",
@@ -350,7 +345,6 @@ const OPTION_KEYS = new Set([
   "sendDelayMs",
   "warnLength",
   "reuseSession",
-  "busyTimeoutMs",
   "proactive",
   "reminder",
 ])

@@ -67,7 +67,6 @@ bun install
 | `sendDelayMs`                       | `QQ_SEND_DELAY_MS`              | `1000`        | 超长消息分段发送时每段之间的间隔                |
 | `warnLength`                        | `QQ_WARN_LENGTH`                | `20`          | 一轮回复总长度超过该值时告警                    |
 | `reuseSession`                      | `QQ_REUSE_SESSION`              | `false`       | 没有保存的绑定时，按会话标记找回上一次的会话    |
-| `busyTimeoutMs`                     | `QQ_BUSY_TIMEOUT_MS`            | `300000`      | 会话超过该时长未结束视为卡死，强制放行缓存消息  |
 | `proactive.enabled`                 | `QQ_PROACTIVE_ENABLED`          | `true`        | 是否启用主动说话                                |
 | `proactive.silenceThresholdSeconds` | `QQ_PROACTIVE_SILENCE_SECONDS`  | `10800`       | 沉默多久后才开始计算主动说话概率                |
 | `proactive.startProbability`        | `QQ_PROACTIVE_P_START`          | `0.01`        | 刚跨过阈值时的概率                              |
