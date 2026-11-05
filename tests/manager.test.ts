@@ -301,6 +301,112 @@ describe("SessionManager", () => {
     }
   })
 
+  it("retries a failed delivery with the same id and the same content", async () => {
+    vi.useFakeTimers()
+    try {
+      const { manager, prompt, sessionGet } = createHarness()
+      vi.setSystemTime(new Date(10_000))
+      sessionGet.mockResolvedValue({
+        id: "session-1",
+        time: { busy: new Date(9_000), idle: new Date(9_500) },
+      })
+      // 上游可能已经收到，只是响应丢了。
+      prompt.mockRejectedValueOnce(new Error("timeout"))
+      await manager.enqueue(group(100), { text: "第一条", files: [], atMe: false })
+      expect(prompt).toHaveBeenCalledTimes(1)
+
+      vi.setSystemTime(new Date(20_000))
+      await manager.resumeBuffered()
+      expect(prompt).toHaveBeenCalledTimes(2)
+
+      const first = prompt.mock.calls[0]?.[0] as { id?: string; text: string } | undefined
+      const second = prompt.mock.calls[1]?.[0] as { id?: string; text: string } | undefined
+      expect(second?.id).toBe(first?.id)
+      expect(second?.text).toBe(first?.text)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it("does not merge a new message into the batch that is being retried", async () => {
+    vi.useFakeTimers()
+    try {
+      const { manager, prompt, sessionGet } = createHarness()
+      vi.setSystemTime(new Date(10_000))
+      sessionGet.mockResolvedValue({
+        id: "session-1",
+        time: { busy: new Date(9_000), idle: new Date(9_500) },
+      })
+      prompt.mockRejectedValueOnce(new Error("timeout"))
+      await manager.enqueue(group(100), { text: "第一条", files: [], atMe: false })
+      expect(prompt).toHaveBeenCalledTimes(1)
+
+      // 重试期间又来了一条消息。
+      vi.setSystemTime(new Date(20_000))
+      await manager.enqueue(group(100), { text: "第二条", files: [], atMe: false })
+      expect(prompt).toHaveBeenCalledTimes(2)
+
+      const first = prompt.mock.calls[0]?.[0] as { id?: string; text: string } | undefined
+      const second = prompt.mock.calls[1]?.[0] as { id?: string; text: string } | undefined
+      // 重试的必须是原来那一批：同一个 id、同一段内容。
+      expect(second?.id).toBe(first?.id)
+      expect(second?.text).toBe("第一条")
+
+      // 新到的消息单独成一批，不能混进正在重试的那一批。
+      vi.setSystemTime(new Date(30_000))
+      await manager.resumeBuffered()
+      expect(prompt).toHaveBeenCalledTimes(3)
+
+      const third = prompt.mock.calls[2]?.[0] as { id?: string; text: string } | undefined
+      expect(third?.text).toBe("第二条")
+      expect(third?.id).not.toBe(first?.id)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it("never reuses an id for a different payload", async () => {
+    vi.useFakeTimers()
+    try {
+      const { manager, prompt, prompts, sessionGet } = createHarness()
+      // 模拟上游：同一个 id 带上不同内容会被拒绝。
+      const seen = new Map<string, string>()
+      const conflicts: string[] = []
+      prompt.mockImplementation(async (input: { sessionID: string; text: string; id?: string }) => {
+        const key = input.id ?? ""
+        const previous = seen.get(key)
+        if (previous !== undefined && previous !== input.text) {
+          conflicts.push(`${key}: ${previous} -> ${input.text}`)
+        }
+        seen.set(key, input.text)
+        prompts.push(input)
+      })
+
+      vi.setSystemTime(new Date(10_000))
+      sessionGet.mockResolvedValue({
+        id: "session-1",
+        time: { busy: new Date(9_000), idle: new Date(9_500) },
+      })
+      prompt.mockRejectedValueOnce(new Error("timeout"))
+      await manager.enqueue(group(100), { text: "第一条", files: [], atMe: false })
+
+      vi.setSystemTime(new Date(20_000))
+      await manager.enqueue(group(100), { text: "第二条", files: [], atMe: false })
+
+      vi.setSystemTime(new Date(30_000))
+      await manager.resumeBuffered()
+
+      expect(conflicts).toEqual([])
+      // 两条消息都要送到上游，且分别使用不同的 id。
+      expect(prompts.map((item) => item.text)).toContain("第一条")
+      expect(prompts.map((item) => item.text)).toContain("第二条")
+      const ids = new Set(prompts.map((item) => item.id))
+      expect(ids.size).toBe(2)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it("ignores stale end events even when the upstream idle timestamp is older than the newest dispatch", async () => {
     vi.useFakeTimers()
     try {

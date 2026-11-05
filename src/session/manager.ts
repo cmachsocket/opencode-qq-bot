@@ -51,6 +51,8 @@ interface ChatState {
   sessionID?: string
   /** 等上游空闲后要投递的消息。 */
   buffer: Turn[]
+  /** 已经尝试投递但失败的一批：内容与 id 冻结，重试时原样重发。 */
+  pending?: Turn
   /** 最近一次投递的时间戳（毫秒）。 */
   lastDispatchAt: number
   /** 最近一次上游确认空闲的时间戳（毫秒）。 */
@@ -379,6 +381,12 @@ export class SessionManager {
    * `force` 仅用于上游已经明确发出结束事件的场景。
    */
   private async drain(state: ChatState, force = false): Promise<void> {
+    // 上一批投递失败时，原样重试：内容与 id 都不能变。
+    // 上游按 id 判定重复，同样的 id 带上不同内容会被判为冲突，那一批就永远送不进去。
+    if (state.pending) {
+      if (!(await this.dispatch(state, state.pending))) return
+      state.pending = undefined
+    }
     if (state.buffer.length === 0) return
     if (!force && state.sessionID && this.verifiedSessions.has(state.sessionID)) {
       if (await this.sessionRunning(state.sessionID)) {
@@ -394,8 +402,10 @@ export class SessionManager {
 
     const turns = state.buffer
     state.buffer = []
-    if (!(await this.dispatch(state, mergeTurns(turns)))) {
-      state.buffer = [...turns, ...state.buffer]
+    const batch = mergeTurns(turns)
+    if (!(await this.dispatch(state, batch))) {
+      // 冻结这一批：重试时用同一个 id、同一段内容。
+      state.pending = batch
     }
   }
 
@@ -454,9 +464,10 @@ export class SessionManager {
         return
       }
 
-      if (state.buffer.length > 0) {
+      if (state.buffer.length > 0 || state.pending) {
         // 在 idle 钩子里投递会被并入旧的一轮；等结束事件后再作为新的一轮投递。
-        this.logger.debug(`${label} 空闲，等待投递 ${state.buffer.length} 条缓存消息`)
+        const waiting = state.pending ? "重试上一批" : `投递 ${state.buffer.length} 条缓存消息`
+        this.logger.debug(`${label} 空闲，等待${waiting}`)
         return
       }
 
@@ -511,7 +522,7 @@ export class SessionManager {
    */
   async resumeBuffered(): Promise<void> {
     for (const state of this.sessions.values()) {
-      if (state.buffer.length === 0) continue
+      if (state.buffer.length === 0 && !state.pending) continue
       await this.targetMutex(state.target).runExclusive(() => this.drain(state))
     }
   }
@@ -525,7 +536,7 @@ export class SessionManager {
         this.logger.debug(`${targetLabel(state.target)} 忽略上一轮迟到的结束信号`)
         return
       }
-      if (state.buffer.length === 0) {
+      if (state.buffer.length === 0 && !state.pending) {
         // 只有没有新轮次时，idle 时间才代表当前状态；投递缓存时若也写入，
         // 会与紧接着的 dispatch 落在同一毫秒，误判为新一轮已经结束。
         state.idleAt = Date.now()
