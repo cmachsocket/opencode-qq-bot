@@ -379,6 +379,34 @@ describe("renderMessage", () => {
     expect(rendered.files).toEqual([])
   })
 
+  it("hydrates an image that only carries a NapCat local path", async () => {
+    const api = makeApi({
+      getFile: vi.fn(async () => ({
+        file: "/root/.config/QQ/nt_qq/nt_data/Pic/a.jpg",
+        url: "https://example.com/hydrated.jpg",
+      })),
+    })
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () =>
+          new Response(new Uint8Array([0xff, 0xd8, 0xff]), {
+            headers: { "content-type": "image/jpeg" },
+          }),
+      ),
+    )
+    try {
+      const rendered = await renderMessage(
+        ctx(api),
+        makeEvent([{ type: "image", data: { file: "a.jpg" } }]),
+      )
+      expect(rendered.files).toHaveLength(1)
+      expect(rendered.files[0]?.name).toBe("qq-image-1.jpg")
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
   it("stores a remote image as a file reference", async () => {
     vi.stubGlobal(
       "fetch",

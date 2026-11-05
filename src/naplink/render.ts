@@ -2,6 +2,7 @@ import type { MessageEvent, MessageSegment, OneBotApi } from "@naplink/naplink"
 import type { ChatTarget } from "../chat"
 import { targetKey } from "../chat"
 import type { Logger } from "../logger"
+import { hydrateSegment } from "./client"
 import {
   MAX_IMAGE_BYTES,
   inlineImageBytes,
@@ -174,8 +175,10 @@ async function renderForwardSegments(
           break
         case "image": {
           parts.push("[图片]")
+          if (budget.images <= 0) break
+          await hydrateSegment(ctx.api, segment, ctx.logger)
           const url = segment.data.url || segment.data.file
-          if (!url || budget.images <= 0) break
+          if (!url) break
           const stored = await ctx.media.storeImage(url)
           if (!stored || !takeImage(budget, stored)) break
           images.push(stored)
@@ -363,8 +366,10 @@ export async function renderMessage(
           break
         case "image": {
           textBuffer.push("[图片] ")
+          if (budget.images <= 0) break
+          await hydrateSegment(ctx.api, segment, ctx.logger)
           const url = segment.data.url || segment.data.file
-          if (!url || budget.images <= 0) break
+          if (!url) break
           const stored = await ctx.media.storeImage(url)
           if (!stored || !takeImage(budget, stored)) break
           imageIndex += 1

@@ -83,6 +83,11 @@ function truncateCodePoints(text: string, max: number): string {
   return Array.from(text).slice(0, max).join("")
 }
 
+/** 截断过长的地址，避免日志被超长 URL 淹没。 */
+function truncateForLog(value: string, max = 120): string {
+  return value.length > max ? `${value.slice(0, max)}…` : value
+}
+
 /** 判断主机名是否指向本机或内网，避免下载请求打内网服务。 */
 export function isPrivateHost(hostname: string): boolean {
   let host = hostname.trim().toLowerCase()
@@ -199,7 +204,10 @@ export class MediaStore {
       return { bytes, mime }
     }
     if (url.startsWith("data:")) return parseDataUrl(url)
-    if (!url.startsWith("http://") && !url.startsWith("https://")) return undefined
+    if (!url.startsWith("http://") && !url.startsWith("https://")) {
+      this.logger.warn(`不支持的图片地址，跳过下载 url=${truncateForLog(url)}`)
+      return undefined
+    }
 
     let parsed: URL
     try {

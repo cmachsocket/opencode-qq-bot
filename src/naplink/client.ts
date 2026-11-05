@@ -8,6 +8,83 @@ import {
 import type { Logger } from "../logger"
 import type { NapcatConfig } from "../config"
 
+const MEDIA_SEGMENT_TYPES = ["image", "video", "record", "audio", "file"] as const
+
+type MediaSegmentType = (typeof MEDIA_SEGMENT_TYPES)[number]
+
+interface MediaSegmentData {
+  file?: string
+  file_id?: string
+  url?: string
+}
+
+interface MediaFileLike {
+  file?: unknown
+  url?: unknown
+}
+
+function isMediaSegmentType(type: string): type is MediaSegmentType {
+  return (MEDIA_SEGMENT_TYPES as readonly string[]).includes(type)
+}
+
+/** 取第一个可下载的 http(s) 直链，忽略本地路径与 base64。 */
+export function pickRemoteUrl(...values: unknown[]): string | undefined {
+  for (const value of values) {
+    if (typeof value === "string" && /^https?:\/\//i.test(value)) return value
+  }
+  return undefined
+}
+
+/**
+ * 补全单个媒体段的远程直链。
+ *
+ * NapCat 同时返回本地路径（`file`）和 CDN 直链（`url`），SDK 自带的补全逻辑
+ * 会优先选用本地路径，导致插件无法下载。这里只写入 `url`，且优先使用 http(s) 地址。
+ */
+export async function hydrateSegment(
+  api: OneBotApi,
+  segment: MessageSegment,
+  logger: Logger,
+): Promise<void> {
+  if (!isMediaSegmentType(segment.type)) return
+  const data = segment.data as MediaSegmentData
+  // 已有可用的远程直链时不要覆盖。
+  if (pickRemoteUrl(data.url)) return
+  const fileId = data.file ?? data.file_id
+  if (typeof fileId !== "string" || fileId.length === 0) return
+  if (/^(file|base64|data):/i.test(fileId)) return
+
+  try {
+    const file = (await api.getFile(fileId)) as MediaFileLike | undefined
+    const direct = pickRemoteUrl(file?.url, file?.file)
+    if (direct) {
+      data.url = direct
+      return
+    }
+    if (segment.type === "image") {
+      const image = (await api.getImage(fileId)) as MediaFileLike | undefined
+      const imageUrl = pickRemoteUrl(image?.url, image?.file)
+      if (imageUrl) data.url = imageUrl
+    } else if (segment.type === "record" || segment.type === "audio") {
+      const record = (await api.getRecord(fileId, "mp3")) as MediaFileLike | undefined
+      const recordUrl = pickRemoteUrl(record?.url, record?.file)
+      if (recordUrl) data.url = recordUrl
+    }
+  } catch (error) {
+    logger.debug(`补全媒体直链失败 type=${segment.type} file=${fileId}`, error)
+  }
+}
+
+/** 补全一条消息里所有媒体段的远程直链。 */
+export async function hydrateMedia(
+  api: OneBotApi,
+  message: MessageSegment[],
+  logger: Logger,
+): Promise<void> {
+  if (!Array.isArray(message)) return
+  await Promise.all(message.map((segment) => hydrateSegment(api, segment, logger)))
+}
+
 /** NapCat 的连接与 API 门面，屏蔽 SDK 细节。 */
 export class QQClient {
   private readonly link: NapLink
@@ -105,7 +182,7 @@ export class QQClient {
   /** 补全消息里媒体段的直链，便于下载图片。 */
   async hydrate(message: MessageSegment[]): Promise<void> {
     try {
-      await this.link.hydrateMessage(message)
+      await hydrateMedia(this.api, message, this.logger)
     } catch (error) {
       this.logger.warn("补全媒体直链失败", error)
     }
