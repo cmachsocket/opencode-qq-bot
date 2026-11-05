@@ -8,7 +8,7 @@ import { createLogger } from "./logger"
 import { QQClient } from "./naplink/client"
 import { createMediaStore } from "./naplink/media"
 import { mentionsUser, renderMessage, resolveUserName, shouldProcess } from "./naplink/render"
-import { RESUME_INTERVAL_MS, SessionManager } from "./session/manager"
+import { SessionManager } from "./session/manager"
 import { currentTimeText, PROACTIVE_HINT } from "./session/prompt"
 import { proactiveTickProbability } from "./session/proactive"
 import { packageDirectory, SoulStore } from "./session/soul"
@@ -234,13 +234,6 @@ export default Plugin.define({
       handle.unref?.()
     }
 
-    // 执行结束事件丢失时，用上游会话状态兜底放行缓存；不会打断仍在运行的轮次。
-    const resumeTimer = setInterval(() => {
-      void manager.resumeBuffered()
-    }, RESUME_INTERVAL_MS)
-    const resumeHandle = resumeTimer as { unref?: () => void }
-    resumeHandle.unref?.()
-
     logger.info("插件已加载", {
       groups: config.groups,
       users: config.users,
@@ -253,7 +246,6 @@ export default Plugin.define({
       if (disposed) return
       disposed = true
       if (timer) clearInterval(timer)
-      clearInterval(resumeTimer)
       clearInterval(mediaCleanup)
       idleAbort.abort()
       await manager.flush()

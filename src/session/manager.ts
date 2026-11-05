@@ -18,9 +18,6 @@ export const MAX_BUFFER_BYTES = 32 * 1024 * 1024
 const MAX_TRACKED_MESSAGES = 200
 /** 刚投递的一轮还没在上游体现出忙碌状态，先跳过对账避免重复投递。 */
 export const SUBMIT_GRACE_MS = 5_000
-/** 上游对账间隔：只纠正丢失的执行结束事件，不会打断仍在运行的轮次。 */
-export const RESUME_INTERVAL_MS = 60_000
-
 function toMillis(value: unknown): number | undefined {
   if (value instanceof Date) return value.getTime()
   if (typeof value === "number") return value

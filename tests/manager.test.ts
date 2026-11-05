@@ -272,13 +272,21 @@ describe("SessionManager", () => {
   it("retries an ambiguous prompt with the same idempotency key", async () => {
     vi.useFakeTimers()
     try {
-      const { manager, prompt } = createHarness()
+      const { manager, prompt, sessionGet } = createHarness()
       vi.setSystemTime(new Date(10_000))
+      sessionGet.mockResolvedValue({
+        id: "session-1",
+        time: { busy: new Date(9_000), idle: undefined },
+      })
       prompt.mockRejectedValueOnce(new Error("timeout"))
       await manager.enqueue(group(100), { text: "你好", files: [], atMe: false })
       expect(prompt).toHaveBeenCalledTimes(1)
 
       vi.setSystemTime(new Date(10_000 + SUBMIT_GRACE_MS + 1))
+      sessionGet.mockResolvedValue({
+        id: "session-1",
+        time: { busy: new Date(10_000 + 5_000), idle: new Date(10_000 + 5_000) },
+      })
       await manager.resumeBuffered()
       expect(prompt).toHaveBeenCalledTimes(2)
 
@@ -286,6 +294,35 @@ describe("SessionManager", () => {
       const second = prompt.mock.calls[1]?.[0] as { id?: string } | undefined
       expect(first?.id).toEqual(expect.any(String))
       expect(second?.id).toBe(first?.id)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it("ignores stale end events even when the upstream idle timestamp is older than the newest dispatch", async () => {
+    vi.useFakeTimers()
+    try {
+      const { manager, prompts, sessionGet } = createHarness()
+      vi.setSystemTime(new Date(10_000))
+      await manager.enqueue(group(100), { text: "第一条", files: [], atMe: false })
+      vi.setSystemTime(new Date(11_000))
+      await manager.enqueue(group(100), { text: "第二条", files: [], atMe: false })
+      expect(prompts).toHaveLength(1)
+
+      sessionGet.mockResolvedValue({
+        id: "session-1",
+        time: { busy: new Date(9_000), idle: new Date(10_500) },
+      })
+      await manager.flushBuffered("session-1")
+      expect(prompts).toHaveLength(2)
+
+      vi.setSystemTime(new Date(12_000))
+      sessionGet.mockResolvedValue({
+        id: "session-1",
+        time: { busy: new Date(9_000), idle: new Date(10_600) },
+      })
+      await manager.handleExecutionEnd("session-1", "session.execution.succeeded")
+      expect(manager.currentTurn("session-1")?.text).toBe("第二条")
     } finally {
       vi.useRealTimers()
     }
@@ -425,6 +462,28 @@ describe("SessionManager", () => {
       })
       await vi.advanceTimersByTimeAsync(SUBMIT_GRACE_MS + 1)
       await manager.resumeBuffered()
+      expect(prompts).toHaveLength(2)
+      expect(prompts[1]?.text).toBe("第二条")
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it("does not rely on periodic resume to flush an already ended run", async () => {
+    vi.useFakeTimers()
+    try {
+      const { manager, prompts, sessionGet } = createHarness()
+      vi.setSystemTime(new Date(10_000))
+      await manager.enqueue(group(100), { text: "第一条", files: [], atMe: false })
+      vi.setSystemTime(new Date(11_000))
+      await manager.enqueue(group(100), { text: "第二条", files: [], atMe: false })
+      expect(prompts).toHaveLength(1)
+
+      sessionGet.mockResolvedValue({
+        id: "session-1",
+        time: { busy: new Date(9_500), idle: new Date(11_500) },
+      })
+      await manager.handleExecutionEnd("session-1", "session.execution.succeeded")
       expect(prompts).toHaveLength(2)
       expect(prompts[1]?.text).toBe("第二条")
     } finally {
