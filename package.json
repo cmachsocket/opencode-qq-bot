@@ -1,6 +1,6 @@
 {
-  "name": "opencode-qq-bot",
-  "version": "0.1.0",
+  "name": "@cmach_socket/opencode-qq-bot",
+  "version": "0.2.0",
   "description": "OpenCode V2 plugin bridging a QQ group chat (NapCat via NapLink) to an OpenCode session.",
   "type": "module",
   "main": "./src/index.ts",
