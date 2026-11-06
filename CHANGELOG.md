@@ -2,6 +2,21 @@
 
 本文件记录 opencode-qq-bot 的重要变更。
 
+## [Unreleased]
+
+### Added
+
+- 收藏表情（表情包）：`/emoji-label all|inc|list` 用模型给收藏表情生成中文标签，
+  标签写在 NapCat 的 `desc` 字段里；新增 `qq_favorite_list` 列出编号与标签，
+  `qq_send_sticker` 按编号发回收藏表情。编号只是发图片的句柄，由插件自己维护
+  （从 1 开始，存在插件存储里），身份依据是图片 `md5`，
+  和 NapCat 的 `emo_id` / `res_id` 解耦。详见 [docs/emoji.md](docs/emoji.md)。
+
+### Changed
+
+- QQ 官方系统表情（`face` 段）渲染成 `[得意]` 这样的名称，未收录的 ID 回退成 `[表情:ID]`；
+  收到的收藏表情保留 NapCat 给的摘要，不再统一显示成 `[图片]`。
+
 ## [0.3.4] - 2026-11-06
 
 ### Fixed

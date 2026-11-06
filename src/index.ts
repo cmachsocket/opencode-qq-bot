@@ -15,6 +15,10 @@ import { proactiveTickProbability } from "./session/proactive"
 import { packageDirectory, SoulStore } from "./session/soul"
 import { registerAskGuard } from "./tools/ask-guard"
 import { registerTools } from "./tools/qq"
+import { registerEmojiCommand } from "./emoji/command"
+import { FavoriteStore } from "./emoji/favorites"
+import { FavoriteIndex } from "./emoji/favorite-index"
+import { EmojiLabeler } from "./emoji/label"
 
 const RETRY_DELAY_MS = 1000
 /** 机器人连接被别的实例占用时，多久重试一次接管。 */
@@ -81,7 +85,29 @@ export default Plugin.define({
     )
     const mediaHandle = mediaCleanup as { unref?: () => void }
     mediaHandle.unref?.()
-    const toolRegistration = await registerTools({ ctx, config, logger, manager, client })
+    // 收藏表情：标签只存在 NapCat 侧，插件不保存副本；编号由插件自己维护。
+    const favorites = new FavoriteStore((method, params) => client.callApi(method, params), logger)
+    const favoriteIndex = new FavoriteIndex(ctx.storage, logger)
+    const labeler = new EmojiLabeler({ ctx, config, logger, media, favorites })
+    const toolRegistration = await registerTools({
+      ctx,
+      config,
+      logger,
+      manager,
+      client,
+      favorites,
+      favoriteIndex,
+    })
+    const emojiCommandRegistration = await registerEmojiCommand({
+      ctx,
+      config,
+      logger,
+      manager,
+      client,
+      favorites,
+      favoriteIndex,
+      labeler,
+    })
     // QQ 会话里禁止模型调用内置 question 工具，改用 qq_send_message 询问用户。
     const askGuardRegistration = await registerAskGuard({ ctx, logger, manager })
     const nameCache = new Map<string, { name: string; expires: number }>()
@@ -306,6 +332,8 @@ export default Plugin.define({
       await manager.flush()
       soul.dispose()
       await toolRegistration.dispose()
+      await emojiCommandRegistration.dispose()
+      await labeler.dispose()
       await askGuardRegistration.dispose()
       await contextRegistration.dispose()
       await idleRegistration.dispose()

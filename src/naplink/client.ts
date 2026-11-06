@@ -120,6 +120,16 @@ export class QQClient {
     return this.link.api
   }
 
+  /**
+   * 调用 SDK 类型里没有声明的 OneBot 动作。
+   *
+   * 收藏表情相关的动作（`fetch_custom_face_detail`、`set_custom_face_desc`）
+   * 不在 naplink 的类型表里，只能这样透传。
+   */
+  callApi<T = unknown>(method: string, params?: Record<string, unknown>): Promise<T> {
+    return this.link.callApi<T>(method, params)
+  }
+
   get connected(): boolean {
     return this.link.isConnected()
   }

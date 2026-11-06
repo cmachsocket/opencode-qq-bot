@@ -1,6 +1,13 @@
 import type { Plugin } from "@opencode/plugin"
 import { type ChatTarget, isTargetEnabled, targetLabel } from "../chat"
 import type { QQBotConfig } from "../config"
+import {
+  CUSTOM_FACE_SUB_TYPE,
+  type FavoriteStore,
+  formatFavoriteIds,
+  formatFavoriteList,
+} from "../emoji/favorites"
+import type { FavoriteIndex } from "../emoji/favorite-index"
 import type { Logger } from "../logger"
 import type { QQClient } from "../naplink/client"
 import type { SessionManager } from "../session/manager"
@@ -14,6 +21,10 @@ export interface ToolDeps {
   logger: Logger
   manager: SessionManager
   client: QQClient
+  /** 收藏表情读写，供 qq_send_sticker 使用。 */
+  favorites: FavoriteStore
+  /** 收藏表情编号索引，供 qq_send_sticker 与 qq_favorite_list 使用。 */
+  favoriteIndex: FavoriteIndex
 }
 
 interface SendMessageInput {
@@ -39,6 +50,10 @@ interface ForwardInput {
 
 interface UserInput {
   user_id?: number | string
+}
+
+interface StickerInput {
+  id?: number
 }
 
 interface MessageIdInput {
@@ -89,13 +104,40 @@ export function splitMessage(content: string, max = MAX_MESSAGE_CHARS): string[]
 }
 
 /**
+ * 向一个目标发送纯文本消息，超长时按段落拆分。
+ *
+ * 命令、后台任务这类没有会话轮次的场景用它回消息。
+ */
+export async function sendPlainMessage(
+  client: QQClient,
+  target: ChatTarget,
+  content: string,
+  options: { delayMs?: number } = {},
+): Promise<number> {
+  const chunks = splitMessage(content)
+  let sent = 0
+  for (const [index, chunk] of chunks.entries()) {
+    if (target.kind === "group") {
+      await client.api.sendGroupMessage(target.id, chunk)
+    } else {
+      await client.api.sendPrivateMessage(target.id, chunk)
+    }
+    sent += 1
+    if (index < chunks.length - 1 && (options.delayMs ?? 0) > 0) {
+      await delay(options.delayMs ?? 0)
+    }
+  }
+  return sent
+}
+
+/**
  * 注册 QQ 命名空间下的工具。
  *
  * 全部工具都是对 NapCat OneBot API 的透传，
  * 只暴露消息收发与只读查询，不提供封禁/踢人等破坏性操作。
  */
 export async function registerTools(deps: ToolDeps): Promise<{ dispose(): Promise<void> }> {
-  const { ctx, config, logger, manager, client } = deps
+  const { ctx, config, logger, manager, client, favorites, favoriteIndex } = deps
 
   const requireTarget = (sessionID: string): ChatTarget | undefined => {
     const target = manager.targetForSession(sessionID)
@@ -221,6 +263,61 @@ export async function registerTools(deps: ToolDeps): Promise<{ dispose(): Promis
         if (messageId) manager.rememberOutgoing(target, messageId)
         manager.markMessageSent(context.sessionID)
         return text("你已成功发送图片，可以选择结束对话")
+      },
+    })
+
+    editor.add({
+      name: "favorite_list",
+      description: "列出收藏表情（表情包）的编号与标签，编号用于 qq_send_sticker 发送。",
+      input: {
+        type: "object",
+        properties: {},
+        additionalProperties: false,
+      },
+      options: { namespace: TOOL_NAMESPACE },
+      execute: async () => {
+        const faces = await favorites.list()
+        const rows = await favoriteIndex.sync(faces)
+        return text(formatFavoriteList(rows))
+      },
+    })
+
+    editor.add({
+      name: "send_sticker",
+      description:
+        "发送一张收藏表情（表情包）。id 是收藏表情编号，先用 qq_favorite_list 查看编号与标签的对应关系。",
+      input: {
+        type: "object",
+        properties: {
+          id: { type: "number", description: "收藏表情编号" },
+        },
+        required: ["id"],
+        additionalProperties: false,
+      },
+      options: { namespace: TOOL_NAMESPACE },
+      execute: async (raw, context) => {
+        const input = (raw ?? {}) as StickerInput
+        const target = requireTarget(context.sessionID)
+        if (!target) return text("error: 当前会话没有绑定 QQ 群聊或私聊")
+        const id = input.id
+        if (typeof id !== "number" || !Number.isInteger(id)) {
+          return text("error: 缺少 id（收藏表情编号）")
+        }
+        const faces = await favorites.list()
+        const rows = await favoriteIndex.sync(faces)
+        const row = rows.find((item) => item.id === id)
+        if (!row) {
+          return text(`error: 没有找到编号 ${id} 的收藏表情，可用编号：${formatFavoriteIds(rows)}`)
+        }
+        const url = typeof row.face.url === "string" ? row.face.url : undefined
+        if (!url) return text(`error: 编号 ${id} 的收藏表情缺少可用地址`)
+        const response = await sendSegments(target, [
+          { type: "image", data: { file: url, sub_type: CUSTOM_FACE_SUB_TYPE } },
+        ])
+        const messageId = messageIdOf(response)
+        if (messageId) manager.rememberOutgoing(target, messageId)
+        manager.markMessageSent(context.sessionID)
+        return text(`你已成功发送收藏表情 ${id}「${row.tag || "未标注"}」，可以选择结束对话`)
       },
     })
 

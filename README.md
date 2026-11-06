@@ -6,6 +6,7 @@
 - 群聊 / 私聊消息 → OpenCode 会话 → 模型回复 → 对应聊天
 - 每个聊天固定对应一个会话，会话忙碌时新消息先缓存，空闲后合并成一轮再投进去；绑定写入插件存储，重启后自动沿用原会话
 - 语音自动转写、图片落盘后以文件引用进入会话、引用与合并转发展开成文本块
+- 收藏表情（表情包）可以用 `/emoji-label` 生成中文标签，模型按收藏表情编号把表情发回聊天
 - 角色设定放在 `souls/` 目录，可放多份，按文件名切换，改动后下一轮立即生效
 
 ## 环境要求
@@ -113,20 +114,40 @@ souls/
 
 模型只能操作当前会话绑定的群聊或私聊，工具都带 `qq_` 前缀：
 
-| 工具                       | 说明                                                                                   |
-| -------------------------- | -------------------------------------------------------------------------------------- |
-| `qq_send_message`          | 发消息。`content` 文本，`reply=false` 表示已读不回，`unlimit_length=true` 解除长度告警 |
-| `qq_send_image`            | 发图片，`file` 传路径或 URL，`base64` 传 `base64://` 数据                              |
-| `qq_send_record`           | 发语音                                                                                 |
-| `qq_send_forward`          | 发合并转发，`nodes` 为节点列表                                                         |
-| `qq_send_poke`             | 戳一戳                                                                                 |
-| `qq_delete_message`        | 撤回机器人自己发送过的消息                                                             |
-| `qq_get_group_member_info` | 查用户资料：群聊返回群名片与昵称，私聊返回昵称                                         |
-| `qq_fetch_ptt_text`        | 转写当前聊天最近收到的语音                                                             |
-| `qq_get_login_info`        | 机器人自己的 QQ 号与昵称                                                               |
+| 工具                       | 说明                                                                                        |
+| -------------------------- | ------------------------------------------------------------------------------------------- |
+| `qq_send_message`          | 发消息。`content` 文本，`reply=false` 表示已读不回，`unlimit_length=true` 解除长度告警      |
+| `qq_send_image`            | 发图片，`file` 传路径或 URL，`base64` 传 `base64://` 数据                                   |
+| `qq_send_record`           | 发语音                                                                                      |
+| `qq_send_sticker`          | 发收藏表情（表情包），`id` 填收藏表情编号，编号见 `qq_favorite_list` 或 `/emoji-label list` |
+| `qq_favorite_list`         | 列收藏表情（表情包）的编号与标签                                                            |
+| `qq_send_forward`          | 发合并转发，`nodes` 为节点列表                                                              |
+| `qq_send_poke`             | 戳一戳                                                                                      |
+| `qq_delete_message`        | 撤回机器人自己发送过的消息                                                                  |
+| `qq_get_group_member_info` | 查用户资料：群聊返回群名片与昵称，私聊返回昵称                                              |
+| `qq_fetch_ptt_text`        | 转写当前聊天最近收到的语音                                                                  |
+| `qq_get_login_info`        | 机器人自己的 QQ 号与昵称                                                                    |
 
-发送类工具（消息、图片、语音、转发、戳一戳）成功后都算本轮已回复，不会再触发补发提醒。
+发送类工具（消息、图片、语音、收藏表情、转发、戳一戳）成功后都算本轮已回复，不会再触发补发提醒。
 工具只在当前聊天配置仍启用、且会话正处理 QQ 消息轮次时可用。
+
+## 收藏表情（表情包）
+
+给 QQ 收藏表情起中文标签，之后模型按**编号**把表情发回聊天。
+
+```
+/emoji-label all     重新标注全部收藏表情
+/emoji-label inc     只标注还没有标签的收藏表情
+/emoji-label list    列出收藏表情的编号与标签
+```
+
+- 命令没有 TUI 回显，结果全部通过 QQ 消息发出（会话没绑定目标时发给第一个配置目标）。
+- 编号只是发图片的句柄，由插件自己维护（从 1 开始，保存在插件存储里）；身份依据是图片 `md5`，和 NapCat 的 `emo_id` / `res_id` 解耦。模型用 `qq_send_sticker` 的 `id` 参数按编号发送，不做标签模糊匹配。
+- 标签由模型看图生成：清洗后是 12 个字以内、不带标点的中文短语，例如「猫猫摊手」。
+- 标签写在 NapCat 侧的 `desc` 字段里，插件不保存副本。
+- 标注在一个不绑定 QQ 目标的专用会话里跑，不会触发「必须调用 `qq_send_message`」的角色守则。
+
+详细说明见 [docs/emoji.md](docs/emoji.md)。
 
 ## 扩展能力（可选）：SnowLuma MCP
 
@@ -195,6 +216,11 @@ src/
   index.ts           插件入口
   instance.ts        插件重载时的实例接管
   logger.ts          日志
+  emoji/command.ts   /emoji-label 命令
+  emoji/faces.ts     QQ 官方表情 ID → 名称
+  emoji/favorites.ts 收藏表情读写与编号格式化
+  emoji/favorite-index.ts 插件自维护的收藏表情编号索引
+  emoji/label.ts     用模型给收藏表情起标签
   naplink/client.ts  NapLink 连接与 API 门面
   naplink/render.ts  消息段 → 文本与图片附件
   session/prompt.ts  固定守则与系统提示
@@ -205,6 +231,7 @@ src/
 docs/
   configuration.md   配置取值规则与限制
   design-review.md   设计审查与修复记录
+  emoji.md           收藏表情（表情包）说明
 tests/               vitest 用例
 ```
 

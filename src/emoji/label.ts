@@ -1,0 +1,268 @@
+import type { Plugin } from "@opencode/plugin"
+import type { QQBotConfig } from "../config"
+import type { Logger } from "../logger"
+import type { MediaStore } from "../naplink/media"
+import type { CustomFace, FavoriteStore } from "./favorites"
+
+/** 标签最长字符数。 */
+export const MAX_TAG_LENGTH = 12
+/** 单个表情等待模型回复的超时时间。 */
+export const LABEL_TIMEOUT_MS = 60_000
+/** 插件存储里保存标签会话 ID 的键。 */
+export const LABEL_SESSION_KEY = "emoji-label-session"
+/** 会话标记：用来找回已经建好的标签会话。 */
+export const LABEL_SESSION_MARKER = "qqEmojiLabelSession"
+
+/** 让模型只回一个标签的提示词。 */
+export const LABEL_PROMPT = [
+  "看这张表情包图片，给它起一个中文名字。",
+  `要求：只输出名字本身，一行，最多 ${MAX_TAG_LENGTH} 个字，不要标点、引号、解释或其它文字。`,
+  "不要调用任何工具。",
+].join("\n")
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+/**
+ * 清理模型给出的标签。
+ *
+ * 取第一行，去掉列表符号、引号和 markdown 装饰，只保留文字与数字，
+ * 最后按码点截断到 12 个字。
+ */
+export function cleanTag(raw: string): string {
+  const line = raw
+    .split(/\r?\n/)
+    .map((item) => item.trim())
+    .find((item) => item.length > 0)
+  if (!line) return ""
+  const stripped = line
+    .replace(/^[*_~`>]+/, "")
+    .replace(/^[-+•·–—]+\s*/, "")
+    .replace(/^\d+[.、)）]\s*/, "")
+    .replace(/^#+\s*/, "")
+    .replace(/[“”"'「」『』‘’`]+/g, "")
+  const chars = Array.from(stripped).filter((char) => /[\p{L}\p{N}]/u.test(char))
+  return chars.slice(0, MAX_TAG_LENGTH).join("")
+}
+
+export interface LabelerDeps {
+  ctx: Plugin.Context
+  config: QQBotConfig
+  logger: Logger
+  /** 图片下载与落盘。 */
+  media: MediaStore
+  /** 标签读写。 */
+  favorites: FavoriteStore
+  /** 单个表情的等待时间。 */
+  timeoutMs?: number
+}
+
+/**
+ * 用模型给收藏表情起名字。
+ *
+ * 走一个专用的会话：这个会话不绑定任何 QQ 目标，
+ * 因此不会触发角色设定里“必须调用 qq_send_message”的守则。
+ */
+export class EmojiLabeler {
+  private readonly abort = new AbortController()
+  private readonly buffers = new Map<string, string[]>()
+  private readonly waiters = new Map<string, ((text: string) => void)[]>()
+  private listener: Promise<void> | undefined
+  private sessionID: string | undefined
+  private creating: Promise<string> | undefined
+
+  constructor(private readonly deps: LabelerDeps) {}
+
+  /** 开始订阅文本事件。 */
+  start(): void {
+    this.listener ??= this.listen()
+  }
+
+  /** 停止订阅并清理缓存。 */
+  async dispose(): Promise<void> {
+    this.abort.abort()
+    this.buffers.clear()
+    this.waiters.clear()
+    await this.listener?.catch(() => {})
+    this.listener = undefined
+  }
+
+  private async listen(): Promise<void> {
+    while (!this.abort.signal.aborted) {
+      try {
+        for await (const event of this.deps.ctx.event.subscribe({
+          types: ["session.text.ended"],
+          signal: this.abort.signal,
+        })) {
+          if (event.type !== "session.text.ended") continue
+          const { sessionID, text } = event.data
+          this.push(sessionID, text)
+        }
+      } catch (error) {
+        if (this.abort.signal.aborted) return
+        this.deps.logger.error("订阅表情标签事件失败，稍后重试", error)
+      }
+      if (this.abort.signal.aborted) return
+      await delay(1000)
+    }
+  }
+
+  private push(sessionID: string, text: string): void {
+    const buffer = this.buffers.get(sessionID) ?? []
+    buffer.push(text)
+    this.buffers.set(sessionID, buffer)
+    const waiters = this.waiters.get(sessionID)
+    if (!waiters || waiters.length === 0) return
+    this.waiters.delete(sessionID)
+    const last = buffer[buffer.length - 1] ?? ""
+    for (const resolve of waiters) resolve(last)
+  }
+
+  /** 等待会话的下一段文本；超时返回 undefined。 */
+  private awaitText(sessionID: string, timeoutMs: number): Promise<string | undefined> {
+    const buffered = this.buffers.get(sessionID)
+    if (buffered && buffered.length > 0) {
+      const last = buffered[buffered.length - 1] ?? ""
+      buffered.length = 0
+      return Promise.resolve(last)
+    }
+    return new Promise((resolve) => {
+      const onText = (text: string) => {
+        clearTimeout(timer)
+        resolve(text)
+      }
+      const timer = setTimeout(() => {
+        const waiters = this.waiters.get(sessionID) ?? []
+        this.waiters.set(
+          sessionID,
+          waiters.filter((item) => item !== onText),
+        )
+        resolve(undefined)
+      }, timeoutMs)
+      const waiters = this.waiters.get(sessionID) ?? []
+      waiters.push(onText)
+      this.waiters.set(sessionID, waiters)
+    })
+  }
+
+  /** 取得（必要时创建）专用的标签会话。 */
+  private async ensureSession(): Promise<string> {
+    if (this.sessionID) return this.sessionID
+    this.creating ??= this.resolveSession().finally(() => {
+      this.creating = undefined
+    })
+    return this.creating
+  }
+
+  private async resolveSession(): Promise<string> {
+    const stored = await this.readStoredSession()
+    if (stored) {
+      this.sessionID = stored
+      return stored
+    }
+    const found = await this.findLabelSession()
+    if (found) {
+      this.sessionID = found
+      await this.writeStoredSession(found)
+      this.deps.logger.info(`复用表情标签会话 ${found}`)
+      return found
+    }
+    const created = await this.deps.ctx.session.create({
+      title: "收藏表情标签",
+      ...(this.deps.config.agent ? { agent: this.deps.config.agent } : {}),
+      ...(this.deps.config.model ? { model: this.deps.config.model } : {}),
+      metadata: { [LABEL_SESSION_MARKER]: true },
+    })
+    this.sessionID = created.id
+    await this.writeStoredSession(created.id)
+    this.deps.logger.info(`新建表情标签会话 ${created.id}`)
+    return created.id
+  }
+
+  private async readStoredSession(): Promise<string | undefined> {
+    try {
+      const stored = await this.deps.ctx.storage.get(LABEL_SESSION_KEY)
+      if (typeof stored !== "string" || stored.length === 0) return undefined
+      const info = await this.deps.ctx.session.get({ sessionID: stored })
+      return info?.id ?? stored
+    } catch (error) {
+      this.deps.logger.debug("读取收藏表情标签会话失败，将新建会话", error)
+      return undefined
+    }
+  }
+
+  private async writeStoredSession(sessionID: string): Promise<void> {
+    try {
+      await this.deps.ctx.storage.set(LABEL_SESSION_KEY, sessionID)
+    } catch (error) {
+      this.deps.logger.warn("保存收藏表情标签会话失败", error)
+    }
+  }
+
+  /** 查找带标签标记的历史会话。 */
+  private async findLabelSession(): Promise<string | undefined> {
+    let cursor: string | undefined
+    try {
+      for (let page = 0; page < 5; page += 1) {
+        const result = await this.deps.ctx.session.list({
+          directory: this.deps.ctx.location.directory,
+          limit: 100,
+          order: "desc",
+          ...(cursor ? { cursor } : {}),
+        })
+        const hit = result.data.find((session) => session.metadata?.[LABEL_SESSION_MARKER] === true)
+        if (hit) return hit.id
+        cursor = result.cursor.next ?? undefined
+        if (!cursor) break
+      }
+    } catch (error) {
+      this.deps.logger.warn("查找收藏表情标签会话失败", error)
+    }
+    return undefined
+  }
+
+  /**
+   * 给一个表情生成标签并写回 NapCat。
+   *
+   * 返回写进去的标签；下载失败、模型没给出可用名字或写入失败时返回 undefined。
+   */
+  async labelFace(face: CustomFace): Promise<string | undefined> {
+    const url = typeof face.url === "string" ? face.url : undefined
+    if (!url) return undefined
+    const stored = await this.deps.media.storeImage(url)
+    if (!stored) {
+      this.deps.logger.warn("收藏表情图片下载失败，跳过标注")
+      return undefined
+    }
+    this.start()
+    const sessionID = await this.ensureSession()
+    // 丢掉上一轮的残留文本，保证拿到的是这次提问的回复。
+    this.buffers.get(sessionID)?.splice(0)
+    try {
+      await this.deps.ctx.session.prompt({
+        sessionID,
+        text: LABEL_PROMPT,
+        files: [
+          {
+            uri: stored.uri,
+            name: stored.name,
+            ...(stored.source ? { source: stored.source } : {}),
+          },
+        ],
+      })
+    } catch (error) {
+      this.deps.logger.error("投递表情标签请求失败", error)
+      return undefined
+    }
+    const raw = await this.awaitText(sessionID, this.deps.timeoutMs ?? LABEL_TIMEOUT_MS)
+    const tag = cleanTag(raw ?? "")
+    if (!tag) {
+      this.deps.logger.warn("模型没有给出可用的表情标签")
+      return undefined
+    }
+    const written = await this.deps.favorites.setTag(face, tag)
+    if (!written) return undefined
+    return tag
+  }
+}

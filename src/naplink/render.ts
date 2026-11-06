@@ -1,6 +1,8 @@
 import type { MessageEvent, MessageSegment, OneBotApi } from "@naplink/naplink"
 import type { ChatTarget } from "../chat"
 import { targetKey } from "../chat"
+import { isCustomFaceImage } from "../emoji/favorites"
+import { renderFace } from "../emoji/faces"
 import type { Logger } from "../logger"
 import { hydrateSegment } from "./client"
 import {
@@ -55,6 +57,14 @@ type Segment = MessageSegment | ForwardSegment
 
 function segments(message: readonly MessageSegment[]): readonly Segment[] {
   return message as readonly Segment[]
+}
+
+/** 图片段的占位文本；收藏表情保留 NapCat 给的 summary，普通图片用 `[图片]`。 */
+function imagePlaceholder(segment: MessageSegment): string {
+  const data = segment.data as { summary?: string; sub_type?: unknown }
+  if (!isCustomFaceImage(data)) return "[图片]"
+  const summary = typeof data.summary === "string" ? data.summary.trim() : ""
+  return summary ? summary : "[收藏表情]"
 }
 
 /** 判断消息是否含有值得交给模型的内容。 */
@@ -174,7 +184,7 @@ async function renderForwardSegments(
           parts.push(`@${segment.data.qq} `)
           break
         case "image": {
-          parts.push("[图片]")
+          parts.push(imagePlaceholder(segment))
           if (budget.images <= 0) break
           await hydrateSegment(ctx.api, segment, ctx.logger)
           const url = segment.data.url || segment.data.file
@@ -197,7 +207,7 @@ async function renderForwardSegments(
           parts.push(`[文件]${segment.data.name || segment.data.file}`)
           break
         case "face":
-          parts.push("[表情]")
+          parts.push(renderFace(segment.data.id))
           break
         case "json":
           parts.push("[卡片消息]")
@@ -365,7 +375,7 @@ export async function renderMessage(
           textBuffer.push(`@${await resolveUserName(ctx, String(segment.data.qq))} `)
           break
         case "image": {
-          textBuffer.push("[图片] ")
+          textBuffer.push(`${imagePlaceholder(segment)} `)
           if (budget.images <= 0) break
           await hydrateSegment(ctx.api, segment, ctx.logger)
           const url = segment.data.url || segment.data.file
@@ -420,7 +430,7 @@ export async function renderMessage(
           textBuffer.push(`[文件]${segment.data.name || segment.data.file}`)
           break
         case "face":
-          textBuffer.push("[表情]")
+          textBuffer.push(renderFace(segment.data.id))
           break
         case "json":
           textBuffer.push("[卡片消息]")

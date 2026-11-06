@@ -3,6 +3,8 @@ import type { Plugin } from "@opencode/plugin"
 import { registerTools, TOOL_NAMESPACE } from "../src/tools/qq"
 import { DEFAULT_CONFIG, type QQBotConfig } from "../src/config"
 import type { ChatTarget } from "../src/chat"
+import type { CustomFace } from "../src/emoji/favorites"
+import { FavoriteIndex, type IndexStorage } from "../src/emoji/favorite-index"
 import type { Logger } from "../src/logger"
 import type { QQClient } from "../src/naplink/client"
 import type { SessionManager } from "../src/session/manager"
@@ -15,6 +17,7 @@ interface ToolDefinition {
 interface Harness {
   tools: Map<string, ToolDefinition>
   api: Record<string, ReturnType<typeof vi.fn>>
+  favorites: { list: ReturnType<typeof vi.fn> }
   manager: {
     targetForSession: ReturnType<typeof vi.fn>
     markMessageSent: ReturnType<typeof vi.fn>
@@ -28,6 +31,16 @@ interface Harness {
 
 const group = (id: number): ChatTarget => ({ kind: "group", id })
 const privateChat = (id: number): ChatTarget => ({ kind: "private", id })
+
+const stickerFaces: CustomFace[] = [
+  {
+    emoId: 0,
+    resId: "res-0",
+    url: "https://example.com/sticker-0.png",
+    md5: "md5-0",
+    desc: "猫猫摊手",
+  },
+]
 
 async function createHarness(
   target: ChatTarget | null = group(100),
@@ -84,15 +97,32 @@ async function createHarness(
     ...configOverrides,
   }
 
+  const favorites = {
+    list: vi.fn(async () => stickerFaces),
+  }
+
+  const storage = new Map<string, unknown>()
+  const favoriteIndex = new FavoriteIndex(
+    {
+      get: async (key: string) => storage.get(key),
+      set: async (key: string, value: unknown) => {
+        storage.set(key, value)
+      },
+    } as unknown as IndexStorage,
+    logger as unknown as Logger,
+  )
+
   await registerTools({
     ctx,
     config,
     logger: logger as unknown as Logger,
     manager: manager as unknown as SessionManager,
     client: { api } as unknown as QQClient,
+    favorites: favorites as never,
+    favoriteIndex,
   })
 
-  return { tools, api, manager, logger }
+  return { tools, api, favorites, manager, logger }
 }
 
 const context = { sessionID: "session-1" }
@@ -102,6 +132,7 @@ describe("registerTools", () => {
     const { tools } = await createHarness()
     expect([...tools.keys()].sort()).toEqual([
       "qq_delete_message",
+      "qq_favorite_list",
       "qq_fetch_ptt_text",
       "qq_get_group_member_info",
       "qq_get_login_info",
@@ -110,6 +141,7 @@ describe("registerTools", () => {
       "qq_send_message",
       "qq_send_poke",
       "qq_send_record",
+      "qq_send_sticker",
     ])
   })
 
@@ -174,6 +206,39 @@ describe("registerTools", () => {
     const { tools } = await createHarness()
     const result = await tools.get(`${TOOL_NAMESPACE}_send_image`)?.execute({}, context)
     expect(result?.content).toContain("error")
+  })
+
+  it("lists the favorite stickers with their ids", async () => {
+    const { tools } = await createHarness()
+    const result = await tools.get(`${TOOL_NAMESPACE}_favorite_list`)?.execute({}, context)
+    expect(result?.content).toBe("收藏表情（编号即发送用的 id，共 1 个）\n1. 猫猫摊手")
+  })
+
+  it("sends a favorite sticker as a custom face image", async () => {
+    const { tools, api } = await createHarness()
+    const result = await tools.get(`${TOOL_NAMESPACE}_send_sticker`)?.execute({ id: 1 }, context)
+    expect(result?.content).toBe("你已成功发送收藏表情 1「猫猫摊手」，可以选择结束对话")
+    expect(api["sendGroupMessage"]).toHaveBeenCalledWith(100, [
+      {
+        type: "image",
+        data: { file: "https://example.com/sticker-0.png", sub_type: 1 },
+      },
+    ])
+  })
+
+  it("rejects a sticker without an id", async () => {
+    const { tools, api } = await createHarness()
+    const result = await tools.get(`${TOOL_NAMESPACE}_send_sticker`)?.execute({}, context)
+    expect(result?.content).toContain("error")
+    expect(api["sendGroupMessage"]).not.toHaveBeenCalled()
+  })
+
+  it("reports an unknown sticker id", async () => {
+    const { tools, api } = await createHarness()
+    const result = await tools.get(`${TOOL_NAMESPACE}_send_sticker`)?.execute({ id: 99 }, context)
+    expect(result?.content).toContain("error")
+    expect(result?.content).toContain("1(猫猫摊手)")
+    expect(api["sendGroupMessage"]).not.toHaveBeenCalled()
   })
 
   it("rejects a forward without nodes", async () => {
