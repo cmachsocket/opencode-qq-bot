@@ -48,14 +48,14 @@ qq-bridge 把这些也自己做了一遍（39 个 MCP 工具 + token 台账）�
 
 ### A. 边界类（潜在风险）
 
-| #   | 条目                                                                | 本项目现状                                                                                                                  | qq-bridge 对照                                                                                                                            | 结论 / 备注                                              |
-| --- | ------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------- |
-| A1  | 出站发送无速率限制                                                  | `src/tools/qq.ts` 无频次计数，仅 `sendDelayMs=1000` 拆段间隔；主动说话也无频率上限                                          | `maxSendPerMinute=8` / `maxSendPerHour=60` / `burstMaxMessages=8` / `maxMessageChars=500` / `gapBaseMs+gapPerCharMs`                      | **采纳**；模型单轮可连发任意条数，存在刷屏与账号风控面   |
-| A2  | 出站无敏感信息拦截                                                  | 全库无脱敏逻辑                                                                                                              | `src/sensitive.js`（NFKC+零宽归一化、base64 变体、路径/凭证赋值正则）+ `KNOWN_AGENT_TOKENS` + 12 字符分片检测 + `auditAndSend()` 整条拦截 | **采纳**；OpenCode 的 agent token 常驻环境，注入后可外发 |
-| A3  | 群消息原文直入 prompt                                               | `src/index.ts` 用 `${userName}: ${rendered.text}` 原样拼接                                                                  | `src/qq-model-view.js`：`sanitizeUntrustedText`（全角 `【】`、换行、零宽）+ `compactModelMessage`（先净化再去重 + 相对时间）              | **采纳**；群友可伪造「系统」段落                         |
-| A4  | 工具面只拦 `question`                                               | `src/tools/ask-guard.ts` 仅拦内置 question，bash/write/edit/webfetch/subagent 仍可用                                        | 注册期 `tools.restrict` + 执行期白名单（仅 MCP 白名单前缀 + `ask_user_question`/`todo_write`）                                            | **采纳**；群内一句话即可触发本地读写                     |
-| A5  | SSRF 判定只做字符串匹配                                             | `src/naplink/media.ts:isPrivateHost` 不做 DNS 解析，漏 CGNAT `100.64/10`、`198.18/15`、IPv4-mapped/NAT64/6to4，无端口白名单 | `src/safe-fetch.js`：DNS 全量校验 → 连已校验 IP + 保留 Host/SNI → 逐跳重校验 → 端口白名单 `[80,443,8080,8443]`                            | **采纳**；仅影响入站图片下载路径                         |
-| A6  | `qq_send_image` / `qq_send_record` 的 `file` 接受任意本地路径或 URL | 直接透传给 NapCat，无目录白名单                                                                                             | 语音侧有库白名单 + `safeJoinLibrary` 路径穿越防护                                                                                         | **采纳**；等价于「任意文件 → 群」通道                    |
+| #   | 条目                                                                | 本项目现状                                                                                                                  | qq-bridge 对照                                                                                                                            | 结论 / 备注                                                                      |
+| --- | ------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------- |
+| A1  | 出站发送无速率限制                                                  | `src/tools/qq.ts` 无频次计数，仅 `sendDelayMs=1000` 拆段间隔；主动说话也无频率上限                                          | `maxSendPerMinute=8` / `maxSendPerHour=60` / `burstMaxMessages=8` / `maxMessageChars=500` / `gapBaseMs+gapPerCharMs`                      | **采纳**；模型单轮可连发任意条数，存在刷屏与账号风控面                           |
+| A2  | 出站无敏感信息拦截                                                  | 全库无脱敏逻辑                                                                                                              | `src/sensitive.js`（NFKC+零宽归一化、base64 变体、路径/凭证赋值正则）+ `KNOWN_AGENT_TOKENS` + 12 字符分片检测 + `auditAndSend()` 整条拦截 | **采纳**；OpenCode 的 agent token 常驻环境，注入后可外发                         |
+| A3  | 群消息原文直入 prompt                                               | `src/index.ts` 用 `${userName}: ${rendered.text}` 原样拼接                                                                  | `src/qq-model-view.js`：`sanitizeUntrustedText`（全角 `【】`、换行、零宽）+ `compactModelMessage`（先净化再去重 + 相对时间）              | **采纳**；群友可伪造「系统」段落                                                 |
+| A4  | 工具面只拦 `question`                                               | `src/tools/ask-guard.ts` 仅拦内置 question，bash/write/edit/webfetch/subagent 仍可用                                        | 注册期 `tools.restrict` + 执行期白名单（仅 MCP 白名单前缀 + `ask_user_question`/`todo_write`）                                            | **采纳**；群内一句话即可触发本地读写。OpenCode 侧有现成原语，见「A4 的平台落点」 |
+| A5  | SSRF 判定只做字符串匹配                                             | `src/naplink/media.ts:isPrivateHost` 不做 DNS 解析，漏 CGNAT `100.64/10`、`198.18/15`、IPv4-mapped/NAT64/6to4，无端口白名单 | `src/safe-fetch.js`：DNS 全量校验 → 连已校验 IP + 保留 Host/SNI → 逐跳重校验 → 端口白名单 `[80,443,8080,8443]`                            | **采纳**；仅影响入站图片下载路径                                                 |
+| A6  | `qq_send_image` / `qq_send_record` 的 `file` 接受任意本地路径或 URL | 直接透传给 NapCat，无目录白名单                                                                                             | 语音侧有库白名单 + `safeJoinLibrary` 路径穿越防护                                                                                         | **采纳**；等价于「任意文件 → 群」通道                                            |
 
 ### B. 功能缺口类
 
@@ -79,6 +79,19 @@ qq-bridge 把这些也自己做了一遍（39 个 MCP 工具 + token 台账）�
 | C4  | 无发布流程               | 无 publish 脚本、无 release workflow，版本手工维护 | 有 release 流程                                                                                               | **采纳** |
 | C5  | 日志只有 stdout 且无脱敏 | `src/logger.ts` 仅 console                         | 带上限的日志文件 + 每行脱敏                                                                                   | **采纳** |
 | C6  | 配置面窄                 | 仅 groups/users 白名单 + 11 项配置                 | allow/deny 双列表 + ownerQQ + 每会话覆盖                                                                      | **采纳** |
+
+### A4 的平台落点
+
+qq-bridge 的两层闸门在 OpenCode V2 插件 API 里都有对应原语，不必手写整套工具名白名单：
+
+| qq-bridge                                      | OpenCode V2 插件 API                                                                                        | 作用域 |
+| ---------------------------------------------- | ----------------------------------------------------------------------------------------------------------- | ------ |
+| 注册期 `ctx.tools.restrict`（藏掉一批工具）    | `ctx.tool.transform((editor) => editor.remove(id))`                                                         | 全局   |
+| 执行期白名单（`SAFE_PREFIXES` / `SAFE_EXACT`） | `ctx.permission.hook("evaluate")`：事件带 `sessionID` + `action`，可设 `effect`（`allow` / `deny` / `ask`） | 按会话 |
+
+关键差别：**注册期移除是全局的**（会影响非 QQ 会话），所以按会话收敛只能走 `ctx.permission`。
+`ctx.tool.hook("execute.before")` 已经在用（`src/tools/ask-guard.ts`），它能拿到 `sessionID`，但语义是"调用时拒绝"，
+拿不到"这个动作该不该被允许"的统一判定——权限域才是对的位置。
 
 ---
 
