@@ -1,5 +1,8 @@
 {
   "$schema": "https://opencode.ai/config.json",
+  "experimental": {
+    "location_idle_timeout": false
+  },
   "plugins": [
     {
       "package": "./",

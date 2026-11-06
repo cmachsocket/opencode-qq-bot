@@ -183,6 +183,37 @@ describe("resolveConfig", () => {
     expect(config.proactive.tickSeconds).toBe(DEFAULT_CONFIG.proactive.tickSeconds)
   })
 
+  it("keeps the location alive by default", () => {
+    const config = resolveConfig({}, ENV)
+    expect(config.keepAlive.enabled).toBe(true)
+    expect(config.keepAlive.seconds).toBe(DEFAULT_CONFIG.keepAlive.seconds)
+    expect(config.keepAlive.seconds).toBeLessThan(3600)
+  })
+
+  it("reads the keep alive options from the environment", () => {
+    const config = resolveConfig(
+      {},
+      { ...ENV, QQ_KEEP_ALIVE_ENABLED: "false", QQ_KEEP_ALIVE_SECONDS: "600" },
+    )
+    expect(config.keepAlive.enabled).toBe(false)
+    expect(config.keepAlive.seconds).toBe(600)
+  })
+
+  it("rejects a non positive keep alive interval", () => {
+    const warnings: string[] = []
+    const config = resolveConfig({ keepAlive: { seconds: 0 } }, ENV, (message) =>
+      warnings.push(message),
+    )
+    expect(config.keepAlive.seconds).toBe(DEFAULT_CONFIG.keepAlive.seconds)
+    expect(warnings.join("\n")).toContain("keepAlive.seconds")
+  })
+
+  it("merges nested keep alive options with the defaults", () => {
+    const config = resolveConfig({ keepAlive: { enabled: false } }, ENV)
+    expect(config.keepAlive.enabled).toBe(false)
+    expect(config.keepAlive.seconds).toBe(DEFAULT_CONFIG.keepAlive.seconds)
+  })
+
   it("deduplicates groups and warns about invalid entries", () => {
     const warnings: string[] = []
     const config = resolveConfig({ groups: [1, 1, -2, 3] }, ENV, (message) =>

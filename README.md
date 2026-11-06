@@ -26,6 +26,10 @@ bun install
 ```jsonc
 {
   "$schema": "https://opencode.ai/config.json",
+  // 长时间没有会话活动时 OpenCode 会卸载插件，设为 false 就不再自动卸载
+  "experimental": {
+    "location_idle_timeout": false,
+  },
   "plugins": [
     {
       "package": "./",
@@ -75,12 +79,33 @@ bun install
 | `proactive.tickSeconds`             | `QQ_PROACTIVE_TICK_SECONDS`     | `3600`        | 心跳间隔，必须大于 0                            |
 | `reminder.enabled`                  | `QQ_REMINDER_ENABLED`           | `true`        | 模型一轮没调用发送工具时是否提醒                |
 | `reminder.max`                      | `QQ_REMINDER_MAX`               | `2`           | 连续提醒次数上限                                |
+| `keepAlive.enabled`                 | `QQ_KEEP_ALIVE_ENABLED`         | `true`        | 是否启用保活心跳                                |
+| `keepAlive.seconds`                 | `QQ_KEEP_ALIVE_SECONDS`         | `1200`        | 保活心跳间隔（秒），必须大于 0                  |
 
 没配置 `groups` 和 `users` 时插件不会响应任何消息（默认全部关闭）。
 
 布尔环境变量接受 `true/false`、`1/0`、`yes/no`、`on/off`；数值直接写数字。
 写错的配置项会输出告警并回退到默认值，不会静默失效。
 取值规则与图片内联限制见 [docs/configuration.md](docs/configuration.md)。
+
+### 保活
+
+OpenCode 按 location 统计会话活动，默认空闲 60 分钟后卸载该 location 的服务，
+插件随之被卸载，NapCat 连接断开后机器人就不再响应。
+
+根治办法是在 `opencode.json(c)` 里关闭这个超时：
+
+```jsonc
+{
+  "experimental": {
+    "location_idle_timeout": false,
+  },
+}
+```
+
+插件自身还有一层保活心跳（`keepAlive`）：每隔 `keepAlive.seconds` 秒原样写回一次会话元数据，
+产生一条带 location 的 durable 会话事件，把空闲计时重置。心跳跑在一个不绑定 QQ 目标的
+专用会话上（标题 `QQ 保活`），不影响群聊会话，也不消耗模型调用。
 
 ### 角色设定
 
@@ -190,6 +215,7 @@ souls/
   等待接管，避免同一条 QQ 消息被重复投递给模型。锁按 NapCat 端点与令牌标识，基于文件系统
   实现，Windows、macOS、Linux 行为一致。
 - **异常恢复**：模型失败、中断或长时间无响应时会释放忙碌状态并放行缓存消息。
+- **保活**：默认每 20 分钟写回一次会话元数据，OpenCode 不会因为长时间没有会话活动而卸载插件。
 - **提醒**：模型一轮完全没调用任何发送工具时，插件会补一条合成消息提醒它，最多 `reminder.max` 次，
   每个新的用户轮次都会重新给一份预算。
 - **主动说话**：聊天沉默超过阈值后按每小时概率发起话题，重启后静默时长会继续累计。
@@ -215,6 +241,7 @@ src/
   config.ts          配置合并与校验
   index.ts           插件入口
   instance.ts        插件重载时的实例接管
+  keepalive.ts       location 保活心跳
   logger.ts          日志
   emoji/command.ts   /emoji-label 命令
   emoji/faces.ts     QQ 官方表情 ID → 名称

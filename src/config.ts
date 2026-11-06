@@ -40,6 +40,13 @@ export interface ReminderConfig {
   max: number
 }
 
+export interface KeepAliveConfig {
+  /** 是否启用保活心跳。 */
+  enabled: boolean
+  /** 保活心跳间隔（秒），必须小于 OpenCode 的 location 空闲超时。 */
+  seconds: number
+}
+
 export interface ModelRef {
   providerID: string
   id: string
@@ -68,6 +75,7 @@ export interface QQBotConfig {
   reuseSession: boolean
   proactive: ProactiveConfig
   reminder: ReminderConfig
+  keepAlive: KeepAliveConfig
 }
 
 /** 除 NapCat 连接信息外的全部默认值。 */
@@ -85,6 +93,7 @@ export const DEFAULT_CONFIG: Omit<QQBotConfig, "napcat"> = {
     tickSeconds: 3600,
   },
   reminder: { enabled: true, max: 2 },
+  keepAlive: { enabled: true, seconds: 20 * 60 },
 }
 
 /** 配置告警回调。 */
@@ -310,6 +319,13 @@ function createConfigSchema(
       })
       .prefault({})
       .catch(defaults.reminder),
+    keepAlive: z
+      .object({
+        enabled: boolean("keepAlive.enabled", defaults.keepAlive.enabled),
+        seconds: positive("keepAlive.seconds", defaults.keepAlive.seconds),
+      })
+      .prefault({})
+      .catch(defaults.keepAlive),
   })
 }
 
@@ -333,6 +349,8 @@ export const ENV_VARS = {
   "proactive.tickSeconds": "QQ_PROACTIVE_TICK_SECONDS",
   "reminder.enabled": "QQ_REMINDER_ENABLED",
   "reminder.max": "QQ_REMINDER_MAX",
+  "keepAlive.enabled": "QQ_KEEP_ALIVE_ENABLED",
+  "keepAlive.seconds": "QQ_KEEP_ALIVE_SECONDS",
 } as const
 
 const OPTION_KEYS = new Set([
@@ -348,6 +366,7 @@ const OPTION_KEYS = new Set([
   "reuseSession",
   "proactive",
   "reminder",
+  "keepAlive",
 ])
 
 const NESTED_OPTION_KEYS: Record<string, ReadonlySet<string>> = {
@@ -360,6 +379,7 @@ const NESTED_OPTION_KEYS: Record<string, ReadonlySet<string>> = {
     "tickSeconds",
   ]),
   reminder: new Set(["enabled", "max"]),
+  keepAlive: new Set(["enabled", "seconds"]),
 }
 
 /** 报告被 schema 静默剥离的未知配置项。 */
@@ -439,6 +459,7 @@ export function resolveConfig(
     users: [...parsed.users],
     proactive: { ...parsed.proactive },
     reminder: { ...parsed.reminder },
+    keepAlive: { ...parsed.keepAlive },
     napcat: { url, token: parsed.napcat.token },
   }
 }

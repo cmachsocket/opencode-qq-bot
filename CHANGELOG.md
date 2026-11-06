@@ -4,6 +4,17 @@
 
 ## [Unreleased]
 
+### Added
+
+- 保活心跳：OpenCode 按 location 统计会话活动，默认空闲 60 分钟后卸载该 location 的服务，
+  插件随之被卸载，NapCat 连接断开后机器人不再响应。插件现在每隔 `keepAlive.seconds`
+  （默认 1200 秒）原样写回一次会话元数据，产生一条带 location 的 durable 会话事件，
+  把空闲计时重置。心跳跑在一个不绑定 QQ 目标的专用会话上（标题 `QQ 保活`），
+  不影响群聊会话，也不消耗模型调用。新增配置项 `keepAlive.enabled`
+  （`QQ_KEEP_ALIVE_ENABLED`）与 `keepAlive.seconds`（`QQ_KEEP_ALIVE_SECONDS`）。
+  推荐同时在 `opencode.json(c)` 里设置 `experimental.location_idle_timeout: false`，
+  彻底关掉 OpenCode 的自动卸载；插件卸载时的日志也会提示这一项。
+
 ### Changed
 
 - `warnLength` 默认值从 `20` 改成 `500`：原值下几乎每条回复都会告警，告警因此失去意义。

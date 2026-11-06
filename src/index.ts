@@ -5,6 +5,7 @@ import { acquireBotLock, type BotLock, botIdentity, botLockPath } from "./bot-lo
 import { type ChatTarget, configuredTargets, isTargetEnabled, targetKey, targetLabel } from "./chat"
 import { resolveConfig, type QQBotConfig } from "./config"
 import { claimInstance } from "./instance"
+import { KeepAlive } from "./keepalive"
 import { createLogger } from "./logger"
 import { QQClient } from "./naplink/client"
 import { createMediaStore } from "./naplink/media"
@@ -76,6 +77,9 @@ export default Plugin.define({
     const client = new QQClient(config.napcat, logger)
     const manager = new SessionManager(ctx, config, logger)
     await manager.load()
+    // 保活心跳：OpenCode 长时间没有会话活动时会卸载 location，插件随之被卸载。
+    const keepAlive = new KeepAlive(ctx, config, logger)
+    keepAlive.start()
     const media = await createMediaStore(logger)
     const mediaCleanup = setInterval(
       () => {
@@ -328,6 +332,7 @@ export default Plugin.define({
       if (timer) clearInterval(timer)
       clearInterval(claimTimer)
       clearInterval(mediaCleanup)
+      keepAlive.dispose()
       idleAbort.abort()
       await manager.flush()
       soul.dispose()
@@ -342,7 +347,10 @@ export default Plugin.define({
       await botLock?.release()
       botLock = undefined
       lease.release()
-      logger.info("插件已卸载")
+      logger.info(
+        "插件已卸载",
+        "若是被 OpenCode 卸载（长时间没有会话活动），可在 opencode.json 里设置 experimental.location_idle_timeout: false",
+      )
     }
     lease.setDispose(dispose)
     return dispose

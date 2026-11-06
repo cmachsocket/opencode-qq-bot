@@ -12,7 +12,7 @@
   非正整数会被忽略并告警。
 - **模型**：`provider/model` 或 `provider/model/variant`。
   写错会回退到默认模型并输出告警。
-- **未知配置项**：顶层和 `napcat`、`proactive`、`reminder` 下的未知键会输出告警，
+- **未知配置项**：顶层和 `napcat`、`proactive`、`reminder`、`keepAlive` 下的未知键会输出告警，
   不会被静默忽略。
 
 ## 数值范围
@@ -26,6 +26,7 @@
 | `proactive.startProbability`        | 0 到 1     |
 | `proactive.probabilityPerHour`      | 0 到 1     |
 | `proactive.tickSeconds`             | 大于 0     |
+| `keepAlive.seconds`                 | 大于 0     |
 
 越界值会回退到默认值并告警。
 
@@ -41,6 +42,20 @@
 `proactive.tickSeconds` 必须是正数，否则心跳会退化成毫秒级热循环，非正数会回退到默认值。
 `startProbability` 与 `probabilityPerHour` 表示目标每小时概率，实际每个心跳的触发概率会按
 `tickSeconds` 换算，修改心跳间隔不会改变整体触发频率。
+
+## 保活
+
+OpenCode 默认在 location 空闲 60 分钟后卸载它的服务，插件随之被卸载，
+NapCat 连接断开后机器人就不再响应。
+
+| 手段                                      | 作用                                                         |
+| ----------------------------------------- | ------------------------------------------------------------ |
+| `experimental.location_idle_timeout`      | OpenCode 自身的配置，设为 `false` 就不再自动卸载（推荐）     |
+| `keepAlive.enabled` / `keepAlive.seconds` | 插件的保活心跳，周期性写回会话元数据来刷新 location 空闲计时 |
+
+`keepAlive.seconds` 必须小于 OpenCode 的 location 空闲超时（默认 3600 秒），
+心跳间隔过大就来不及刷新。插件的心跳跑在一个不绑定 QQ 目标的专用会话上，
+不影响群聊会话，也不消耗模型调用。
 
 ## 角色设定
 
