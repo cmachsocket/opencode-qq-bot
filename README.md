@@ -66,7 +66,7 @@ bun install
 | `agent`                             | `QQ_BOT_AGENT`                  | OpenCode 默认 | 会话使用的 agent                                |
 | `model`                             | `QQ_BOT_MODEL`                  | OpenCode 默认 | 会话使用的模型，格式 `provider/model[/variant]` |
 | `sendDelayMs`                       | `QQ_SEND_DELAY_MS`              | `1000`        | 超长消息分段发送时每段之间的间隔                |
-| `warnLength`                        | `QQ_WARN_LENGTH`                | `20`          | 一轮回复总长度超过该值时告警                    |
+| `warnLength`                        | `QQ_WARN_LENGTH`                | `500`         | 单次发送的内容长度超过该值时告警                |
 | `reuseSession`                      | `QQ_REUSE_SESSION`              | `false`       | 没有保存的绑定时，按会话标记找回上一次的会话    |
 | `proactive.enabled`                 | `QQ_PROACTIVE_ENABLED`          | `true`        | 是否启用主动说话                                |
 | `proactive.silenceThresholdSeconds` | `QQ_PROACTIVE_SILENCE_SECONDS`  | `10800`       | 沉默多久后才开始计算主动说话概率                |

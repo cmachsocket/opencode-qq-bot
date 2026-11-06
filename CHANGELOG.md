@@ -2,6 +2,19 @@
 
 本文件记录 opencode-qq-bot 的重要变更。
 
+## [Unreleased]
+
+### Changed
+
+- `warnLength` 默认值从 `20` 改成 `500`：原值下几乎每条回复都会告警，告警因此失去意义。
+  判定口径是单次发送的内容长度，只告警，不截断也不影响发送。
+
+### Fixed
+
+- `.env.example` 仍列着 0.3.2 已移除的 `QQ_BUSY_TIMEOUT_MS`，并把默认角色设定写成包内
+  `SOUL.txt`（实际是 `souls/default.txt`）；同时补上漏掉的 `QQ_BOT_SOUL_NAME`。
+- README 里 `warnLength` 的说明写成「一轮回复总长度」，与实现（单次发送的内容长度）不符。
+
 ## [0.4.0] - 2026-11-07
 
 ### Added

@@ -62,7 +62,7 @@ export interface QQBotConfig {
   model?: ModelRef
   /** 拆行发送时每条消息之间的间隔（毫秒）。 */
   sendDelayMs: number
-  /** 单条消息超过该长度时告警（不截断）。 */
+  /** 单次发送的内容超过该长度时告警（不截断）。 */
   warnLength: number
   /** 重启后是否复用上一次的会话。 */
   reuseSession: boolean
@@ -75,7 +75,7 @@ export const DEFAULT_CONFIG: Omit<QQBotConfig, "napcat"> = {
   groups: [],
   users: [],
   sendDelayMs: 1000,
-  warnLength: 20,
+  warnLength: 500,
   reuseSession: false,
   proactive: {
     enabled: true,
@@ -313,7 +313,8 @@ function createConfigSchema(
   })
 }
 
-const ENV_VARS = {
+/** 配置项到环境变量名的映射。 */
+export const ENV_VARS = {
   "napcat.url": "NAPCAT_WS_URL",
   "napcat.token": "NAPCAT_WS_TOKEN",
   groups: "QQ_TARGET_GROUPS",

@@ -19,6 +19,11 @@ describe("resolveConfig", () => {
     expect(config.reminder.max).toBe(DEFAULT_CONFIG.reminder.max)
   })
 
+  it("默认的长度告警阈值不会让正常回复一直告警", () => {
+    expect(DEFAULT_CONFIG.warnLength).toBe(500)
+    expect(resolveConfig({}, ENV).warnLength).toBe(500)
+  })
+
   it("takes the token from the environment", () => {
     const config = resolveConfig({}, { ...ENV, NAPCAT_WS_TOKEN: "from-env" })
     expect(config.napcat.token).toBe("from-env")
