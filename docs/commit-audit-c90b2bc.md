@@ -1,6 +1,6 @@
 # 提交审计：c90b2bc..HEAD
 
-> 状态：审计完成，未改动代码。范围内 8 个提交，发现 3 个高危、3 个中危问题。
+> 状态：审计完成，问题已修复（3 个高危、3 个中危全部处理）。范围内 8 个提交，发现 3 个高危、3 个中危问题。
 
 审计范围：`c90b2bcf0dc803643eaae969a57d22b2ee305bac` 之后的全部提交。
 
@@ -156,6 +156,10 @@ README、CHANGELOG，但 `docs/configuration.md` 的“数值范围”表（`doc
   而切分按字素簇（`src/outbound.ts:19`），一个 emoji 记 2 个码元，阈值实际偏严。
 - **保活会为每个项目目录留下一个“QQ 保活”会话**：`src/keepalive.ts:129-150` 按
   `ctx.location.directory` 过滤，每个项目各建一个且不清理，用户会话列表里会出现多个同标题会话。
+  已修：插件卸载时删掉保活会话（`ctx.session.remove`）并清掉存储里的记录；
+  取得会话时会请求归档，让它不出现在会话列表里（上游插件接口目前忽略 `archived`，
+  生效之前它仍会显示在列表中，插件会在日志里说明）；存储是机器级共享的，
+  读回的会话会核对目录，不复用别的项目留下的会话。
 - **对比文档数据轻微过期**：`docs/comparison-qq-bridge.md` 称 `src/` 约 5.4k 行，实际 5136 行；
   remove-markdown 的 npm 月下载写“约 513 万”，当前为 5,371,832。
 
@@ -170,6 +174,10 @@ README、CHANGELOG，但 `docs/configuration.md` 的“数值范围”表（`doc
   `opencode.example.json` 中 `experimental.location_idle_timeout: false` 符合 schema
   （`@opencode/schema/dist/config/experimental.js:40`）；`keepAlive.seconds` 默认 1200s
   小于上游默认 3600s。
+- **归档只对 HTTP 接口有效**：上游 `packages/server/src/handlers/session.ts` 的 `session.update`
+  有 `archived` 分支，插件走的 `packages/core/src/plugin/host.ts` 只处理 title / metadata /
+  permissions，`archived` 会被忽略；SDK 类型（`SessionUpdateInput`）却带着该字段。
+  所以插件只能"请求归档"，能否生效取决于上游，插件会读一次会话确认并在日志里说明。
 - **对比文档 A1 / A2 / A4 / A5 / A6 属实**：无出站限速（仅 `sendDelayMs`）、无出站脱敏、
   A4 的平台落点（`ctx.tool.transform` / `ctx.permission.hook("evaluate")`）与上游 API 一致、
   `isPrivateHost` 无 DNS 解析且漏掉 CGNAT / 198.18 / IPv4-mapped / NAT64 且无端口白名单、

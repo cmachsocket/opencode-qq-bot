@@ -10,7 +10,7 @@ import {
 import type { FavoriteIndex } from "../emoji/favorite-index"
 import type { Logger } from "../logger"
 import type { QQClient } from "../naplink/client"
-import { splitMessage, toPlainText } from "../outbound"
+import { splitGraphemes, splitMessage, toPlainText } from "../outbound"
 import type { SessionManager } from "../session/manager"
 
 /** 工具命名空间，最终工具名为 qq_send_message 等。 */
@@ -198,8 +198,10 @@ export async function registerTools(deps: ToolDeps): Promise<{ dispose(): Promis
           return text("skipped")
         }
 
-        if (plain.length > config.warnLength && input.unlimit_length !== true) {
-          logger.warn(`send_message 内容长度 ${plain.length} 超过 ${config.warnLength}`)
+        // 长度按字素簇算，和拆段的口径一致：一个 emoji 只算一个。
+        const length = splitGraphemes(plain).length
+        if (length > config.warnLength && input.unlimit_length !== true) {
+          logger.warn(`send_message 内容长度 ${length} 超过 ${config.warnLength}`)
         }
 
         const chunks = splitMessage(plain)
@@ -220,7 +222,7 @@ export async function registerTools(deps: ToolDeps): Promise<{ dispose(): Promis
           return text(`error: 消息只发送了 ${sent}/${chunks.length} 段`)
         }
         manager.markMessageSent(context.sessionID)
-        logger.info(`${label} 已发送 ${plain.length} 字`)
+        logger.info(`${label} 已发送 ${length} 字`)
         return text("你已成功发送消息，可以选择结束对话")
       },
     })

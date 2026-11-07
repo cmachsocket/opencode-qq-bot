@@ -3,6 +3,10 @@
  *
  * 群里来的文本完全可控，原样拼进提示词就能伪造段落或跨行结构；
  * 这里统一做结构净化，并给每条消息标上绝对时间。
+ *
+ * 净化分两层：`sanitizeUntrustedText` 负责单段文本里的换行、零宽字符与全角括号，
+ * `neutralizeStructureTags` 负责拼好之后整条消息里的结构标签——
+ * 群友把 `<quote>` 拆成两段发过来，逐段净化匹配不到，只有整体净化才拦得住。
  */
 
 /** 提示词里的结构标签；群友文本里出现同样字样时换成全角，避免伪造。 */
@@ -14,6 +18,22 @@ const NEWLINE_LIKE = /[\r\n\u2028\u2029\u0085\u000B\u000C]+/g
 const ZERO_WIDTH = /[\u200B-\u200F\u2060\uFEFF]/g
 /** 控制字符：显示名里出现会破坏结构。 */
 const CONTROL = /[\u0000-\u001F\u007F]+/g
+/** 私用区字符：插件用它给结构标签占位，群友文本里的必须清掉，否则能伪造占位符。 */
+const PRIVATE_USE = /[\uE000-\uF8FF]/g
+/** 私用区占位符的起点。 */
+const PLACEHOLDER_START = 0xe000
+
+/**
+ * 把结构标签换成全角。
+ *
+ * 只对一段文本调用是不够的：`<` 与 `quote>` 分处两段时匹配不到，拼起来仍是一个标签。
+ * 这里对拼好的整段文本调用，跨段拼接伪造也挡得住。
+ */
+export function neutralizeStructureTags(value: string): string {
+  return String(value ?? "").replace(STRUCTURE_TAG, (tag) =>
+    tag.replace(/</g, "＜").replace(/>/g, "＞"),
+  )
+}
 
 /**
  * 净化群友可控文本。
@@ -22,23 +42,54 @@ const CONTROL = /[\u0000-\u001F\u007F]+/g
  * 提示词里的结构标签换成全角，这样群友文本再也伪造不出段落。
  */
 export function sanitizeUntrustedText(value: string): string {
-  return String(value ?? "")
-    .replace(/【/g, "[")
-    .replace(/】/g, "]")
-    .replace(NEWLINE_LIKE, " ")
-    .replace(ZERO_WIDTH, "")
-    .replace(STRUCTURE_TAG, (tag) => tag.replace(/</g, "＜").replace(/>/g, "＞"))
+  return neutralizeStructureTags(
+    String(value ?? "")
+      .replace(/【/g, "[")
+      .replace(/】/g, "]")
+      .replace(NEWLINE_LIKE, " ")
+      .replace(ZERO_WIDTH, "")
+      .replace(PRIVATE_USE, ""),
+  )
+}
+
+/**
+ * 结构标签守卫：插件生成的结构标签在整体净化时先换成占位符。
+ *
+ * 群友文本里的 `<quote>` 之类必须中和，插件自己展开的引用块与转发块要原样保留。
+ * 占位符用私用区字符（单个码点，截断时不会被切成两半），
+ * 群友文本里的私用区字符会被净化掉，伪造不出占位符。
+ */
+export class StructureTagGuard {
+  private readonly tags: string[] = []
+
+  /** 登记一个插件生成的结构标签，返回可安全拼接的占位符。 */
+  protect(tag: string): string {
+    const index = this.tags.push(tag) - 1
+    return String.fromCharCode(PLACEHOLDER_START + index)
+  }
+
+  /** 把占位符还原成原来的标签。 */
+  restore(text: string): string {
+    return text.replace(/[\uE000-\uF8FF]/g, (char) => {
+      const tag = this.tags[char.charCodeAt(0) - PLACEHOLDER_START]
+      return tag ?? ""
+    })
+  }
 }
 
 /** 净化发送者显示名：群名片可被伪造，去掉控制字符与结构符号。 */
 export function sanitizeSenderName(value: string): string {
-  return String(value ?? "")
-    .replace(ZERO_WIDTH, "")
-    .replace(CONTROL, " ")
-    .replace(/[【】]/g, (char) => (char === "【" ? "[" : "]"))
-    .replace(/[<>]/g, (char) => (char === "<" ? "＜" : "＞"))
-    .replace(/\s+/g, " ")
-    .trim()
+  return (
+    String(value ?? "")
+      .replace(ZERO_WIDTH, "")
+      .replace(CONTROL, " ")
+      // 私用区字符是结构标签的占位符，群名片里出现会被还原成真正的标签。
+      .replace(PRIVATE_USE, "")
+      .replace(/[【】]/g, (char) => (char === "【" ? "[" : "]"))
+      .replace(/[<>]/g, (char) => (char === "<" ? "＜" : "＞"))
+      .replace(/\s+/g, " ")
+      .trim()
+  )
 }
 
 const TIMESTAMP_FORMAT = new Intl.DateTimeFormat("sv-SE", {
@@ -70,8 +121,10 @@ export interface ModelMessage {
 
 /** 拼成一行模型视图消息：`[绝对时间] 名字(QQ号): 正文`。 */
 export function formatModelMessage(message: ModelMessage): string {
-  const name = sanitizeSenderName(message.sender) || message.userId || "未知用户"
+  // QQ 号来自 QQ 服务，但仍是外部输入，按显示名净化一遍。
+  const userId = sanitizeSenderName(message.userId)
+  const name = sanitizeSenderName(message.sender) || userId || "未知用户"
   const stamp = formatTimestamp(message.time)
   const prefix = stamp ? `[${stamp}] ` : ""
-  return `${prefix}${name}(${message.userId}): ${message.text.trim()}`
+  return `${prefix}${name}(${userId}): ${message.text.trim()}`
 }

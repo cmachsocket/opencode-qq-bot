@@ -57,9 +57,9 @@ describe("dropTables", () => {
     expect(dropTables(content)).toBe(["前面", "", "", "后面"].join("\n"))
   })
 
-  it("drops a table without leading pipes", () => {
+  it("keeps a table without leading pipes", () => {
     const content = ["名称 | 说明", "--- | ---", "a | b"].join("\n")
-    expect(dropTables(content)).toBe("")
+    expect(dropTables(content)).toBe(content)
   })
 
   it("keeps lines that only contain a pipe", () => {
@@ -68,6 +68,16 @@ describe("dropTables", () => {
 
   it("keeps a table row that is not followed by a delimiter", () => {
     expect(dropTables("| a | b |\n普通一行")).toBe("| a | b |\n普通一行")
+  })
+
+  it("keeps the text after a table even when it contains a pipe", () => {
+    const content = ["| a | b |", "|---|---|", "| 1 | 2 |", "普通 | 行"].join("\n")
+    expect(dropTables(content)).toBe("普通 | 行")
+  })
+
+  it("keeps a table row whose column count differs from the header", () => {
+    const content = ["| a | b |", "| --- | --- |", "| 1 | 2 | 3 |"].join("\n")
+    expect(dropTables(content)).toBe("| 1 | 2 | 3 |")
   })
 })
 
@@ -96,6 +106,11 @@ describe("splitMessage", () => {
 
   it("keeps the original line breaks", () => {
     expect(splitMessage("第一行\n\n第二行", 20)).toEqual(["第一行\n\n第二行"])
+  })
+
+  it("keeps the leading blank lines", () => {
+    expect(splitMessage("\n\nfoo")).toEqual(["\n\nfoo"])
+    expect(splitMessage("\nfoo")).toEqual(["\nfoo"])
   })
 
   it("splits a long line into chunks of the given size", () => {

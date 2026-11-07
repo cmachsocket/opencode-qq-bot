@@ -4,7 +4,12 @@ import { targetKey } from "../chat"
 import { isCustomFaceImage } from "../emoji/favorites"
 import { renderFace } from "../emoji/faces"
 import type { Logger } from "../logger"
-import { sanitizeSenderName, sanitizeUntrustedText } from "../model-view"
+import {
+  neutralizeStructureTags,
+  sanitizeSenderName,
+  sanitizeUntrustedText,
+  StructureTagGuard,
+} from "../model-view"
 import { hydrateSegment } from "./client"
 import {
   MAX_IMAGE_BYTES,
@@ -186,6 +191,7 @@ async function renderForwardSegments(
   depth: number,
   budget: ImageBudget,
   forwardBudget: ForwardBudget,
+  guard: StructureTagGuard,
 ): Promise<ForwardContent> {
   const parts: string[] = []
   const images: StoredImage[] = []
@@ -241,7 +247,14 @@ async function renderForwardSegments(
             parts.push("[嵌套合并转发]")
             break
           }
-          const nested = await renderForward(ctx, segment.data.id, depth + 1, budget, forwardBudget)
+          const nested = await renderForward(
+            ctx,
+            segment.data.id,
+            guard,
+            depth + 1,
+            budget,
+            forwardBudget,
+          )
           parts.push(nested.text)
           images.push(...nested.images)
           break
@@ -257,10 +270,15 @@ async function renderForwardSegments(
   return { text: parts.join("").trim(), images }
 }
 
-/** 把合并转发解析成 ``<forward>`` 文本块，并附带其中的图片。 */
+/**
+ * 把合并转发解析成 ``<forward>`` 文本块，并附带其中的图片。
+ *
+ * 结构标签用占位符保护：整条消息拼好之后要整体净化，插件自己的标签要原样留下。
+ */
 export async function renderForward(
   ctx: RenderContext,
   id: string | undefined,
+  guard: StructureTagGuard,
   depth = 0,
   budget: ImageBudget = createImageBudget(),
   forwardBudget: ForwardBudget = createForwardBudget(),
@@ -298,7 +316,14 @@ export async function renderForward(
     }
     forwardBudget.nodes -= 1
     consumed += 1
-    const rendered = await renderForwardSegments(ctx, node.segments, depth, budget, forwardBudget)
+    const rendered = await renderForwardSegments(
+      ctx,
+      node.segments,
+      depth,
+      budget,
+      forwardBudget,
+      guard,
+    )
     const line = `${node.name}：${rendered.text || "[空消息]"}`
     const limited = truncateCodePoints(line, Math.max(0, forwardBudget.chars))
     forwardBudget.chars -= Array.from(limited).length
@@ -313,7 +338,10 @@ export async function renderForward(
   if (Array.from(rendered).length > MAX_FORWARD_CHARS) {
     rendered = `${truncateCodePoints(rendered, MAX_FORWARD_CHARS)}\n...（合并转发过长，已截断）`
   }
-  return { text: `<forward>\n${rendered}\n</forward>`, images }
+  return {
+    text: `${guard.protect("<forward>")}\n${rendered}\n${guard.protect("</forward>")}`,
+    images,
+  }
 }
 
 /** 把语音消息转成文字，转写失败时返回空字符串。 */
@@ -349,11 +377,13 @@ export async function renderMessage(
   const message = segments(event.message)
   const forwardBudget = createForwardBudget()
   const voiceCache = new Map<string, string>()
+  // 插件自己生成的结构标签用占位符保护，整条消息净化完再还原。
+  const guard = new StructureTagGuard()
   let imageIndex = 0
 
   const replySegments = message.filter((segment) => segment.type === "reply")
   if (replySegments.length > 0) {
-    const quoteLines = ["<quote>"]
+    const quoteLines = [guard.protect("<quote>")]
     for (const segment of replySegments) {
       if (!segment.data.id) continue
       try {
@@ -369,6 +399,7 @@ export async function renderMessage(
           MAX_FORWARD_DEPTH,
           budget,
           forwardBudget,
+          guard,
         )
         quoteLines.push(`${name}：${quoted.text || "[空消息]"}`)
         for (const image of quoted.images) {
@@ -379,7 +410,7 @@ export async function renderMessage(
         ctx.logger.warn(`获取引用消息失败 id=${segment.data.id}`, error)
       }
     }
-    quoteLines.push("</quote>")
+    quoteLines.push(guard.protect("</quote>"))
     textBuffer.push(`${quoteLines.join("\n")}\n`)
   }
 
@@ -427,7 +458,7 @@ export async function renderMessage(
           // 已在外层 quote 块处理过
           break
         case "forward": {
-          const forward = await renderForward(ctx, segment.data.id, 0, budget, forwardBudget)
+          const forward = await renderForward(ctx, segment.data.id, guard, 0, budget, forwardBudget)
           const prefix =
             textBuffer.length > 0 && !textBuffer[textBuffer.length - 1]?.endsWith("\n") ? "\n" : ""
           textBuffer.push(`${prefix}${forward.text}\n`)
@@ -471,5 +502,8 @@ export async function renderMessage(
     }
   }
 
-  return { text: textBuffer.join(""), files }
+  // 整条消息拼好之后再整体净化：群友把结构标签拆成两段发过来，
+  // 逐段净化匹配不到，只有整体净化才拦得住。
+  const text = guard.restore(neutralizeStructureTags(textBuffer.join("")))
+  return { text, files }
 }

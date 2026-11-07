@@ -28,7 +28,31 @@ function isTableDelimiter(line: string): boolean {
   return cells.every((cell) => /^:?-+:?$/.test(cell))
 }
 
-/** 丢弃 markdown 表格：表头、分隔行和数据行整块删掉，QQ 里表格没法看。 */
+/** 一行的单元格数量：去掉首尾竖线带来的空段。 */
+function cellCount(line: string): number {
+  const trimmed = line.trim()
+  const inner = trimmed.startsWith("|") ? trimmed.slice(1) : trimmed
+  const body = inner.endsWith("|") ? inner.slice(0, -1) : inner
+  return body.split("|").length
+}
+
+/**
+ * 判断一行是不是表格行。
+ *
+ * 只有首尾都带竖线、且列数与表头一致的行才算；
+ * 否则表格后面正文里的一个竖线就会把整条正文当成表格行吞掉。
+ */
+function isTableRow(line: string, columns: number): boolean {
+  const trimmed = line.trim()
+  if (!trimmed.startsWith("|") || !trimmed.endsWith("|")) return false
+  return cellCount(trimmed) === columns
+}
+
+/**
+ * 丢弃 markdown 表格：表头、分隔行和数据行整块删掉，QQ 里表格没法看。
+ *
+ * 只认首尾带竖线的标准表格；表格后面的正文带着竖线也不会被当成数据行。
+ */
 export function dropTables(content: string): string {
   const lines = content.split("\n")
   const kept: string[] = []
@@ -36,9 +60,17 @@ export function dropTables(content: string): string {
   while (index < lines.length) {
     const line = lines[index] ?? ""
     const next = index + 1 < lines.length ? (lines[index + 1] ?? "") : undefined
-    if (line.includes("|") && next !== undefined && isTableDelimiter(next)) {
+    const columns = next !== undefined ? cellCount(line) : 0
+    // 表头与分隔行的列数一致，才当成一张表。
+    if (
+      next !== undefined &&
+      isTableDelimiter(next) &&
+      columns > 0 &&
+      cellCount(next) === columns &&
+      isTableRow(line, columns)
+    ) {
       index += 2
-      while (index < lines.length && (lines[index] ?? "").includes("|")) index += 1
+      while (index < lines.length && isTableRow(lines[index] ?? "", columns)) index += 1
       continue
     }
     kept.push(line)
@@ -70,24 +102,30 @@ export function splitGraphemes(content: string): string[] {
  * 按长度切分消息，保留原有换行与空行。
  *
  * 长度按字素簇计算，不会把 emoji 序列或组合字符切坏。
+ * 首部的空行也算内容，不会被吞掉。
  */
 export function splitMessage(content: string, max = MAX_MESSAGE_CHARS): string[] {
   const limit = Math.max(1, max)
   const chunks: string[] = []
   let current = ""
   let currentLength = 0
+  // 当前这段已经放了几行：空行长度为 0，只能靠行数区分“还没内容”和“有空行”。
+  let currentLines = 0
   for (const line of content.split("\n")) {
     const parts = splitGraphemes(line)
-    const candidateLength = currentLength + (currentLength > 0 ? 1 : 0) + parts.length
+    const separator = currentLines > 0 ? 1 : 0
+    const candidateLength = currentLength + separator + parts.length
     if (candidateLength <= limit) {
-      current = currentLength > 0 ? `${current}\n${line}` : line
+      current = currentLines > 0 ? `${current}\n${line}` : line
       currentLength = candidateLength
+      currentLines += 1
       continue
     }
-    if (currentLength > 0) {
+    if (currentLines > 0) {
       chunks.push(current)
       current = ""
       currentLength = 0
+      currentLines = 0
     }
     let rest = parts
     while (rest.length > limit) {
@@ -96,8 +134,9 @@ export function splitMessage(content: string, max = MAX_MESSAGE_CHARS): string[]
     }
     current = rest.join("")
     currentLength = rest.length
+    currentLines = 1
   }
-  if (currentLength > 0) chunks.push(current)
+  if (currentLines > 0 && (current.length > 0 || chunks.length === 0)) chunks.push(current)
   return chunks.length > 0 ? chunks : [content]
 }
 

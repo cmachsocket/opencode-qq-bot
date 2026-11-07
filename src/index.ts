@@ -370,7 +370,7 @@ export default Plugin.define({
       if (timer) clearInterval(timer)
       clearInterval(claimTimer)
       clearInterval(mediaCleanup)
-      keepAlive.dispose()
+      await keepAlive.dispose()
       idleAbort.abort()
       manager.dispose()
       await manager.flush()

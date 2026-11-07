@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest"
+import { beforeEach, describe, expect, it, vi } from "vitest"
 import type { Plugin } from "@opencode/plugin"
 import { DEFAULT_CONFIG, type QQBotConfig } from "../src/config"
 import {
@@ -16,24 +16,37 @@ const logger = {
   error: vi.fn(),
 } as unknown as Logger
 
+const WORKSPACE = "/tmp/qq-bot"
+
 interface SessionRecord {
   id: string
   title?: string
   metadata?: Record<string, unknown>
+  directory?: string
+  archived?: boolean
 }
 
-function createHarness() {
+interface UpdateInput {
+  sessionID: string
+  metadata?: Record<string, unknown>
+  archived?: boolean
+}
+
+function createHarness(options: { supportArchive?: boolean } = {}) {
   const sessions = new Map<string, SessionRecord>()
   const storage = new Map<string, unknown>()
-  const updates: Array<{ sessionID: string; metadata?: Record<string, unknown> }> = []
+  const updates: UpdateInput[] = []
   let created = 0
 
   const ctx = {
-    location: { directory: "/tmp/qq-bot" },
+    location: { directory: WORKSPACE },
     storage: {
       get: async (key: string) => storage.get(key),
       set: async (key: string, value: unknown) => {
         storage.set(key, value)
+      },
+      remove: async (key: string) => {
+        storage.delete(key)
       },
     },
     session: {
@@ -46,23 +59,43 @@ function createHarness() {
       get: async ({ sessionID }: { sessionID: string }) => {
         const record = sessions.get(sessionID)
         if (!record) throw new Error(`会话 ${sessionID} 不存在`)
-        return record
+        return {
+          ...record,
+          location: { directory: record.directory ?? WORKSPACE },
+          time: { created: 0, updated: 0, archived: record.archived ? 1 : undefined },
+        }
       },
-      update: async (input: { sessionID: string; metadata?: Record<string, unknown> }) => {
+      update: async (input: UpdateInput) => {
         const record = sessions.get(input.sessionID)
         if (!record) throw new Error(`会话 ${input.sessionID} 不存在`)
-        record.metadata = input.metadata
+        if (input.metadata !== undefined) record.metadata = input.metadata
+        // 上游的插件接口目前忽略 archived，只在支持归档时才生效。
+        if (options.supportArchive && input.archived !== undefined) {
+          record.archived = input.archived
+        }
         updates.push(input)
       },
-      list: async () => ({ data: [...sessions.values()], cursor: {} }),
+      remove: async ({ sessionID }: { sessionID: string }) => {
+        if (!sessions.has(sessionID)) throw new Error(`会话 ${sessionID} 不存在`)
+        sessions.delete(sessionID)
+      },
+      list: async ({ directory }: { directory?: string } = {}) => ({
+        data: [...sessions.values()].filter(
+          (record) => !directory || (record.directory ?? WORKSPACE) === directory,
+        ),
+        cursor: {},
+      }),
     },
   } as unknown as Plugin.Context
+
+  const metadataUpdates = () => updates.filter((update) => update.metadata !== undefined)
 
   return {
     ctx,
     sessions,
     storage,
     updates,
+    metadataUpdates,
     createdCount: () => created,
   }
 }
@@ -76,6 +109,10 @@ function createConfig(overrides: Partial<QQBotConfig> = {}): QQBotConfig {
 }
 
 describe("KeepAlive", () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
   it("新建一个专用会话并原样写回元数据", async () => {
     const harness = createHarness()
     const keepAlive = new KeepAlive(harness.ctx, createConfig(), logger)
@@ -86,9 +123,9 @@ describe("KeepAlive", () => {
     const record = [...harness.sessions.values()][0]
     expect(record?.title).toBe(KEEP_ALIVE_TITLE)
     expect(record?.metadata).toEqual({ [KEEP_ALIVE_SESSION_MARKER]: true })
-    expect(harness.updates).toHaveLength(1)
-    expect(harness.updates[0]?.sessionID).toBe(record?.id)
-    expect(harness.updates[0]?.metadata).toEqual({ [KEEP_ALIVE_SESSION_MARKER]: true })
+    expect(harness.metadataUpdates()).toHaveLength(1)
+    expect(harness.metadataUpdates()[0]?.sessionID).toBe(record?.id)
+    expect(harness.metadataUpdates()[0]?.metadata).toEqual({ [KEEP_ALIVE_SESSION_MARKER]: true })
     expect(harness.storage.get(KEEP_ALIVE_SESSION_KEY)).toBe(record?.id)
   })
 
@@ -104,12 +141,31 @@ describe("KeepAlive", () => {
     await keepAlive.ping()
 
     expect(harness.createdCount()).toBe(0)
-    expect(harness.updates[0]?.metadata).toEqual({ qqTargetKind: "group", qqTargetId: 123 })
+    expect(harness.metadataUpdates()[0]?.metadata).toEqual({
+      qqTargetKind: "group",
+      qqTargetId: 123,
+    })
   })
 
   it("上次保存的会话已经消失时重新建一个", async () => {
     const harness = createHarness()
     harness.storage.set(KEEP_ALIVE_SESSION_KEY, "ses_gone")
+    const keepAlive = new KeepAlive(harness.ctx, createConfig(), logger)
+
+    await keepAlive.ping()
+
+    expect(harness.createdCount()).toBe(1)
+    expect(harness.storage.get(KEEP_ALIVE_SESSION_KEY)).toBe("ses_1")
+  })
+
+  it("存储里是别的目录的会话时不复用", async () => {
+    const harness = createHarness()
+    harness.sessions.set("ses_elsewhere", {
+      id: "ses_elsewhere",
+      directory: "/tmp/other-project",
+      metadata: { [KEEP_ALIVE_SESSION_MARKER]: true },
+    })
+    harness.storage.set(KEEP_ALIVE_SESSION_KEY, "ses_elsewhere")
     const keepAlive = new KeepAlive(harness.ctx, createConfig(), logger)
 
     await keepAlive.ping()
@@ -129,8 +185,39 @@ describe("KeepAlive", () => {
     await keepAlive.ping()
 
     expect(harness.createdCount()).toBe(0)
-    expect(harness.updates[0]?.sessionID).toBe("ses_marked")
+    expect(harness.metadataUpdates()[0]?.sessionID).toBe("ses_marked")
     expect(harness.storage.get(KEEP_ALIVE_SESSION_KEY)).toBe("ses_marked")
+  })
+
+  it("给保活会话请求归档，让它不出现在会话列表里", async () => {
+    const harness = createHarness()
+    const keepAlive = new KeepAlive(harness.ctx, createConfig(), logger)
+
+    await keepAlive.ping()
+
+    const archive = harness.updates.find((update) => update.archived !== undefined)
+    expect(archive?.archived).toBe(true)
+    expect(archive?.sessionID).toBe("ses_1")
+  })
+
+  it("上游支持归档时把保活会话标记为已归档", async () => {
+    const harness = createHarness({ supportArchive: true })
+    const keepAlive = new KeepAlive(harness.ctx, createConfig(), logger)
+
+    await keepAlive.ping()
+
+    expect(harness.sessions.get("ses_1")?.archived).toBe(true)
+    expect(logger.info).toHaveBeenCalledWith("保活会话 ses_1 已归档")
+  })
+
+  it("上游忽略归档时如实记录会话仍会显示在列表里", async () => {
+    const harness = createHarness()
+    const keepAlive = new KeepAlive(harness.ctx, createConfig(), logger)
+
+    await keepAlive.ping()
+
+    expect(harness.sessions.get("ses_1")?.archived).toBeUndefined()
+    expect(logger.info).toHaveBeenCalledWith("上游未支持归档保活会话 ses_1，它会显示在会话列表里")
   })
 
   it("关闭保活时不产生任何心跳", async () => {
@@ -157,17 +244,51 @@ describe("KeepAlive", () => {
 
       keepAlive.start()
       await vi.advanceTimersByTimeAsync(0)
-      expect(harness.updates).toHaveLength(1)
+      expect(harness.metadataUpdates()).toHaveLength(1)
 
       await vi.advanceTimersByTimeAsync(60_000)
-      expect(harness.updates).toHaveLength(2)
+      expect(harness.metadataUpdates()).toHaveLength(2)
 
-      keepAlive.dispose()
+      await keepAlive.dispose()
       await vi.advanceTimersByTimeAsync(60_000)
-      expect(harness.updates).toHaveLength(2)
+      expect(harness.metadataUpdates()).toHaveLength(2)
     } finally {
       vi.useRealTimers()
     }
+  })
+
+  it("卸载时删掉保活会话并清掉存储记录", async () => {
+    const harness = createHarness()
+    const keepAlive = new KeepAlive(harness.ctx, createConfig(), logger)
+
+    await keepAlive.ping()
+    await keepAlive.dispose()
+
+    expect(harness.sessions.has("ses_1")).toBe(false)
+    expect(harness.storage.get(KEEP_ALIVE_SESSION_KEY)).toBeUndefined()
+  })
+
+  it("卸载时不删掉别的项目留下的存储记录", async () => {
+    const harness = createHarness()
+    const keepAlive = new KeepAlive(harness.ctx, createConfig(), logger)
+
+    await keepAlive.ping()
+    harness.storage.set(KEEP_ALIVE_SESSION_KEY, "ses_other_project")
+    await keepAlive.dispose()
+
+    expect(harness.storage.get(KEEP_ALIVE_SESSION_KEY)).toBe("ses_other_project")
+  })
+
+  it("卸载后不再心跳，不会把会话写回来", async () => {
+    const harness = createHarness()
+    const keepAlive = new KeepAlive(harness.ctx, createConfig(), logger)
+
+    await keepAlive.ping()
+    await keepAlive.dispose()
+    await keepAlive.ping()
+
+    expect(harness.metadataUpdates()).toHaveLength(1)
+    expect(harness.createdCount()).toBe(1)
   })
 
   it("写回失败时只告警，不丢掉会话", async () => {

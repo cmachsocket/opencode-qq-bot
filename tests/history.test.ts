@@ -54,6 +54,7 @@ describe("createHistoryProvider", () => {
       group_id: 100,
       message_seq: "0",
       count: 20,
+      reverse_order: false,
     })
     expect(result.text).toBe(
       `<history>\n之前的聊天记录（按时间顺序）：\n[${formatTimestamp(100)}] 小明(42): 早上好\n</history>`,
@@ -69,6 +70,7 @@ describe("createHistoryProvider", () => {
       user_id: 200,
       message_seq: "0",
       count: 20,
+      reverse_order: false,
     })
   })
 
@@ -110,6 +112,37 @@ describe("createHistoryProvider", () => {
     const result = await history.fetch(group(100), {
       count: 20,
       since: { id: "1", time: 100 },
+    })
+    expect(result.text).toContain("离线一")
+    expect(result.text).toContain("离线二")
+    expect(result.text).not.toContain("旧")
+  })
+
+  it("补增量时往更早的方向翻页", async () => {
+    const pages: unknown[] = []
+    const api = createApi((params) => {
+      pages.push(params)
+      // 第一页是最新的一条，往前翻一页才拿到更早的消息。
+      if (pages.length === 1) return { messages: [message(3, 300, "离线二")] }
+      return { messages: [message(1, 100, "旧"), message(2, 200, "离线一")] }
+    })
+    const history = createProvider(api)
+    const result = await history.fetch(group(100), {
+      count: 20,
+      since: { id: "1", time: 100 },
+    })
+    expect(pages[0]).toEqual({
+      group_id: 100,
+      message_seq: "0",
+      count: 20,
+      reverse_order: true,
+    })
+    // 游标取页内最旧一条的 message_id，继续往更早翻。
+    expect(pages[1]).toEqual({
+      group_id: 100,
+      message_seq: "3",
+      count: 20,
+      reverse_order: true,
     })
     expect(result.text).toContain("离线一")
     expect(result.text).toContain("离线二")

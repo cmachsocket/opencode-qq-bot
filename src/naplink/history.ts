@@ -114,7 +114,8 @@ async function fetchLatest(
 ): Promise<RawMessage[]> {
   // 多要一些，用来抵消被排除的消息。
   const wanted = count + Math.min(exclude?.size ?? 0, count)
-  const entries = await requestHistory(ctx, "0", wanted)
+  // 不传 reverse_order 或传 false：取目标 seq 往当前时间的 count 条。
+  const entries = await requestHistory(ctx, "0", wanted, false)
   const fresh = exclude
     ? entries.filter((entry) => !exclude.has(String(entry.message_id)))
     : entries
@@ -124,8 +125,9 @@ async function fetchLatest(
 /**
  * 补上次位置之后的历史消息：从重启中恢复时用。
  *
- * NapCat 的历史接口只能往前翻（`message_seq` 取的是更早的消息），
- * 所以从最新一条开始往回翻，翻到上次位置为止；翻到的消息按时间排序后就是增量。
+ * NapCat 的历史接口方向由 `reverse_order` 决定：传 true 才是往更早的时间翻。
+ * 所以从最新一条开始往回翻（游标取页内最旧一条的 message_id），翻到上次位置为止；
+ * 翻到的消息按时间排序后就是增量。
  */
 async function fetchGap(
   ctx: RenderContext,
@@ -139,7 +141,7 @@ async function fetchGap(
   let reached = false
 
   for (let page = 0; page < MAX_HISTORY_PAGES; page += 1) {
-    const entries = await requestHistory(ctx, cursor, count)
+    const entries = await requestHistory(ctx, cursor, count, true)
     if (entries.length === 0) break
 
     let added = 0
@@ -180,6 +182,7 @@ async function requestHistory(
   ctx: RenderContext,
   cursor: string,
   count: number,
+  reverseOrder: boolean,
 ): Promise<RawMessage[]> {
   try {
     const response =
@@ -188,11 +191,13 @@ async function requestHistory(
             group_id: ctx.target.id,
             message_seq: cursor,
             count,
+            reverse_order: reverseOrder,
           })
         : await ctx.api.getFriendMsgHistory({
             user_id: ctx.target.id,
             message_seq: cursor,
             count,
+            reverse_order: reverseOrder,
           })
     return normalize(response)
   } catch (error) {

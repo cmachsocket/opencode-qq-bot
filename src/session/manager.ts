@@ -537,7 +537,6 @@ export class SessionManager {
   private async prepareTurn(state: ChatState, turn: Turn): Promise<Turn> {
     const count = Math.max(0, Math.floor(this.config.history.count))
     if (!this.history || count === 0 || state.historyDone) return turn
-    state.historyDone = true
 
     const key = targetKey(state.target)
     const sessionID = await this.ensureSession(state.target)
@@ -549,6 +548,8 @@ export class SessionManager {
         ...(since ? { since } : {}),
         exclude: this.incoming.get(key),
       })
+      // 补过才算补齐：失败时不留下标记，下一轮还会重试。
+      state.historyDone = true
       if (!history.text) return turn
       return {
         ...turn,
@@ -585,7 +586,7 @@ export class SessionManager {
       if (turn.source) {
         const key = targetKey(state.target)
         this.positions.set(key, turn.source)
-        this.restoredPositions.set(key, turn.source)
+        // restoredPositions 是启动时的快照，用来算重启期间的增量，不能被本轮的投递改写。
         this.scheduleSave()
       }
       this.logger.debug(`${label} 已投递消息到会话 ${sessionID}`)

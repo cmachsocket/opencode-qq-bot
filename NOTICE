@@ -1,13 +1,16 @@
 # NOTICE
 
 本项目自身采用 [CC-BY-NC-SA-4.0](LICENSE) 许可。
-下列第三方依赖以 MIT 许可分发，各自的完整许可文本随依赖一起提供（`node_modules/<包名>/LICENSE`）。
+下列第三方依赖以 MIT 许可分发。多数依赖的完整许可文本随依赖一起提供
+（`node_modules/<包名>/LICENSE`）；`@opencode/plugin` 与 `@opencode/schema` 未附带许可文件，
+它们的 `package.json` 标注为 MIT，许可全文见下方。
 
 | 依赖                                | 版权声明                                                                                  |
 | ----------------------------------- | ----------------------------------------------------------------------------------------- |
 | @bybrave/proper-lockfile2           | Copyright (c) 2018 Made With MOXY Lda \<hello@moxy.studio\> (original proper-lockfile)     |
 | @naplink/naplink                    | Copyright (c) 2024 NapLink Contributors                                                     |
 | @opencode/plugin                    | MIT License，<https://github.com/anomalyco/opencode>                                      |
+| @opencode/schema                    | MIT License，<https://github.com/anomalyco/opencode>                                      |
 | async-mutex                         | Copyright (c) 2016 Christian Speckner \<cnspeckn@googlemail.com\>                          |
 | remove-markdown                     | Copyright (c) 2015 Stian Grytøyr                                                            |
 | zod                                 | Copyright (c) 2025 Colin McDonnell                                                          |
