@@ -67,21 +67,34 @@ function imagePlaceholder(segment: MessageSegment): string {
   return summary ? summary : "[收藏表情]"
 }
 
+/**
+ * 渲染器能产出文本的段类型。
+ *
+ * 与 renderMessage / renderForwardSegments 的分支保持一致：门卫放行的类型必须能被渲染出来，
+ * 否则消息会带着空文本进会话。
+ */
+const RENDERABLE_SEGMENT_TYPES: ReadonlySet<string> = new Set([
+  "text",
+  "at",
+  "face",
+  "reply",
+  "image",
+  "record",
+  "audio",
+  "video",
+  "file",
+  "json",
+  "xml",
+  "markdown",
+  "forward",
+])
+
 /** 判断消息是否含有值得交给模型的内容。 */
 export function shouldProcess(message: readonly MessageSegment[], userId?: string): boolean {
   if (userId && mentionsUser(message, userId)) return true
   return segments(message).some((segment) => {
-    switch (segment.type) {
-      case "text":
-        return segment.data.text.trim().length > 0
-      case "image":
-      case "record":
-      case "forward":
-      case "reply":
-        return true
-      default:
-        return false
-    }
+    if (segment.type === "text") return segment.data.text.trim().length > 0
+    return RENDERABLE_SEGMENT_TYPES.has(segment.type)
   })
 }
 

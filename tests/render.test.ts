@@ -42,6 +42,23 @@ function forwardSegment(id: string): MessageSegment {
   return { type: "forward", data: { id } } as unknown as MessageSegment
 }
 
+/** 渲染器能产出文本的段类型；门卫必须全部放行，且都要渲染出内容。 */
+const RENDERABLE_SEGMENTS: MessageSegment[] = [
+  { type: "text", data: { text: "你好" } },
+  { type: "at", data: { qq: "123" } },
+  { type: "face", data: { id: "1" } },
+  { type: "reply", data: { id: "5" } },
+  { type: "image", data: { file: "a.jpg" } },
+  { type: "record", data: { file: "a.amr" } },
+  { type: "audio", data: { file: "a.mp3" } },
+  { type: "video", data: { file: "a.mp4" } },
+  { type: "file", data: { file: "a.zip", name: "a.zip" } },
+  { type: "json", data: { data: "{}" } },
+  { type: "xml", data: { data: "<x/>" } },
+  { type: "markdown", data: { content: "# 标题" } },
+  forwardSegment("9"),
+]
+
 function makeEvent(
   message: MessageSegment[],
   extra: Partial<GroupMessageEvent> = {},
@@ -126,7 +143,21 @@ describe("shouldProcess", () => {
   })
 
   it("rejects unsupported segments", () => {
-    expect(shouldProcess([{ type: "face", data: { id: "1" } }])).toBe(false)
+    expect(shouldProcess([{ type: "unknown", data: {} } as unknown as MessageSegment])).toBe(false)
+  })
+
+  it("accepts a message that only contains a qq face", () => {
+    expect(shouldProcess([{ type: "face", data: { id: "1" } }])).toBe(true)
+  })
+
+  it("accepts a message that only mentions someone else", () => {
+    expect(shouldProcess([{ type: "at", data: { qq: "123" } }])).toBe(true)
+  })
+
+  it("accepts every segment type the renderer supports", () => {
+    for (const segment of RENDERABLE_SEGMENTS) {
+      expect(shouldProcess([segment]), `段类型 ${segment.type} 被门卫挡掉了`).toBe(true)
+    }
   })
 
   it("accepts a message that only mentions the bot", () => {
@@ -310,6 +341,29 @@ describe("renderMessage", () => {
     )
     expect(rendered.text).toBe("在吗")
     expect(rendered.files).toEqual([])
+  })
+
+  it("renders text for every segment type the gate accepts", async () => {
+    for (const segment of RENDERABLE_SEGMENTS) {
+      const rendered = await renderMessage(ctx(makeApi()), makeEvent([segment]))
+      expect(rendered.text.trim(), `段类型 ${segment.type} 没有渲染出文本`).not.toBe("")
+    }
+  })
+
+  it("renders a qq face as a named placeholder", async () => {
+    const rendered = await renderMessage(
+      ctx(makeApi()),
+      makeEvent([{ type: "face", data: { id: "14" } }]),
+    )
+    expect(rendered.text).toBe("[微笑]")
+  })
+
+  it("renders an at segment without text as the user name", async () => {
+    const rendered = await renderMessage(
+      ctx(makeApi()),
+      makeEvent([{ type: "at", data: { qq: "200" } }]),
+    )
+    expect(rendered.text).toContain("@名片")
   })
 
   it("renders a private message", async () => {

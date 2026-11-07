@@ -97,16 +97,21 @@ qq-bridge 的两层闸门在 OpenCode V2 插件 API 里都有对应原语，不�
 
 ## 三、已确认缺陷（不是候选改进项，是要修的 bug）
 
-### D1. 只含 QQ 官方表情的消息被整条丢弃
+### D1. 只含 QQ 官方表情的消息被整条丢弃（已修复）
 
 `shouldProcess` 的白名单只列了 `text` / `image` / `record` / `forward` / `reply`，
 其余段类型一律返回 false。群里发一个表情（`face`）就落在这个空档里——
 渲染器本身是支持 `face` 的（`renderFace`），但消息在进渲染器之前就被门卫挡掉了。
 
 - 后果：模型看不到群里的纯表情消息，节奏判断会偏。
-- 同理：只含 `at`（@ 别人且没有文字）的消息也被丢弃。
+- 同理：只含 `at`（@ 别人且没有文字）的消息也被丢弃；`video` / `audio` / `file` /
+  `json` / `xml` / `markdown` 同样落在空档里。
 
-位置：`src/naplink/render.ts:71-86`
+**修复**：门卫改成按"渲染器能产出文本的段类型"放行（`RENDERABLE_SEGMENT_TYPES`），
+与 `renderMessage` / `renderForwardSegments` 的分支一一对应，空文本仍是唯一的丢弃条件。
+`tests/render.test.ts` 用同一份段类型清单断言门卫放行 + 渲染器出文本，防止两边再次跑偏。
+
+位置：`src/naplink/render.ts`
 
 ---
 
