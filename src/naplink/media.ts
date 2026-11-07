@@ -4,6 +4,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { pathToFileURL } from "node:url"
 import type { Logger } from "../logger"
+import { type SafeFetcher, safeFetchBytes } from "../safe-fetch"
 
 /** 单张图片下载与落盘的字节上限。 */
 export const MAX_IMAGE_BYTES = 5 * 1024 * 1024
@@ -88,62 +89,6 @@ function truncateForLog(value: string, max = 120): string {
   return value.length > max ? `${value.slice(0, max)}…` : value
 }
 
-/** 判断主机名是否指向本机或内网，避免下载请求打内网服务。 */
-export function isPrivateHost(hostname: string): boolean {
-  let host = hostname.trim().toLowerCase()
-  if (host.startsWith("[") && host.endsWith("]")) host = host.slice(1, -1)
-  if (host === "localhost" || host.endsWith(".localhost") || host.endsWith(".local")) return true
-  if (host === "::1" || host === "::") return true
-  if (host.startsWith("fc") || host.startsWith("fd") || host.startsWith("fe80")) return true
-
-  const parts = host.split(".")
-  if (parts.length !== 4) return false
-  const octets = parts.map(Number)
-  if (octets.some((value) => !Number.isInteger(value) || value < 0 || value > 255)) return false
-  const [first, second] = octets
-  return (
-    first === 0 ||
-    first === 10 ||
-    first === 127 ||
-    (first === 169 && second === 254) ||
-    (first === 172 && second !== undefined && second >= 16 && second <= 31) ||
-    (first === 192 && second === 168)
-  )
-}
-
-async function readCapped(response: Response, limit: number): Promise<Uint8Array | undefined> {
-  const body = response.body
-  if (!body) {
-    const buffer = new Uint8Array(await response.arrayBuffer())
-    return buffer.byteLength > limit ? undefined : buffer
-  }
-  const reader = body.getReader()
-  const chunks: Uint8Array[] = []
-  let total = 0
-  try {
-    for (;;) {
-      const { done, value } = await reader.read()
-      if (done) break
-      if (!value) continue
-      total += value.byteLength
-      if (total > limit) {
-        await reader.cancel().catch(() => {})
-        return undefined
-      }
-      chunks.push(value)
-    }
-  } finally {
-    reader.releaseLock()
-  }
-  const buffer = new Uint8Array(total)
-  let offset = 0
-  for (const chunk of chunks) {
-    buffer.set(chunk, offset)
-    offset += chunk.byteLength
-  }
-  return buffer
-}
-
 function decodeBase64(value: string): Uint8Array | undefined {
   if (!/^[A-Za-z0-9+/]*={0,2}$/u.test(value)) return undefined
   const bytes = Buffer.from(value, "base64")
@@ -181,6 +126,7 @@ export class MediaStore {
     private readonly root: string,
     private readonly logger: Logger,
     private readonly ttlMs = MEDIA_TTL_MS,
+    private readonly fetcher: SafeFetcher = safeFetchBytes,
   ) {}
 
   private async ensureRoot(): Promise<void> {
@@ -221,49 +167,27 @@ export class MediaStore {
     } catch {
       return undefined
     }
-    if (isPrivateHost(parsed.hostname)) {
-      this.logger.warn(`拒绝下载内网图片 host=${parsed.hostname}`)
+    const response = await this.fetcher(parsed, {
+      maxBytes: MAX_IMAGE_BYTES,
+      timeoutMs: IMAGE_FETCH_TIMEOUT_MS,
+      logger: this.logger,
+    })
+    if (!response) return undefined
+    if (response.bytes.byteLength > MAX_IMAGE_BYTES) {
+      this.logger.warn(`图片过大，跳过下载 bytes=${response.bytes.byteLength} url=${url}`)
       return undefined
     }
 
-    const controller = new AbortController()
-    const timer = setTimeout(() => controller.abort(), IMAGE_FETCH_TIMEOUT_MS)
-    try {
-      const response = await fetch(url, {
-        signal: controller.signal,
-        redirect: "error",
-      })
-      if (!response.ok) {
-        this.logger.warn(`下载图片失败 status=${response.status} url=${url}`)
-        return undefined
-      }
-      const lengthHeader = response.headers.get("content-length")
-      const declaredLength = lengthHeader === null ? undefined : Number(lengthHeader)
-      if (declaredLength !== undefined && Number.isFinite(declaredLength)) {
-        if (declaredLength > MAX_IMAGE_BYTES) {
-          this.logger.warn(`图片过大，跳过下载 bytes=${declaredLength} url=${url}`)
-          return undefined
-        }
-      }
-      const bytes = await readCapped(response, MAX_IMAGE_BYTES)
-      if (!bytes) {
-        this.logger.warn(`图片过大，跳过下载 url=${url}`)
-        return undefined
-      }
-      const declared = response.headers.get("content-type")?.split(";")[0]?.trim()
-      const mime =
-        declared?.startsWith("image/") === true ? declared : (mimeFromBytes(bytes) ?? undefined)
-      if (!mime) {
-        this.logger.warn(`图片类型无法识别 url=${url}`)
-        return undefined
-      }
-      return { bytes, mime }
-    } catch (error) {
-      this.logger.warn(`下载图片异常 url=${url}`, error)
+    const declared = response.contentType?.split(";")[0]?.trim()
+    const mime =
+      declared?.startsWith("image/") === true
+        ? declared
+        : (mimeFromBytes(response.bytes) ?? undefined)
+    if (!mime) {
+      this.logger.warn(`图片类型无法识别 url=${url}`)
       return undefined
-    } finally {
-      clearTimeout(timer)
     }
+    return { bytes: response.bytes, mime }
   }
 
   private async storeBytes(bytes: Uint8Array, mime: string): Promise<StoredImage> {
@@ -313,10 +237,10 @@ export class MediaStore {
 /** 创建默认的临时图片存储，并立即清理一次过期文件。 */
 export async function createMediaStore(
   logger: Logger,
-  options: { root?: string; ttlMs?: number } = {},
+  options: { root?: string; ttlMs?: number; fetcher?: SafeFetcher } = {},
 ): Promise<MediaStore> {
   const root = options.root ?? join(tmpdir(), "opencode-qq-bot-media")
-  const store = new MediaStore(root, logger, options.ttlMs)
+  const store = new MediaStore(root, logger, options.ttlMs, options.fetcher)
   await store.cleanup()
   return store
 }

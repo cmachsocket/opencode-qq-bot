@@ -1,8 +1,9 @@
 import { afterAll, describe, expect, it } from "vitest"
 import { mkdtemp, rm } from "node:fs/promises"
+import http from "node:http"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { createMediaStore, isPrivateHost } from "../src/naplink/media"
+import { createMediaStore } from "../src/naplink/media"
 import type { Logger } from "../src/logger"
 
 const logger: Logger = {
@@ -19,16 +20,24 @@ afterAll(async () => {
   await rm(root, { recursive: true, force: true })
 })
 
-describe("isPrivateHost", () => {
-  it("rejects loopback and private addresses", () => {
-    for (const host of ["localhost", "127.0.0.1", "10.0.0.1", "192.168.1.1", "172.16.0.1", "::1"]) {
-      expect(isPrivateHost(host)).toBe(true)
+describe("MediaStore 出站下载", () => {
+  it("拒绝下载指向回环地址的图片", async () => {
+    const hits: string[] = []
+    const server = http.createServer((request, response) => {
+      hits.push(request.url ?? "")
+      response.writeHead(200, { "content-type": "image/png" })
+      response.end(Buffer.from(PNG))
+    })
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve))
+    const port = (server.address() as { port: number }).port
+    try {
+      const store = await createMediaStore(logger, { root, ttlMs: 0 })
+      const stored = await store.storeImage(`http://127.0.0.1:${port}/image.png`)
+      expect(stored).toBeUndefined()
+      expect(hits).toEqual([])
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()))
     }
-  })
-
-  it("accepts public hostnames", () => {
-    expect(isPrivateHost("example.com")).toBe(false)
-    expect(isPrivateHost("8.8.8.8")).toBe(false)
   })
 })
 

@@ -12,7 +12,9 @@
 | @opencode/plugin                    | MIT License，<https://github.com/anomalyco/opencode>                                      |
 | @opencode/schema                    | MIT License，<https://github.com/anomalyco/opencode>                                      |
 | async-mutex                         | Copyright (c) 2016 Christian Speckner \<cnspeckn@googlemail.com\>                          |
+| ipaddr.js                           | Copyright (C) 2011-2017 whitequark \<whitequark@whitequark.org\>（request-filtering-agent 的依赖） |
 | remove-markdown                     | Copyright (c) 2015 Stian Grytøyr                                                            |
+| request-filtering-agent             | Copyright (c) 2019 azu                                                                       |
 | zod                                 | Copyright (c) 2025 Colin McDonnell                                                          |
 
 ## MIT License

@@ -17,6 +17,7 @@ import {
   shouldProcess,
 } from "../src/naplink/render"
 import { createMediaStore } from "../src/naplink/media"
+import { type SafeFetcher, safeFetchBytes } from "../src/safe-fetch"
 import type { ChatTarget } from "../src/chat"
 import type { Logger } from "../src/logger"
 
@@ -28,7 +29,12 @@ const logger: Logger = {
 }
 
 const mediaRoot = await mkdtemp(join(tmpdir(), "qq-render-test-"))
-const media = await createMediaStore(logger, { root: mediaRoot })
+/** 当前生效的下载实现：默认走真实的安全下载，个别用例换成假的。 */
+let fetcher: SafeFetcher = safeFetchBytes
+const media = await createMediaStore(logger, {
+  root: mediaRoot,
+  fetcher: (url, options) => fetcher(url, options),
+})
 
 afterAll(async () => {
   await rm(mediaRoot, { recursive: true, force: true })
@@ -36,6 +42,11 @@ afterAll(async () => {
 
 const PNG = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0])
 const JPEG = new Uint8Array([0xff, 0xd8, 0xff, 0xe0, 0, 0])
+
+/** 构造一个假的下载结果。 */
+function fakeDownload(bytes: Uint8Array, contentType: string): SafeFetcher {
+  return async () => ({ status: 200, contentType, bytes })
+}
 
 /** NapCat 的 forward 段没有官方类型定义，测试里按运行时结构构造。 */
 function forwardSegment(id: string): MessageSegment {
@@ -256,69 +267,25 @@ describe("MediaStore.storeImage", () => {
   })
 
   it("sniffs the mime type when the content type is not an image", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(
-        async () => new Response(JPEG, { headers: { "content-type": "application/octet-stream" } }),
-      ),
-    )
+    fetcher = fakeDownload(JPEG, "application/octet-stream")
     try {
       const stored = await media.storeImage("https://example.com/a.jpg")
       expect(stored?.name).toMatch(/\.jpg$/)
     } finally {
-      vi.unstubAllGlobals()
+      fetcher = safeFetchBytes
     }
   })
 
   it("rejects private hosts before fetching", async () => {
-    const fetchMock = vi.fn()
-    vi.stubGlobal("fetch", fetchMock)
-    try {
-      expect(await media.storeImage("http://127.0.0.1/a.png")).toBeUndefined()
-      expect(fetchMock).not.toHaveBeenCalled()
-    } finally {
-      vi.unstubAllGlobals()
-    }
+    expect(await media.storeImage("http://127.0.0.1/a.png")).toBeUndefined()
   })
 
   it("skips images larger than the limit", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(
-        async () =>
-          new Response(new Uint8Array(1024), {
-            headers: { "content-type": "image/png", "content-length": String(64 * 1024 * 1024) },
-          }),
-      ),
-    )
+    fetcher = fakeDownload(new Uint8Array(5 * 1024 * 1024 + 1), "image/png")
     try {
       expect(await media.storeImage("https://example.com/big.png")).toBeUndefined()
     } finally {
-      vi.unstubAllGlobals()
-    }
-  })
-
-  it("stops reading an oversized body without a content length", async () => {
-    const chunk = new Uint8Array(1024 * 1024)
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(
-        async () =>
-          new Response(
-            new ReadableStream({
-              start(controller) {
-                for (let index = 0; index < 8; index += 1) controller.enqueue(chunk)
-                controller.close()
-              },
-            }),
-            { headers: { "content-type": "image/png" } },
-          ),
-      ),
-    )
-    try {
-      expect(await media.storeImage("https://example.com/big.png")).toBeUndefined()
-    } finally {
-      vi.unstubAllGlobals()
+      fetcher = safeFetchBytes
     }
   })
 })
@@ -440,15 +407,7 @@ describe("renderMessage", () => {
         url: "https://example.com/hydrated.jpg",
       })),
     })
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(
-        async () =>
-          new Response(new Uint8Array([0xff, 0xd8, 0xff]), {
-            headers: { "content-type": "image/jpeg" },
-          }),
-      ),
-    )
+    fetcher = fakeDownload(new Uint8Array([0xff, 0xd8, 0xff]), "image/jpeg")
     try {
       const rendered = await renderMessage(
         ctx(api),
@@ -457,20 +416,12 @@ describe("renderMessage", () => {
       expect(rendered.files).toHaveLength(1)
       expect(rendered.files[0]?.name).toBe("qq-image-1.jpg")
     } finally {
-      vi.unstubAllGlobals()
+      fetcher = safeFetchBytes
     }
   })
 
   it("stores a remote image as a file reference", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(
-        async () =>
-          new Response(new Uint8Array([0xff, 0xd8, 0xff]), {
-            headers: { "content-type": "image/jpeg" },
-          }),
-      ),
-    )
+    fetcher = fakeDownload(new Uint8Array([0xff, 0xd8, 0xff]), "image/jpeg")
     try {
       const rendered = await renderMessage(
         ctx(makeApi()),
@@ -481,20 +432,12 @@ describe("renderMessage", () => {
       expect(rendered.files[0]?.name).toBe("qq-image-1.jpg")
       expect(rendered.files[0]?.bytes).toBe(3)
     } finally {
-      vi.unstubAllGlobals()
+      fetcher = safeFetchBytes
     }
   })
 
   it("names the attachment after the sniffed mime type", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(
-        async () =>
-          new Response(new Uint8Array([0xff, 0xd8, 0xff]), {
-            headers: { "content-type": "application/octet-stream" },
-          }),
-      ),
-    )
+    fetcher = fakeDownload(new Uint8Array([0xff, 0xd8, 0xff]), "application/octet-stream")
     try {
       const rendered = await renderMessage(
         ctx(makeApi()),
@@ -502,20 +445,12 @@ describe("renderMessage", () => {
       )
       expect(rendered.files[0]?.name).toBe("qq-image-1.jpg")
     } finally {
-      vi.unstubAllGlobals()
+      fetcher = safeFetchBytes
     }
   })
 
   it("caps the number of referenced images per message", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(
-        async () =>
-          new Response(new Uint8Array([0xff, 0xd8, 0xff]), {
-            headers: { "content-type": "image/jpeg" },
-          }),
-      ),
-    )
+    fetcher = fakeDownload(new Uint8Array([0xff, 0xd8, 0xff]), "image/jpeg")
     try {
       const message = Array.from({ length: MAX_PROMPT_IMAGES + 5 }, (_, index) => ({
         type: "image" as const,
@@ -525,7 +460,7 @@ describe("renderMessage", () => {
       expect(rendered.files).toHaveLength(MAX_PROMPT_IMAGES)
       expect(rendered.text.match(/\[图片\]/g)).toHaveLength(MAX_PROMPT_IMAGES + 5)
     } finally {
-      vi.unstubAllGlobals()
+      fetcher = safeFetchBytes
     }
   })
 })

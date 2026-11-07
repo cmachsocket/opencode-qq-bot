@@ -11,6 +11,7 @@
         "@opencode/schema": "2.2.5",
         "async-mutex": "^0.5.0",
         "remove-markdown": "0.8.0",
+        "request-filtering-agent": "3.2.1",
         "zod": "4.6.7",
       },
       "devDependencies": {
@@ -523,6 +524,8 @@
 
     "ip-address": ["ip-address@10.7.6", "", {}, "sha512-00LYkM6byILa9eQIx6qoaXCM40xTLd56AZ4vyaPW3YTyb49VZYPo5xsiAq4tuQ54GH4R7gVdYScJ1B7B77PuTg=="],
 
+    "ipaddr.js": ["ipaddr.js@2.5.0", "", {}, "sha512-aq+t5NAc+cS6rZQQVWC2x98CPqGtKKTMDd4Gaodv0wShnItdKg/51djkGJ1hqH+Oy0ivDftCbSLCQob8zso01w=="],
+
     "is-docker": ["is-docker@3.0.0", "", { "bin": { "is-docker": "cli.js" } }, "sha512-eljcgEDlEns/7AXFosB5K/2nCM4P7FQPkGc/DWLy5rmFEWvZayGrik1d9/QIY5nJ4f9YsVvBkA6kJpHn9rISdQ=="],
 
     "is-extglob": ["is-extglob@2.1.1", "", {}, "sha512-SbKbANkN603Vi4jEZv49LeVJMn4yGwsbzZworEoyEiutsN3nJYdbO36zfhGJ6QEDpOZIFkDtnq5JRxmvl3jsoQ=="],
@@ -708,6 +711,8 @@
     "redis": ["redis@6.3.1", "", { "dependencies": { "@redis/bloom": "6.3.1", "@redis/client": "6.3.1", "@redis/json": "6.3.1", "@redis/search": "6.3.1", "@redis/time-series": "6.3.1" } }, "sha512-mV96ZKxQ4CGn3SyEGaY0Lb9YA443mdVey3c+mdr0NAUaBxiOZGoYCWX8PoM55kictSOmxlJRtZJxIsmZm3jL+w=="],
 
     "remove-markdown": ["remove-markdown@0.8.0", "", {}, "sha512-VP1v6BYAa6VlLPHzr3JpVDV+f2IHqLKBauXZm08alrB9rJC4mQ1IoePsWOzpJx8GTfFwF+j6fmCtI8DLh1qIdA=="],
+
+    "request-filtering-agent": ["request-filtering-agent@3.2.1", "", { "dependencies": { "ipaddr.js": "^2.1.0" } }, "sha512-NUz5G9n6GRSgB9JNurHCeeJX60s+qxL/DKTPjC6+fXrQ20w7iQy+ST6h4hKjeu1AjfH7FtIV+uw5eOq4CqWe8Q=="],
 
     "retry": ["retry@0.13.1", "", {}, "sha512-XQBQ3I8W1Cge0Seh+6gjj03LbmRFWuoszgK9ooCpwYIrhhoO80pfq4cUkU5DkknwfOfFteRwlZ56PYOGYyFWdg=="],
 

@@ -6,6 +6,13 @@
 
 ### Added
 
+- 入站图片下载的 SSRF 加固（`src/safe-fetch.ts`）：下载地址由群友控制，只做字符串匹配挡不住 DNS 重绑定。
+  现在改成在连接层判定——先解析 DNS，解析出的每一个地址都要过公网判定（回环、私网、CGNAT `100.64/10`、
+  `198.18/15`、IPv4-mapped、NAT64、6to4、链路本地、组播、元地址一律拒绝），判定通过才连过去，
+  连的就是刚判定过的地址，Host 与 SNI 保持原样；端口只放行 `80` / `443` / `8080` / `8443`，
+  3xx 不跟随（算失败），免得用跳转绕过判定。
+  判定用现成的 [`request-filtering-agent`](https://github.com/azu/request-filtering-agent)，
+  原先的 `isPrivateHost` 字符串判定删除。
 - 出站限流：出站消息按目标（群 / 私聊）单独计数，模型一轮连发不再把群刷爆，也降低平台风控风险。
   每分钟最多 `rateLimit.maxPerMinute` 条（默认 8）、每小时最多 `rateLimit.maxPerHour` 条（默认 60），
   超出则拒绝这次发送并把原因回给模型（说明里写明请停止发送并结束本轮），本轮同样算已回复，
