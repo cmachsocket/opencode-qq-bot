@@ -2,6 +2,8 @@ import { describe, expect, it, vi } from "vitest"
 import type { Plugin } from "@opencode/plugin"
 import {
   MAX_BUFFER_TURNS,
+  PENDING_MAX_ATTEMPTS,
+  RESUME_INTERVAL_MS,
   SUBMIT_GRACE_MS,
   SessionManager,
   mergeTurns,
@@ -375,6 +377,44 @@ describe("SessionManager", () => {
     }
   })
 
+  it("drops the batch after the delivery limit and still delivers new messages", async () => {
+    vi.useFakeTimers()
+    try {
+      const { manager, prompt, sessionGet } = createHarness()
+      vi.setSystemTime(new Date(10_000))
+      sessionGet.mockResolvedValue({
+        id: "session-1",
+        time: { busy: new Date(9_000), idle: new Date(9_500) },
+      })
+      prompt.mockRejectedValue(new Error("upstream refused"))
+
+      await manager.enqueue(group(100), { text: "第一条", files: [], atMe: false })
+      expect(prompt).toHaveBeenCalledTimes(1)
+
+      // 重试到上限为止，同一批消息一共投递 PENDING_MAX_ATTEMPTS 次。
+      await manager.resumeBuffered()
+      expect(prompt).toHaveBeenCalledTimes(2)
+      await manager.resumeBuffered()
+      expect(prompt).toHaveBeenCalledTimes(PENDING_MAX_ATTEMPTS)
+
+      // 超过上限后这一批被丢弃，不会继续重试。
+      await manager.resumeBuffered()
+      expect(prompt).toHaveBeenCalledTimes(PENDING_MAX_ATTEMPTS)
+
+      // 丢弃之后新到的消息照常投递，不会被堵住。
+      prompt.mockResolvedValue(undefined)
+      await manager.enqueue(group(100), { text: "第二条", files: [], atMe: false })
+      expect(prompt).toHaveBeenCalledTimes(PENDING_MAX_ATTEMPTS + 1)
+
+      const first = prompt.mock.calls[0]?.[0] as { id?: string } | undefined
+      const last = prompt.mock.calls.at(-1)?.[0] as { text?: string; id?: string } | undefined
+      expect(last?.text).toBe("第二条")
+      expect(last?.id).not.toBe(first?.id)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it("never reuses an id for a different payload", async () => {
     vi.useFakeTimers()
     try {
@@ -635,6 +675,87 @@ describe("SessionManager", () => {
       sessionGet.mockResolvedValue({ id: "session-1", time: { busy: 2, idle: 3 } })
       await manager.resumeBuffered()
       expect(prompts).toHaveLength(2)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it("releases buffered messages when the upstream end event is lost", async () => {
+    vi.useFakeTimers()
+    try {
+      const { manager, prompts, sessionGet } = createHarness()
+      vi.setSystemTime(new Date(10_000))
+      await manager.enqueue(group(100), { text: "第一条", files: [], atMe: false })
+      expect(prompts).toHaveLength(1)
+
+      // 上游还在跑，第二条留在缓存里。
+      sessionGet.mockResolvedValue({
+        id: "session-1",
+        time: { busy: new Date(10_500), idle: new Date(9_500) },
+      })
+      await manager.enqueue(group(100), { text: "第二条", files: [], atMe: false })
+      expect(prompts).toHaveLength(1)
+
+      // 结束事件丢了：上游已经空闲，插件没收到任何结束事件。
+      sessionGet.mockResolvedValue({
+        id: "session-1",
+        time: { busy: new Date(10_500), idle: new Date(20_000) },
+      })
+      await vi.advanceTimersByTimeAsync(RESUME_INTERVAL_MS)
+      expect(prompts).toHaveLength(2)
+      expect(prompts[1]?.text).toBe("第二条")
+
+      // 消息都投出去了，兜底轮询随之停下。
+      await vi.advanceTimersByTimeAsync(RESUME_INTERVAL_MS * 3)
+      expect(prompts).toHaveLength(2)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it("does not interrupt a running turn while polling the buffer", async () => {
+    vi.useFakeTimers()
+    try {
+      const { manager, prompts, sessionGet } = createHarness()
+      vi.setSystemTime(new Date(10_000))
+      await manager.enqueue(group(100), { text: "第一条", files: [], atMe: false })
+
+      sessionGet.mockResolvedValue({
+        id: "session-1",
+        time: { busy: new Date(10_500), idle: new Date(9_500) },
+      })
+      await manager.enqueue(group(100), { text: "第二条", files: [], atMe: false })
+      expect(prompts).toHaveLength(1)
+
+      // 上游还在执行，兜底轮询不能强行放行。
+      await vi.advanceTimersByTimeAsync(RESUME_INTERVAL_MS)
+      expect(prompts).toHaveLength(1)
+
+      // 上游空闲后再等一轮就投出去。
+      sessionGet.mockResolvedValue({
+        id: "session-1",
+        time: { busy: new Date(10_500), idle: new Date(45_000) },
+      })
+      await vi.advanceTimersByTimeAsync(RESUME_INTERVAL_MS)
+      expect(prompts).toHaveLength(2)
+      expect(prompts[1]?.text).toBe("第二条")
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it("stops the buffer watchdog after the plugin is unloaded", async () => {
+    vi.useFakeTimers()
+    try {
+      const { manager, prompts } = createHarness()
+      vi.setSystemTime(new Date(10_000))
+      await manager.enqueue(group(100), { text: "第一条", files: [], atMe: false })
+      await manager.enqueue(group(100), { text: "第二条", files: [], atMe: false })
+      expect(prompts).toHaveLength(1)
+
+      manager.dispose()
+      await vi.advanceTimersByTimeAsync(RESUME_INTERVAL_MS)
+      expect(prompts).toHaveLength(1)
     } finally {
       vi.useRealTimers()
     }

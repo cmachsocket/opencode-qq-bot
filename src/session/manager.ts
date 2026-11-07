@@ -23,6 +23,10 @@ export const MAX_BUFFER_BYTES = 32 * 1024 * 1024
 const MAX_TRACKED_MESSAGES = 200
 /** 刚投递的一轮还没在上游体现出忙碌状态，先跳过对账避免重复投递。 */
 export const SUBMIT_GRACE_MS = 5_000
+/** 失败批次最多重试几次；超过次数就丢弃，避免一个目标被永久堵死。 */
+export const PENDING_MAX_ATTEMPTS = 3
+/** 缓存里还有消息时的兜底轮询间隔：上游结束事件丢了也能把消息放出去。 */
+export const RESUME_INTERVAL_MS = 30_000
 function toMillis(value: unknown): number | undefined {
   if (value instanceof Date) return value.getTime()
   if (typeof value === "number") return value
@@ -69,6 +73,8 @@ interface ChatState {
   buffer: Turn[]
   /** 已经尝试投递但失败的一批：内容与 id 冻结，重试时原样重发。 */
   pending?: Turn
+  /** 当前失败批次已经重试的次数；超过上限就丢弃这批。 */
+  pendingAttempts: number
   /** 最近一次投递的时间戳（毫秒）。 */
   lastDispatchAt: number
   /** 最近一次上游确认空闲的时间戳（毫秒）。 */
@@ -145,6 +151,9 @@ export class SessionManager {
   private readonly positions = new Map<string, HistoryPosition>()
   /** 启动时读到的位置快照，用于补齐重启期间错过的消息。 */
   private readonly restoredPositions = new Map<string, HistoryPosition>()
+  /** 兜底轮询定时器：上游结束事件丢失时把缓存的消息投出去。 */
+  private watchdog: ReturnType<typeof setTimeout> | undefined
+  private disposed = false
 
   constructor(
     private readonly ctx: Plugin.Context,
@@ -306,6 +315,7 @@ export class SessionManager {
       state = {
         target,
         buffer: [],
+        pendingAttempts: 0,
         lastDispatchAt: 0,
         idleAt: 0,
         awaitingSend: false,
@@ -461,11 +471,37 @@ export class SessionManager {
    * `force` 仅用于上游已经明确发出结束事件的场景。
    */
   private async drain(state: ChatState, force = false): Promise<void> {
+    try {
+      await this.deliver(state, force)
+    } finally {
+      // 缓存状态变了，重新决定要不要继续兜底轮询。
+      this.syncWatchdog()
+    }
+  }
+
+  /** 把缓存里的消息投进上游会话。 */
+  private async deliver(state: ChatState, force = false): Promise<void> {
     // 上一批投递失败时，原样重试：内容与 id 都不能变。
     // 上游按 id 判定重复，同样的 id 带上不同内容会被判为冲突，那一批就永远送不进去。
     if (state.pending) {
-      if (!(await this.dispatch(state, state.pending))) return
-      state.pending = undefined
+      if (!(await this.dispatch(state, state.pending))) {
+        state.pendingAttempts += 1
+        if (state.pendingAttempts < PENDING_MAX_ATTEMPTS) {
+          this.logger.warn(
+            `${targetLabel(state.target)} 第 ${state.pendingAttempts} 次投递失败，仍会保留这批消息`,
+          )
+          return
+        }
+        // 重试到上限：上游可能永久拒绝这批内容，丢掉它，别把目标堵死。
+        this.logger.error(
+          `${targetLabel(state.target)} 连续 ${PENDING_MAX_ATTEMPTS} 次投递失败，丢弃这批消息`,
+        )
+        state.pending = undefined
+        state.pendingAttempts = 0
+      } else {
+        state.pending = undefined
+        state.pendingAttempts = 0
+      }
     }
     if (state.buffer.length === 0) return
     if (!force && state.sessionID && this.verifiedSessions.has(state.sessionID)) {
@@ -487,6 +523,8 @@ export class SessionManager {
     if (!(await this.dispatch(state, batch))) {
       // 冻结这一批：重试时用同一个 id、同一段内容。
       state.pending = batch
+      // 这次投递已经失败，算作第一次尝试。
+      state.pendingAttempts = 1
     }
   }
 
@@ -641,9 +679,62 @@ export class SessionManager {
    * 只在上游确认空闲且本轮确实结束后投递，不会打断仍在运行的长轮次。
    */
   async resumeBuffered(): Promise<void> {
-    for (const state of this.sessions.values()) {
+    // 按目标遍历：还没绑定会话的目标同样可能有消息等着投递。
+    for (const state of this.states.values()) {
       if (state.buffer.length === 0 && !state.pending) continue
       await this.targetMutex(state.target).runExclusive(() => this.drain(state))
+    }
+  }
+
+  /** 是否还有消息等着投递。 */
+  private hasPendingWork(): boolean {
+    for (const state of this.states.values()) {
+      if (state.buffer.length > 0 || state.pending) return true
+    }
+    return false
+  }
+
+  /**
+   * 缓存里还有消息就保持兜底轮询，全部投出去后立刻停掉。
+   *
+   * 上游的结束事件可能丢失（断线、事件过期），没有这层兜底缓存的消息会一直压着。
+   */
+  private syncWatchdog(): void {
+    if (this.disposed) return
+    if (!this.hasPendingWork()) {
+      if (this.watchdog) {
+        clearTimeout(this.watchdog)
+        this.watchdog = undefined
+      }
+      return
+    }
+    if (this.watchdog) return
+    this.watchdog = setTimeout(() => {
+      this.watchdog = undefined
+      void this.runWatchdog()
+    }, RESUME_INTERVAL_MS)
+    const handle = this.watchdog as { unref?: () => void }
+    handle.unref?.()
+  }
+
+  /** 兜底轮询一轮：按上游会话状态把缓存的消息放出去。 */
+  private async runWatchdog(): Promise<void> {
+    if (this.disposed) return
+    try {
+      await this.resumeBuffered()
+    } catch (error) {
+      this.logger.warn("兜底轮询缓存消息失败", error)
+    } finally {
+      this.syncWatchdog()
+    }
+  }
+
+  /** 释放定时器等资源。 */
+  dispose(): void {
+    this.disposed = true
+    if (this.watchdog) {
+      clearTimeout(this.watchdog)
+      this.watchdog = undefined
     }
   }
 

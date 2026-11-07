@@ -372,6 +372,7 @@ export default Plugin.define({
       clearInterval(mediaCleanup)
       keepAlive.dispose()
       idleAbort.abort()
+      manager.dispose()
       await manager.flush()
       soul.dispose()
       await toolRegistration.dispose()

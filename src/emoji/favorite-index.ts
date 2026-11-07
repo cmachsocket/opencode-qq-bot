@@ -59,6 +59,7 @@ export class FavoriteIndex {
   private readonly entries = new Map<string, number>()
   private readonly mutex = new Mutex()
   private loading: Promise<void> | undefined
+  private loaded = false
 
   constructor(
     private readonly storage: IndexStorage,
@@ -113,20 +114,25 @@ export class FavoriteIndex {
     return max + 1
   }
 
-  /** 从插件存储恢复编号索引；读取失败只告警，不影响正常使用。 */
+  /** 从插件存储恢复编号索引；读取失败下次重试，不影响正常使用。 */
   private ensureLoaded(): Promise<void> {
+    if (this.loaded) return Promise.resolve()
     this.loading ??= this.read()
+      .then(() => {
+        this.loaded = true
+      })
+      .catch((error: unknown) => {
+        // 读取失败不缓存结果，下次调用重新读，避免索引长期为空、编号从头分配。
+        this.logger.warn("读取收藏表情编号索引失败", error)
+        this.loading = undefined
+      })
     return this.loading
   }
 
   private async read(): Promise<void> {
-    try {
-      const stored = await this.storage.get(FAVORITE_INDEX_KEY)
-      for (const entry of parseEntries(stored)) {
-        if (!this.entries.has(entry.key)) this.entries.set(entry.key, entry.id)
-      }
-    } catch (error) {
-      this.logger.warn("读取收藏表情编号索引失败", error)
+    const stored = await this.storage.get(FAVORITE_INDEX_KEY)
+    for (const entry of parseEntries(stored)) {
+      if (!this.entries.has(entry.key)) this.entries.set(entry.key, entry.id)
     }
   }
 

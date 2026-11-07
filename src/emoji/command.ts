@@ -114,6 +114,11 @@ export async function registerEmojiCommand(
     const tagged: string[] = []
     let failed = 0
     for (const [index, face] of pending.entries()) {
+      // 插件卸载后停止标注，不再消耗模型额度。
+      if (labeler.signal.aborted) {
+        logger.info("表情标注已中止")
+        return
+      }
       const tag = await labeler.labelFace(face)
       const key = favoriteKey(face)
       const id = key ? idByKey.get(key) : undefined

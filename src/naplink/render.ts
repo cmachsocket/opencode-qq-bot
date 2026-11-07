@@ -64,7 +64,8 @@ function segments(message: readonly MessageSegment[]): readonly Segment[] {
 function imagePlaceholder(segment: MessageSegment): string {
   const data = segment.data as { summary?: string; sub_type?: unknown }
   if (!isCustomFaceImage(data)) return "[图片]"
-  const summary = typeof data.summary === "string" ? data.summary.trim() : ""
+  // summary 由表情主人撰写，属于不受信任文本，进提示词前先净化。
+  const summary = typeof data.summary === "string" ? sanitizeUntrustedText(data.summary).trim() : ""
   return summary ? summary : "[收藏表情]"
 }
 

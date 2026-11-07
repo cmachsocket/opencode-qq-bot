@@ -1,5 +1,6 @@
 import { Mutex } from "async-mutex"
 import type { Logger } from "../logger"
+import { sanitizeUntrustedText } from "../model-view"
 
 /**
  * NapCat 收藏表情（自定义表情）的详情。
@@ -34,7 +35,8 @@ export const CUSTOM_FACE_SUB_TYPE = 1
 
 /** 读取收藏表情上的标签，没有标签时返回空字符串。 */
 export function faceTag(face: CustomFace): string {
-  return typeof face.desc === "string" ? face.desc.trim() : ""
+  // desc 由表情主人撰写，属于不受信任文本，进提示词前先净化。
+  return typeof face.desc === "string" ? sanitizeUntrustedText(face.desc).trim() : ""
 }
 
 /** 判断一个图片段是不是收藏表情。 */
@@ -96,6 +98,9 @@ export class FavoriteStore {
       const cached = this.cache
       if (cached && cached.expires > Date.now()) return cached.faces
     }
+    // 刷新时先等在途请求结束，再重新拉取，避免刷新被在途请求吞掉。
+    const inflight = this.inflight
+    if (inflight) await inflight.catch(() => {})
     this.inflight ??= this.fetch().finally(() => {
       this.inflight = undefined
     })

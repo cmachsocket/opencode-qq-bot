@@ -66,13 +66,20 @@ export interface LabelerDeps {
  */
 export class EmojiLabeler {
   private readonly abort = new AbortController()
-  private readonly buffers = new Map<string, string[]>()
-  private readonly waiters = new Map<string, ((text: string) => void)[]>()
+  /** 每个会话当前这一轮累积到的回复文本。 */
+  private readonly buffers = new Map<string, string>()
+  /** 等待本轮回复结束的回调。 */
+  private readonly waiters = new Map<string, ((text: string | undefined) => void)[]>()
   private listener: Promise<void> | undefined
   private sessionID: string | undefined
   private creating: Promise<string> | undefined
 
   constructor(private readonly deps: LabelerDeps) {}
+
+  /** 标注是否已中止；插件卸载后应停止一切标注动作。 */
+  get signal(): AbortSignal {
+    return this.abort.signal
+  }
 
   /** 开始订阅文本事件。 */
   start(): void {
@@ -83,6 +90,10 @@ export class EmojiLabeler {
   async dispose(): Promise<void> {
     this.abort.abort()
     this.buffers.clear()
+    // 唤醒还在等待的标注请求，让它们立刻结束而不是空等到超时。
+    for (const waiters of this.waiters.values()) {
+      for (const resolve of waiters) resolve(undefined)
+    }
     this.waiters.clear()
     await this.listener?.catch(() => {})
     this.listener = undefined
@@ -92,12 +103,22 @@ export class EmojiLabeler {
     while (!this.abort.signal.aborted) {
       try {
         for await (const event of this.deps.ctx.event.subscribe({
-          types: ["session.text.ended"],
+          // 一轮回复可能拆成多段文本，只有执行结束才知道这一轮说完了。
+          types: [
+            "session.text.ended",
+            "session.execution.succeeded",
+            "session.execution.failed",
+            "session.execution.interrupted",
+          ],
           signal: this.abort.signal,
         })) {
-          if (event.type !== "session.text.ended") continue
-          const { sessionID, text } = event.data
-          this.push(sessionID, text)
+          if (event.type === "session.text.ended") {
+            this.push(event.data.sessionID, event.data.text)
+          } else if (event.type === "session.execution.succeeded") {
+            this.finish(event.data.sessionID)
+          } else {
+            this.fail(event.data.sessionID)
+          }
         }
       } catch (error) {
         if (this.abort.signal.aborted) return
@@ -108,27 +129,38 @@ export class EmojiLabeler {
     }
   }
 
+  /** 累加模型输出的一段文本；一轮回复可能拆成多段。 */
   private push(sessionID: string, text: string): void {
-    const buffer = this.buffers.get(sessionID) ?? []
-    buffer.push(text)
+    const buffer = `${this.buffers.get(sessionID) ?? ""}${text}`
     this.buffers.set(sessionID, buffer)
+  }
+
+  /** 本轮执行结束：把累积到的完整文本交给等待方。 */
+  private finish(sessionID: string): void {
     const waiters = this.waiters.get(sessionID)
     if (!waiters || waiters.length === 0) return
     this.waiters.delete(sessionID)
-    const last = buffer[buffer.length - 1] ?? ""
-    for (const resolve of waiters) resolve(last)
+    const text = this.buffers.get(sessionID) ?? ""
+    for (const resolve of waiters) resolve(text)
   }
 
-  /** 等待会话的下一段文本；超时返回 undefined。 */
+  /** 本轮执行失败或被中断：没有可用回复。 */
+  private fail(sessionID: string): void {
+    const waiters = this.waiters.get(sessionID)
+    if (!waiters || waiters.length === 0) return
+    this.waiters.delete(sessionID)
+    for (const resolve of waiters) resolve(undefined)
+  }
+
+  /** 等待这一轮的完整回复；超时或执行失败返回 undefined。 */
   private awaitText(sessionID: string, timeoutMs: number): Promise<string | undefined> {
     const buffered = this.buffers.get(sessionID)
     if (buffered && buffered.length > 0) {
-      const last = buffered[buffered.length - 1] ?? ""
-      buffered.length = 0
-      return Promise.resolve(last)
+      this.buffers.delete(sessionID)
+      return Promise.resolve(buffered)
     }
     return new Promise((resolve) => {
-      const onText = (text: string) => {
+      const onText = (text: string | undefined) => {
         clearTimeout(timer)
         resolve(text)
       }
@@ -228,6 +260,8 @@ export class EmojiLabeler {
    * 返回写进去的标签；下载失败、模型没给出可用名字或写入失败时返回 undefined。
    */
   async labelFace(face: CustomFace): Promise<string | undefined> {
+    // 插件卸载后不再发起新的标注请求。
+    if (this.abort.signal.aborted) return undefined
     const url = typeof face.url === "string" ? face.url : undefined
     if (!url) return undefined
     const stored = await this.deps.media.storeImage(url)
@@ -238,7 +272,7 @@ export class EmojiLabeler {
     this.start()
     const sessionID = await this.ensureSession()
     // 丢掉上一轮的残留文本，保证拿到的是这次提问的回复。
-    this.buffers.get(sessionID)?.splice(0)
+    this.buffers.delete(sessionID)
     try {
       await this.deps.ctx.session.prompt({
         sessionID,
@@ -256,6 +290,8 @@ export class EmojiLabeler {
       return undefined
     }
     const raw = await this.awaitText(sessionID, this.deps.timeoutMs ?? LABEL_TIMEOUT_MS)
+    // 等回复期间插件可能已经卸载，此时不再写标签。
+    if (this.abort.signal.aborted) return undefined
     const tag = cleanTag(raw ?? "")
     if (!tag) {
       this.deps.logger.warn("模型没有给出可用的表情标签")

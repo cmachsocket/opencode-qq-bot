@@ -1,6 +1,8 @@
 # 提交审计：7a3a106..c90b2bc
 
-> 状态：审计完成，未改动代码。范围内 7 个提交，发现 2 个高危、5 个中危、若干低危问题。
+> 状态：审计完成。范围内 7 个提交，发现 2 个高危、5 个中危、若干低危问题。
+> 修复进度：高危 1、高危 2、中危 3 与全部低危项已修复并补了回归用例；中危 4~7 在审计之后
+> 已由上游提交修好。
 
 审计范围：`7a3a1069ad0fdd200f24f1c86af7cae35a095746` 及其之后的提交，直到 `c90b2bc`（发布 0.4.0）。
 更晚的提交（`c90b2bc..HEAD`）另见 [commit-audit-c90b2bc.md](./commit-audit-c90b2bc.md)。
@@ -16,6 +18,36 @@
 | `c90b2bc` | 发布 0.4.0                                                        |
 
 验证基线：`tsc --noEmit` 通过，`eslint .` 无告警，`vitest run` 18 个文件 / 295 个用例全绿。
+
+## 修复状态
+
+| 编号   | 问题                        | 状态                       |
+| ------ | --------------------------- | -------------------------- |
+| 高危 1 | 表情描述绕过净化            | 已修复                     |
+| 高危 2 | `pending` 无重试上限        | 已修复                     |
+| 中危 3 | `resumeBuffered()` 兜底消失 | 已修复                     |
+| 中危 4 | 抢锁与卸载竞态              | 已在审计范围外的提交里修好 |
+| 中危 5 | `claimBot()` 无异常兜底     | 已在审计范围外的提交里修好 |
+| 中危 6 | 锁心跳窗口太紧              | 已在审计范围外的提交里修好 |
+| 中危 7 | 释放锁失败中断卸载          | 已在审计范围外的提交里修好 |
+| 低危   | 表情标注相关 7 项           | 已修复                     |
+
+已修复部分的落地位置：
+
+- 高危 1：`src/naplink/render.ts` 的 `imagePlaceholder()` 与 `src/emoji/favorites.ts` 的
+  `faceTag()` 复用 `sanitizeUntrustedText`；回归用例见 `tests/render.test.ts`、
+  `tests/emoji.test.ts`。
+- 高危 2：`src/session/manager.ts` 新增 `PENDING_MAX_ATTEMPTS`，同一批消息最多投递 3 次，
+  仍失败就丢弃并写错误日志，缓冲区里的新消息照常投递；回归用例见 `tests/manager.test.ts`。
+- 中危 3：`SessionManager` 自持兜底看门狗——缓存里还有消息时按 `RESUME_INTERVAL_MS`（30s）
+  轮询上游会话状态，确认空闲就把缓存投出去；消息全部投完后看门狗停止。
+  `drain()` 内部本来就先查上游状态，所以看门狗只补「结束事件丢失」这一种情况，
+  不会打断正在执行的长轮次；`SessionManager.dispose()` 负责停掉看门狗。
+  回归用例见 `tests/manager.test.ts`（结束事件丢失、轮询不打断运行中的轮次、卸载后停止）。
+- 低危：`src/emoji/label.ts` 按 `session.text.ended` 拼接模型回复的各段文本，
+  `src/emoji/command.ts` 在中止信号触发后停止标注，`src/emoji/favorite-index.ts` 读失败后
+  可重试，`src/emoji/favorites.ts` 的 `refresh` 会等在途请求结束再重新拉取；
+  `docs/emoji.md` 补充成本提示与净化说明，`CHANGELOG.md` 修正 `session.idle` 的表述。
 
 上游核对：OpenCode `dev` 分支 `packages/core/src/location-activity.ts`、`location-lifecycle.ts`、
 `bus.ts`、`plugin/host.ts`、`packages/server/src/handlers/session.ts`、
@@ -69,6 +101,10 @@ NapCat 给的 `summary`（即表情主人写的描述），没有任何净化；
 建议：要么恢复一个低频兜底定时器，要么让入站路径无条件检查缓存。
 
 位置：`src/session/manager.ts:633-638`，`src/index.ts`（`8f09f02` 删除了 `resumeTimer`）
+
+已修复：采用「恢复低频兜底定时器」，但定时器放在 `SessionManager` 内部而不是 `src/index.ts`：
+缓存状态与目标互斥锁都在 manager 里，能保证看门狗与事件路径不会并发投递同一批消息。
+缓存里没有消息时看门狗不启动，有消息时按 30s 轮询一次上游会话状态。
 
 ### 4. 身份锁抢占与插件卸载存在竞态
 
