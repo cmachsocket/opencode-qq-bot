@@ -4,12 +4,15 @@ import { Mutex } from "async-mutex"
 import { type ChatTarget, isTargetEnabled, parseTargetKey, targetKey, targetLabel } from "../chat"
 import type { QQBotConfig } from "../config"
 import type { Logger } from "../logger"
+import type { HistoryPosition, HistoryProvider } from "../naplink/history"
 import { limitFiles, type PromptFile } from "../naplink/render"
 
 /** 插件存储里保存会话与目标绑定的键。 */
 const BINDINGS_KEY = "bindings"
 /** 插件存储里保存目标最近活跃时间的键。 */
 const ACTIVITY_KEY = "activity"
+/** 插件存储里保存每个目标已投递到的消息位置的键。 */
+const POSITIONS_KEY = "positions"
 /** 单个目标最多缓存的消息条数。 */
 export const MAX_BUFFER_TURNS = 100
 /** 单个目标最多缓存的文本与附件字节数。 */
@@ -22,6 +25,15 @@ function toMillis(value: unknown): number | undefined {
   if (value instanceof Date) return value.getTime()
   if (typeof value === "number") return value
   return undefined
+}
+
+/** 解析存储里的消息位置，格式不对时忽略。 */
+function parsePosition(value: unknown): HistoryPosition | undefined {
+  if (!value || typeof value !== "object") return undefined
+  const record = value as { id?: unknown; time?: unknown }
+  if (typeof record.id !== "string" || record.id.length === 0) return undefined
+  if (typeof record.time !== "number" || !Number.isFinite(record.time)) return undefined
+  return { id: record.id, time: record.time }
 }
 
 /** 上游会话是否仍在执行；依据 `time.busy` 是否晚于 `time.idle`。 */
@@ -44,6 +56,8 @@ export interface Turn {
   atMe: boolean
   /** 是否由主动说话心跳发起。 */
   proactive?: boolean
+  /** 本轮最后一条 QQ 消息的位置，用来记录已经投递到哪里。 */
+  source?: HistoryPosition
 }
 
 interface ChatState {
@@ -65,11 +79,20 @@ interface ChatState {
   reminders: number
   /** 最近一次真实用户消息的时间戳（毫秒）。 */
   lastUserMessageAt: number
+  /** 本次运行是否已经为该目标补过历史。 */
+  historyDone?: boolean
+  /** 会话是否是在本次运行中新建的。 */
+  sessionCreated?: boolean
 }
 
 type SessionListCursor = NonNullable<Parameters<Plugin.Context["session"]["list"]>[0]>["cursor"]
 
 export function mergeTurns(turns: readonly Turn[]): Turn {
+  // 批次的位置取最后一条带位置的消息。
+  const source = turns.reduce<HistoryPosition | undefined>(
+    (latest, turn) => turn.source ?? latest,
+    undefined,
+  )
   return {
     // 合并后的批次沿用第一条消息的幂等键，重试时保持一致。
     ...(turns[0]?.id ? { id: turns[0].id } : {}),
@@ -80,6 +103,7 @@ export function mergeTurns(turns: readonly Turn[]): Turn {
     files: limitFiles(turns.flatMap((turn) => turn.files)),
     atMe: turns.some((turn) => turn.atMe),
     ...(turns.some((turn) => turn.proactive) ? { proactive: true } : {}),
+    ...(source ? { source } : {}),
   }
 }
 
@@ -107,11 +131,16 @@ export class SessionManager {
   private readonly saveMutex = new Mutex()
   private activity: Record<string, number> = {}
   private bindingsLoaded: Promise<void> | undefined
+  /** 每个目标已经投递到的位置。 */
+  private readonly positions = new Map<string, HistoryPosition>()
+  /** 启动时读到的位置快照，用于补齐重启期间错过的消息。 */
+  private readonly restoredPositions = new Map<string, HistoryPosition>()
 
   constructor(
     private readonly ctx: Plugin.Context,
     private readonly config: QQBotConfig,
     private readonly logger: Logger,
+    private readonly history?: HistoryProvider,
   ) {}
 
   /** 载入上次运行时保存的目标与会话绑定。 */
@@ -147,17 +176,40 @@ export class SessionManager {
 
     try {
       const activity = await this.ctx.storage.get(ACTIVITY_KEY)
-      if (!activity || typeof activity !== "object" || Array.isArray(activity)) return
-      for (const [key, value] of Object.entries(activity)) {
-        const target = parseTargetKey(key)
-        if (!target || typeof value !== "number" || !Number.isFinite(value)) continue
-        if (!isTargetEnabled(this.config, target)) continue
-        this.activity[targetKey(target)] = value
-        const state = this.states.get(targetKey(target))
-        if (state) state.lastUserMessageAt = value
+      if (activity && typeof activity === "object" && !Array.isArray(activity)) {
+        for (const [key, value] of Object.entries(activity)) {
+          const target = parseTargetKey(key)
+          if (!target || typeof value !== "number" || !Number.isFinite(value)) continue
+          if (!isTargetEnabled(this.config, target)) continue
+          this.activity[targetKey(target)] = value
+          const state = this.states.get(targetKey(target))
+          if (state) state.lastUserMessageAt = value
+        }
       }
     } catch (error) {
       this.logger.warn("读取目标活跃时间失败", error)
+    }
+
+    await this.readPositions()
+  }
+
+  /** 从插件存储恢复每个目标已投递到的位置。 */
+  private async readPositions(): Promise<void> {
+    let stored: unknown
+    try {
+      stored = await this.ctx.storage.get(POSITIONS_KEY)
+    } catch (error) {
+      this.logger.warn("读取消息位置失败", error)
+      return
+    }
+    if (!stored || typeof stored !== "object" || Array.isArray(stored)) return
+    for (const [key, value] of Object.entries(stored)) {
+      const target = parseTargetKey(key)
+      if (!target || !isTargetEnabled(this.config, target)) continue
+      const position = parsePosition(value)
+      if (!position) continue
+      this.positions.set(key, position)
+      this.restoredPositions.set(key, position)
     }
   }
 
@@ -171,6 +223,7 @@ export class SessionManager {
   private async persist(): Promise<void> {
     await this.writeBindings()
     await this.writeActivity()
+    await this.writePositions()
   }
 
   private async writeBindings(): Promise<void> {
@@ -190,6 +243,15 @@ export class SessionManager {
       await this.ctx.storage.set(ACTIVITY_KEY, { ...this.activity })
     } catch (error) {
       this.logger.error("保存目标活跃时间失败", error)
+    }
+  }
+
+  private async writePositions(): Promise<void> {
+    try {
+      const data: Record<string, { id: string; time: number }> = Object.fromEntries(this.positions)
+      await this.ctx.storage.set(POSITIONS_KEY, data)
+    } catch (error) {
+      this.logger.error("保存消息位置失败", error)
     }
   }
 
@@ -402,10 +464,44 @@ export class SessionManager {
 
     const turns = state.buffer
     state.buffer = []
-    const batch = mergeTurns(turns)
+    // 历史在冻结 pending 之前拼好，重试时内容保持不变。
+    const batch = await this.prepareTurn(state, mergeTurns(turns))
     if (!(await this.dispatch(state, batch))) {
       // 冻结这一批：重试时用同一个 id、同一段内容。
       state.pending = batch
+    }
+  }
+
+  /**
+   * 在本次运行的第一轮消息前面拼上历史记录。
+   *
+   * 新建会话补最近 N 条；复用上次的会话时只补上次投递位置之后的增量，
+   * 这样重启期间错过的消息不会丢。历史已经实时收过的消息会被排除。
+   */
+  private async prepareTurn(state: ChatState, turn: Turn): Promise<Turn> {
+    const count = Math.max(0, Math.floor(this.config.history.count))
+    if (!this.history || count === 0 || state.historyDone) return turn
+    state.historyDone = true
+
+    const key = targetKey(state.target)
+    const sessionID = await this.ensureSession(state.target)
+    if (!sessionID) return turn
+    const since = state.sessionCreated ? undefined : this.restoredPositions.get(key)
+    try {
+      const history = await this.history.fetch(state.target, {
+        count,
+        ...(since ? { since } : {}),
+        exclude: this.incoming.get(key),
+      })
+      if (!history.text) return turn
+      return {
+        ...turn,
+        text: `${history.text}\n${turn.text}`,
+        files: limitFiles([...turn.files, ...history.files]),
+      }
+    } catch (error) {
+      this.logger.warn(`${targetLabel(state.target)} 补齐历史失败`, error)
+      return turn
     }
   }
 
@@ -430,6 +526,12 @@ export class SessionManager {
         ...(turn.files.length > 0 ? { files: turn.files } : {}),
       })
       state.lastDispatchAt = Date.now()
+      if (turn.source) {
+        const key = targetKey(state.target)
+        this.positions.set(key, turn.source)
+        this.restoredPositions.set(key, turn.source)
+        this.scheduleSave()
+      }
       this.logger.debug(`${label} 已投递消息到会话 ${sessionID}`)
       return true
     } catch (error) {
@@ -590,6 +692,7 @@ export class SessionManager {
       return undefined
     }
     this.verifiedSessions.add(created.id)
+    state.sessionCreated = true
     this.scheduleSave()
     this.logger.info(`${label} 新建会话 ${created.id}`)
     return created.id

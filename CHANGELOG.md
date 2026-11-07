@@ -6,6 +6,10 @@
 
 ### Added
 
+- 冷启动补历史：新建会话或重启后恢复会话时，把最近的历史消息以 `<history>` 文本块拼进首轮提示。
+  新建会话补最近 `history.count` 条（默认 20）；重启恢复时从上次投递到的位置之后补增量。
+  历史里的图片会下载进会话、语音会转写，群公告 / 成员变动等非消息事件不补。
+  新增配置项 `history.count`（`QQ_HISTORY_COUNT`），`0` 表示关闭。
 - 保活心跳：OpenCode 按 location 统计会话活动，默认空闲 60 分钟后卸载该 location 的服务，
   插件随之被卸载，NapCat 连接断开后机器人不再响应。插件现在每隔 `keepAlive.seconds`
   （默认 1200 秒）原样写回一次会话元数据，产生一条带 location 的 durable 会话事件，

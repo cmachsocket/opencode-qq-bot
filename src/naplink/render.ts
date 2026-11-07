@@ -333,15 +333,17 @@ export async function fetchVoiceText(
  *
  * 引用消息会展开成 ``<quote>`` 块，合并转发展开成 ``<forward>`` 块，
  * 图片既留占位文本又内联成附件，语音先转写成文字。
+ *
+ * `budget` 可以和调用方共享，用于让一批消息共用同一份图片预算。
  */
 export async function renderMessage(
   ctx: RenderContext,
   event: MessageEvent,
+  budget: ImageBudget = createImageBudget(),
 ): Promise<RenderedMessage> {
   const textBuffer: string[] = []
   const files: PromptFile[] = []
   const message = segments(event.message)
-  const budget = createImageBudget()
   const forwardBudget = createForwardBudget()
   const voiceCache = new Map<string, string>()
   let imageIndex = 0

@@ -8,6 +8,7 @@ import { claimInstance } from "./instance"
 import { KeepAlive } from "./keepalive"
 import { createLogger } from "./logger"
 import { QQClient } from "./naplink/client"
+import { createHistoryProvider } from "./naplink/history"
 import { createMediaStore } from "./naplink/media"
 import { mentionsUser, renderMessage, resolveUserName, shouldProcess } from "./naplink/render"
 import { SessionManager } from "./session/manager"
@@ -75,12 +76,14 @@ export default Plugin.define({
     await soul.load()
 
     const client = new QQClient(config.napcat, logger)
-    const manager = new SessionManager(ctx, config, logger)
+    const media = await createMediaStore(logger)
+    const nameCache = new Map<string, { name: string; expires: number }>()
+    const history = createHistoryProvider({ api: client.api, logger, media, names: nameCache })
+    const manager = new SessionManager(ctx, config, logger, history)
     await manager.load()
     // 保活心跳：OpenCode 长时间没有会话活动时会卸载 location，插件随之被卸载。
     const keepAlive = new KeepAlive(ctx, config, logger)
     keepAlive.start()
-    const media = await createMediaStore(logger)
     const mediaCleanup = setInterval(
       () => {
         void media.cleanup()
@@ -114,7 +117,6 @@ export default Plugin.define({
     })
     // QQ 会话里禁止模型调用内置 question 工具，改用 qq_send_message 询问用户。
     const askGuardRegistration = await registerAskGuard({ ctx, logger, manager })
-    const nameCache = new Map<string, { name: string; expires: number }>()
 
     // 系统提示：角色设定、当前时间、本轮是否必须回复。
     const contextRegistration = await ctx.session.hook("context", (event) => {
@@ -208,6 +210,7 @@ export default Plugin.define({
           text: `${userName}: ${rendered.text}`,
           files: rendered.files,
           atMe,
+          source: { id: String(event.message_id), time: event.time },
         })
       } catch (error) {
         logger.error(`处理 ${targetLabel(target)} 消息失败`, error)

@@ -8,6 +8,7 @@ import {
 } from "../src/session/manager"
 import { DEFAULT_CONFIG, type QQBotConfig } from "../src/config"
 import type { ChatTarget } from "../src/chat"
+import type { HistoryOptions, HistoryPosition, HistoryProvider } from "../src/naplink/history"
 import { MAX_PROMPT_IMAGES } from "../src/naplink/render"
 import type { Logger } from "../src/logger"
 
@@ -23,7 +24,7 @@ const privateChat = (id: number): ChatTarget => ({ kind: "private", id })
 
 interface Harness {
   manager: SessionManager
-  prompts: Array<{ sessionID: string; text: string; id?: string }>
+  prompts: Array<{ sessionID: string; text: string; id?: string; files?: unknown }>
   prompt: ReturnType<typeof vi.fn>
   synthetics: Array<{ sessionID: string; text: string }>
   storage: {
@@ -38,13 +39,19 @@ function createHarness(
   overrides: Partial<QQBotConfig> = {},
   createId?: () => string,
   stored?: Record<string, string>,
+  history?: HistoryProvider,
+  positions?: Record<string, HistoryPosition>,
 ): Harness {
   const prompts: Harness["prompts"] = []
   const synthetics: Harness["synthetics"] = []
   let created = 0
 
   const storage: Harness["storage"] = {
-    get: vi.fn(async () => stored),
+    get: vi.fn(async (key: string) => {
+      if (key === "positions") return positions
+      if (key === "activity") return undefined
+      return stored
+    }),
     set: vi.fn(async () => {}),
   }
   const sessionGet = vi.fn(
@@ -57,9 +64,11 @@ function createHarness(
     created += 1
     return { id: `session-${created}` }
   })
-  const prompt = vi.fn(async (input: { sessionID: string; text: string; id?: string }) => {
-    prompts.push(input)
-  })
+  const prompt = vi.fn(
+    async (input: { sessionID: string; text: string; id?: string; files?: unknown }) => {
+      prompts.push(input)
+    },
+  )
 
   const ctx = {
     location: { directory: "/tmp" },
@@ -84,7 +93,7 @@ function createHarness(
   }
 
   return {
-    manager: new SessionManager(ctx, config, logger),
+    manager: new SessionManager(ctx, config, logger, history),
     prompts,
     prompt,
     synthetics,
@@ -703,5 +712,87 @@ describe("SessionManager", () => {
       "activity",
       expect.objectContaining({ "group:100": expect.any(Number) }),
     )
+  })
+})
+
+describe("B1 冷启动补历史", () => {
+  /** 造一个能记录调用参数的历史来源。 */
+  function historyProvider(text: string) {
+    return {
+      fetch: vi.fn(async (_target: ChatTarget, _options: HistoryOptions) => ({ text, files: [] })),
+    }
+  }
+
+  it("新建会话时把最近的历史拼在首轮消息前面", async () => {
+    const history = historyProvider("<history>\n小明: 早上好\n</history>")
+    const { manager, prompts } = createHarness({}, undefined, undefined, history)
+    await manager.enqueue(group(100), {
+      text: "你好",
+      files: [],
+      atMe: false,
+      source: { id: "9", time: 900 },
+    })
+    expect(prompts[0]?.text).toBe("<history>\n小明: 早上好\n</history>\n你好")
+    const options = history.fetch.mock.calls[0]?.[1]
+    expect(options?.count).toBe(20)
+    expect(options?.since).toBeUndefined()
+  })
+
+  it("恢复会话时只补上次位置之后的增量", async () => {
+    const history = historyProvider("<history>\n离线期间的消息\n</history>")
+    const { manager, prompts } = createHarness(
+      {},
+      undefined,
+      { "group:100": "session-restored" },
+      history,
+      { "group:100": { id: "5", time: 100 } },
+    )
+    await manager.enqueue(group(100), { text: "你好", files: [], atMe: false })
+    expect(prompts[0]?.sessionID).toBe("session-restored")
+    const options = history.fetch.mock.calls[0]?.[1]
+    expect(options?.since).toEqual({ id: "5", time: 100 })
+  })
+
+  it("history.count 为 0 时关闭回填", async () => {
+    const history = historyProvider("<history>\n不该出现\n</history>")
+    const { manager, prompts } = createHarness(
+      { history: { count: 0 } },
+      undefined,
+      undefined,
+      history,
+    )
+    await manager.enqueue(group(100), { text: "你好", files: [], atMe: false })
+    expect(history.fetch).not.toHaveBeenCalled()
+    expect(prompts[0]?.text).toBe("你好")
+  })
+
+  it("每个目标每次运行只补一次", async () => {
+    const history = historyProvider("<history>\n旧消息\n</history>")
+    const { manager } = createHarness({}, undefined, undefined, history)
+    await manager.enqueue(group(100), { text: "第一条", files: [], atMe: false })
+    await manager.enqueue(group(100), { text: "第二条", files: [], atMe: false })
+    expect(history.fetch).toHaveBeenCalledTimes(1)
+  })
+
+  it("投递成功后把位置写进存储", async () => {
+    const { manager, storage } = createHarness()
+    await manager.enqueue(group(100), {
+      text: "你好",
+      files: [],
+      atMe: false,
+      source: { id: "7", time: 200 },
+    })
+    await manager.flush()
+    expect(storage.set).toHaveBeenCalledWith("positions", {
+      "group:100": { id: "7", time: 200 },
+    })
+  })
+
+  it("合并批次时保留最后一条消息的位置", () => {
+    const merged = mergeTurns([
+      { text: "a", files: [], atMe: false, source: { id: "1", time: 1 } },
+      { text: "b", files: [], atMe: false, source: { id: "2", time: 2 } },
+    ])
+    expect(merged.source).toEqual({ id: "2", time: 2 })
   })
 })

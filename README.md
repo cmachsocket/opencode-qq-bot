@@ -6,6 +6,7 @@
 - 群聊 / 私聊消息 → OpenCode 会话 → 模型回复 → 对应聊天
 - 每个聊天固定对应一个会话，会话忙碌时新消息先缓存，空闲后合并成一轮再投进去；绑定写入插件存储，重启后自动沿用原会话
 - 语音自动转写、图片落盘后以文件引用进入会话、引用与合并转发展开成文本块
+- 新建会话或重启恢复时，把最近的历史消息拼进首轮提示，模型不至于对之前聊过什么一无所知
 - 收藏表情（表情包）可以用 `/emoji-label` 生成中文标签，模型按收藏表情编号把表情发回聊天
 - 角色设定放在 `souls/` 目录，可放多份，按文件名切换，改动后下一轮立即生效
 
@@ -81,6 +82,7 @@ bun install
 | `reminder.max`                      | `QQ_REMINDER_MAX`               | `2`           | 连续提醒次数上限                                |
 | `keepAlive.enabled`                 | `QQ_KEEP_ALIVE_ENABLED`         | `true`        | 是否启用保活心跳                                |
 | `keepAlive.seconds`                 | `QQ_KEEP_ALIVE_SECONDS`         | `1200`        | 保活心跳间隔（秒），必须大于 0                  |
+| `history.count`                     | `QQ_HISTORY_COUNT`              | `20`          | 新建或恢复会话时补多少条历史，`0` 表示关闭      |
 
 没配置 `groups` 和 `users` 时插件不会响应任何消息（默认全部关闭）。
 
@@ -252,6 +254,7 @@ src/
   emoji/favorite-index.ts 插件自维护的收藏表情编号索引
   emoji/label.ts     用模型给收藏表情起标签
   naplink/client.ts  NapLink 连接与 API 门面
+  naplink/history.ts 冷启动 / 重启恢复时补齐历史消息
   naplink/render.ts  消息段 → 文本与图片附件
   outbound.ts        出站文本：markdown → 纯文本、字素簇安全切分
   session/prompt.ts  固定守则与系统提示
