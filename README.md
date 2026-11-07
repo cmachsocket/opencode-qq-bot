@@ -162,6 +162,7 @@ souls/
 | `qq_get_login_info`        | 机器人自己的 QQ 号与昵称                                                                    |
 
 发送类工具（消息、图片、语音、收藏表情、转发、戳一戳）成功后都算本轮已回复，不会再触发补发提醒。
+连续调用发送类工具会被拒绝，避免把同一条消息发两遍；中间调用任意其它工具后即可再次发送。
 工具只在当前聊天配置仍启用、且会话正处理 QQ 消息轮次时可用。
 
 ## 收藏表情（表情包）
@@ -274,6 +275,7 @@ src/
   session/soul.ts    角色设定定位、读取与热更新
   session/manager.ts 群聊 / 私聊 ↔ 会话映射、消息缓存
   tools/ask-guard.ts 拦截内置 question 工具
+  tools/send-guard.ts 拒绝连续调用发送工具
   tools/qq.ts        QQ 工具注册
 docs/
   commit-audit-7a3a106.md  提交审计报告（7a3a106 起）

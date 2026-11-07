@@ -18,6 +18,7 @@ import { currentTimeText, PROACTIVE_HINT } from "./session/prompt"
 import { proactiveTickProbability } from "./session/proactive"
 import { packageDirectory, SoulStore } from "./session/soul"
 import { registerAskGuard } from "./tools/ask-guard"
+import { registerSendGuard } from "./tools/send-guard"
 import { registerTools } from "./tools/qq"
 import { registerEmojiCommand } from "./emoji/command"
 import { FavoriteStore } from "./emoji/favorites"
@@ -130,6 +131,8 @@ export default Plugin.define({
     })
     // QQ 会话里禁止模型调用内置 question 工具，改用 qq_send_message 询问用户。
     const askGuardRegistration = await registerAskGuard({ ctx, logger, manager })
+    // 禁止连续调用发送工具，避免同一条消息被重复发送。
+    const sendGuardRegistration = await registerSendGuard({ ctx, logger, manager })
 
     // 系统提示：角色设定、当前时间、本轮是否必须回复。
     const contextRegistration = await ctx.session.hook("context", (event) => {
@@ -375,6 +378,7 @@ export default Plugin.define({
       await emojiCommandRegistration.dispose()
       await labeler.dispose()
       await askGuardRegistration.dispose()
+      await sendGuardRegistration.dispose()
       await contextRegistration.dispose()
       await idleRegistration.dispose()
       client.dispose()
