@@ -14,6 +14,7 @@ import { createHistoryProvider } from "./naplink/history"
 import { createMediaStore } from "./naplink/media"
 import { mentionsUser, renderMessage, resolveUserName, shouldProcess } from "./naplink/render"
 import { SendRateLimiter } from "./rate-limit"
+import { collectEnvSecrets, SensitiveChecker } from "./sensitive"
 import { SessionManager } from "./session/manager"
 import { currentTimeText, PROACTIVE_HINT } from "./session/prompt"
 import { proactiveTickProbability } from "./session/proactive"
@@ -96,6 +97,13 @@ export default Plugin.define({
     const history = createHistoryProvider({ api: client.api, logger, media, names: nameCache })
     // 出站限流：模型驱动的发送与插件自己发的消息共用一个限流器。
     const limiter = new SendRateLimiter(config.rateLimit)
+    // 出站敏感信息拦截：环境变量里的凭证与 NapCat 令牌都当作已知凭证。
+    const sensitive = new SensitiveChecker({
+      enabled: config.sensitive.enabled,
+      knownSecrets: [...collectEnvSecrets(process.env), config.napcat.token ?? ""].filter(
+        (secret) => secret.length > 0,
+      ),
+    })
     const manager = new SessionManager(ctx, config, logger, home, history)
     await manager.load()
     // 保活心跳：OpenCode 长时间没有会话活动时会卸载 location，插件随之被卸载。
@@ -122,6 +130,7 @@ export default Plugin.define({
       favorites,
       favoriteIndex,
       limiter,
+      sensitive,
     })
     const emojiCommandRegistration = await registerEmojiCommand({
       ctx,

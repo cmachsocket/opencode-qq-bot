@@ -8,6 +8,7 @@ import { FavoriteIndex, type IndexStorage } from "../src/emoji/favorite-index"
 import type { Logger } from "../src/logger"
 import type { QQClient } from "../src/naplink/client"
 import { SendRateLimiter } from "../src/rate-limit"
+import { SensitiveChecker } from "../src/sensitive"
 import type { SessionManager } from "../src/session/manager"
 
 interface ToolDefinition {
@@ -123,6 +124,7 @@ async function createHarness(
     favorites: favorites as never,
     favoriteIndex,
     limiter: new SendRateLimiter(config.rateLimit),
+    sensitive: new SensitiveChecker({ enabled: config.sensitive.enabled }),
   })
 
   return { tools, api, favorites, manager, logger }
@@ -175,6 +177,60 @@ describe("registerTools", () => {
       ?.execute({ content: "   " }, context)
     expect(result?.content).toBe("skipped")
     expect(api["sendGroupMessage"]).not.toHaveBeenCalled()
+  })
+
+  it("blocks outbound messages that contain credentials", async () => {
+    const { tools, api, manager } = await createHarness()
+    await expect(
+      tools
+        .get(`${TOOL_NAMESPACE}_send_message`)
+        ?.execute({ content: "这是我的密钥 ghp_abcdefghijklmnopqrstuvwxyz0123456789" }, context),
+    ).rejects.toThrow("出站消息包含疑似敏感信息")
+    expect(api["sendGroupMessage"]).not.toHaveBeenCalled()
+    expect(manager.markMessageSent).not.toHaveBeenCalled()
+  })
+
+  it("allows ordinary chat with QQ numbers and emails", async () => {
+    const { tools, api } = await createHarness()
+    const result = await tools
+      .get(`${TOOL_NAMESPACE}_send_message`)
+      ?.execute({ content: "我的QQ号是123456789，邮箱 foo@example.com" }, context)
+    expect(result?.content).toBe("你已成功发送消息，可以选择结束对话")
+    expect(api["sendGroupMessage"]).toHaveBeenCalledTimes(1)
+  })
+
+  it("blocks image paths that point at credential files", async () => {
+    const { tools, api } = await createHarness()
+    await expect(
+      tools
+        .get(`${TOOL_NAMESPACE}_send_image`)
+        ?.execute({ file: "/home/user/.ssh/id_rsa" }, context),
+    ).rejects.toThrow("出站消息包含疑似敏感信息")
+    expect(api["sendGroupMessage"]).not.toHaveBeenCalled()
+  })
+
+  it("blocks forward nodes that contain credentials", async () => {
+    const { tools, api } = await createHarness()
+    await expect(
+      tools.get(`${TOOL_NAMESPACE}_send_forward`)?.execute(
+        {
+          nodes: [{ nickname: "甲", content: "password = hunter2000" }],
+        },
+        context,
+      ),
+    ).rejects.toThrow("出站消息包含疑似敏感信息")
+    expect(api["sendGroupForwardMessage"]).not.toHaveBeenCalled()
+  })
+
+  it("does not block when the sensitive check is disabled", async () => {
+    const { tools, api } = await createHarness(group(100), {
+      sensitive: { enabled: false },
+    })
+    const result = await tools
+      .get(`${TOOL_NAMESPACE}_send_message`)
+      ?.execute({ content: "ghp_abcdefghijklmnopqrstuvwxyz0123456789" }, context)
+    expect(result?.content).toBe("你已成功发送消息，可以选择结束对话")
+    expect(api["sendGroupMessage"]).toHaveBeenCalledTimes(1)
   })
 
   it("strips markdown before sending", async () => {

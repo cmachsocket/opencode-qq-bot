@@ -12,7 +12,7 @@
   非正整数会被忽略并告警。
 - **模型**：`provider/model` 或 `provider/model/variant`。
   写错会回退到默认模型并输出告警。
-- **未知配置项**：顶层和 `napcat`、`proactive`、`reminder`、`keepAlive`、`history`、`rateLimit` 下的未知键会输出告警，
+- **未知配置项**：顶层和 `napcat`、`proactive`、`reminder`、`keepAlive`、`history`、`rateLimit`、`sensitive` 下的未知键会输出告警，
   不会被静默忽略。
 
 ## 数值范围
@@ -31,6 +31,7 @@
 | `rateLimit.maxPerMinute`            | 大于等于 0 |
 | `rateLimit.maxPerHour`              | 大于等于 0 |
 | `rateLimit.minGapMs`                | 大于等于 0 |
+| `sensitive.enabled`                 | 布尔值     |
 
 越界值会回退到默认值并告警。
 
@@ -92,6 +93,24 @@ NapCat 连接断开后机器人就不再响应。
 - 计数只在内存里，插件重启后重新开始；超长消息拆出的每一段都算一条。
 - 同一段消息内部的多段共用一个操作 id：段与段之间只按 `sendDelayMs` 等待，不再叠加限流间隔。
 - 插件自己生成的消息（`/emoji-label` 的结果与进度）走另一个计数域：它们只受间隔约束，不会占用模型回复的额度。
+
+## 出站敏感信息拦截
+
+发给 QQ 的消息在发送前会扫一遍，命中凭证就整条拦下，不发送。
+
+| 拦截对象     | 例子                                                             |
+| ------------ | ---------------------------------------------------------------- |
+| 各家 API key | GitHub、Anthropic、OpenAI、AWS、Slack、Stripe、npm 等            |
+| 私钥与 JWT   | PEM 私钥块、`eyJ…` 令牌、`Authorization: Bearer …`               |
+| 凭证赋值     | `password=…`、`api_key: …`、`密码：…`（含全角与零宽字符变体）    |
+| 已知凭证     | 环境变量里名字像密钥的值、`napcat.token`，被拆开或编码也能认出来 |
+| 凭证文件路径 | `~/.ssh/id_rsa`、`~/.aws/credentials`、`.env` 等                 |
+
+- 只拦凭证，不拦邮箱、手机号、QQ 号、银行卡号这类群聊里正常出现的内容。
+- 命中后工具返回错误，模型可以删掉凭证后重发；本轮不会记为已回复，也不会触发补发提醒。
+- 检查在拆分发送之前做，超长消息只要有一段命中，整条都不发。
+- 已识别的凭证不会出现在日志与错误说明里，只记录命中的检测器名称。
+- `sensitive.enabled` 设为 `false`（或 `QQ_SENSITIVE_ENABLED=0`）可以关闭。
 
 ## 角色设定
 

@@ -6,6 +6,16 @@
 
 ### Added
 
+- 出站敏感信息拦截（`src/sensitive.ts`）：发给 QQ 的消息在发送前统一检查，命中凭证就整条不发。
+  检测用 [`flare-redact`](https://github.com/flare-collection/flare-redact)（MIT、零运行时依赖、同步 `scan()`），
+  取它的默认检测器并去掉 `email` / `obfuscated_email` / `credit_card` / `iban`——只拦凭证，不拦群聊里正常的邮箱、手机号、QQ 号。
+  在此基础上补了四件事：环境变量里名字像密钥的值与 `napcat.token` 编译成已知凭证检测器（被空格 / 换行拆开时按 12 字符分片比对）；
+  NFKC + 零宽字符归一化（`ｐａｓｓｗｏｒｄ＝…`、`pass\u200bword=…` 也能命中）；解码文本里的 base64 / base64url 片段后再扫一遍；
+  拦截 `.ssh` / `.aws` / `.env` / `id_rsa` 这类凭证文件路径。
+  检查覆盖 `send_message`、`send_image`、`send_record`、`send_sticker`、`send_forward`，在拆段之前做，超长消息只要有一段命中整条都不发。
+  命中时工具返回错误，模型可以删掉凭证后重发；本轮不算已回复，也不会触发补发提醒。
+  已识别的凭证不会出现在日志与错误说明里，只记录命中的检测器名称。
+  新增配置项 `sensitive.enabled`（`QQ_SENSITIVE_ENABLED`），默认开启。
 - 入站图片下载的 SSRF 加固（`src/safe-fetch.ts`）：下载地址由群友控制，只做字符串匹配挡不住 DNS 重绑定。
   现在改成在连接层判定——先解析 DNS，解析出的每一个地址都要过公网判定（回环、私网、CGNAT `100.64/10`、
   `198.18/15`、IPv4-mapped、NAT64、6to4、链路本地、组播、元地址一律拒绝），判定通过才连过去，

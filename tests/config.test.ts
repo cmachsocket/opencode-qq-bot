@@ -307,4 +307,10 @@ describe("resolveConfig", () => {
     expect(DEFAULT_CONFIG.proactive.startProbability).not.toBe(0.9)
     expect(DEFAULT_CONFIG.rateLimit.maxPerMinute).not.toBe(99)
   })
+
+  it("defaults to sensitive blocking and allows turning it off", () => {
+    expect(resolveConfig({}, ENV).sensitive.enabled).toBe(true)
+    expect(resolveConfig({ sensitive: { enabled: false } }, ENV).sensitive.enabled).toBe(false)
+    expect(resolveConfig({}, { ...ENV, QQ_SENSITIVE_ENABLED: "0" }).sensitive.enabled).toBe(false)
+  })
 })

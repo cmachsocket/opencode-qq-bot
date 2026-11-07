@@ -13,6 +13,7 @@ import type { QQClient } from "../naplink/client"
 import { splitGraphemes, splitMessage, toPlainText } from "../outbound"
 import type { RateLimitVerdict, SendRateLimiter } from "../rate-limit"
 import { modelSendScope, pluginSendScope } from "../rate-limit"
+import type { SensitiveChecker } from "../sensitive"
 import type { SessionManager } from "../session/manager"
 
 /** 工具命名空间，最终工具名为 qq_send_message 等。 */
@@ -30,6 +31,8 @@ export interface ToolDeps {
   favoriteIndex: FavoriteIndex
   /** 出站限流器，所有发送类工具共用一个实例。 */
   limiter: SendRateLimiter
+  /** 出站敏感信息检查，命中时整条消息不发送。 */
+  sensitive: SensitiveChecker
 }
 
 interface SendMessageInput {
@@ -126,7 +129,8 @@ export async function sendPlainMessage(
  * 只暴露消息收发与只读查询，不提供封禁/踢人等破坏性操作。
  */
 export async function registerTools(deps: ToolDeps): Promise<{ dispose(): Promise<void> }> {
-  const { ctx, config, logger, manager, client, favorites, favoriteIndex, limiter } = deps
+  const { ctx, config, logger, manager, client, favorites, favoriteIndex, limiter, sensitive } =
+    deps
 
   const requireTarget = (sessionID: string): ChatTarget | undefined => {
     const target = manager.targetForSession(sessionID)
@@ -164,6 +168,23 @@ export async function registerTools(deps: ToolDeps): Promise<{ dispose(): Promis
     const progress = total > 0 ? `（已发送 ${sent}/${total} 段）` : ""
     return text(`error: ${verdict.reason}${progress}`)
   }
+
+  /**
+   * 出站前的敏感信息检查。
+   *
+   * 命中时抛错而不是返回 error 文本：发送守卫会因此解除“已发送”标记，
+   * 本轮也不会算作已回复，模型可以删掉凭证后立刻重发。
+   */
+  const guardOutbound = (target: ChatTarget, content: string): void => {
+    const verdict = sensitive.check(content)
+    if (verdict.allowed) return
+    const detectors = verdict.hits.map((hit) => hit.detector).join("、")
+    logger.warn(`${targetLabel(target)} 出站消息包含敏感信息，已拦截：${detectors}`)
+    throw new Error(verdict.reason)
+  }
+
+  /** base64:// 载荷是二进制数据，按文本扫描既没意义也慢。 */
+  const isInlineData = (value: string): boolean => value.startsWith("base64://")
 
   const sendText = (target: ChatTarget, chunk: string) =>
     target.kind === "group"
@@ -231,6 +252,7 @@ export async function registerTools(deps: ToolDeps): Promise<{ dispose(): Promis
           manager.markMessageSent(context.sessionID)
           return text("skipped")
         }
+        guardOutbound(target, plain)
 
         // 长度按字素簇算，和拆段的口径一致：一个 emoji 只算一个。
         const length = splitGraphemes(plain).length
@@ -283,6 +305,7 @@ export async function registerTools(deps: ToolDeps): Promise<{ dispose(): Promis
         if (!target) return text("error: 当前会话没有绑定 QQ 群聊或私聊")
         const file = input.file ?? (input.base64 ? `base64://${input.base64}` : undefined)
         if (!file) return text("error: 缺少 file 或 base64")
+        if (!isInlineData(file)) guardOutbound(target, file)
         const verdict = await permit(target, nextOperation())
         if (!verdict.allowed) return refuse(context.sessionID, verdict)
         const response = await sendSegments(target, [{ type: "image", data: { file } }])
@@ -338,6 +361,7 @@ export async function registerTools(deps: ToolDeps): Promise<{ dispose(): Promis
         }
         const url = typeof row.face.url === "string" ? row.face.url : undefined
         if (!url) return text(`error: 编号 ${id} 的收藏表情缺少可用地址`)
+        guardOutbound(target, url)
         const verdict = await permit(target, nextOperation())
         if (!verdict.allowed) return refuse(context.sessionID, verdict)
         const response = await sendSegments(target, [
@@ -366,6 +390,7 @@ export async function registerTools(deps: ToolDeps): Promise<{ dispose(): Promis
         const target = requireTarget(context.sessionID)
         if (!target) return text("error: 当前会话没有绑定 QQ 群聊或私聊")
         if (!input.file) return text("error: 缺少 file")
+        if (!isInlineData(input.file)) guardOutbound(target, input.file)
         const verdict = await permit(target, nextOperation())
         if (!verdict.allowed) return refuse(context.sessionID, verdict)
         const response = await sendSegments(target, [
@@ -418,10 +443,12 @@ export async function registerTools(deps: ToolDeps): Promise<{ dispose(): Promis
           if (!Number.isInteger(userId) || userId < 0) {
             return text(`error: 非法 user_id：${String(node.user_id)}`)
           }
+          const body = toPlainText(node.content ?? "").trim()
+          guardOutbound(target, body)
           nodes.push({
             user_id: userId,
             nickname: node.nickname?.trim() || "未知用户",
-            content: [{ type: "text", data: { text: toPlainText(node.content ?? "").trim() } }],
+            content: [{ type: "text", data: { text: body } }],
           })
         }
         if (nodes.length === 0) return text("error: nodes 为空")

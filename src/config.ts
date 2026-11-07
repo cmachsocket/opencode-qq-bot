@@ -61,6 +61,11 @@ export interface RateLimitConfig {
   minGapMs: number
 }
 
+export interface SensitiveConfig {
+  /** 是否拦截含敏感信息（凭证、令牌）的出站消息。 */
+  enabled: boolean
+}
+
 export interface ModelRef {
   providerID: string
   id: string
@@ -94,6 +99,7 @@ export interface QQBotConfig {
   keepAlive: KeepAliveConfig
   history: HistoryConfig
   rateLimit: RateLimitConfig
+  sensitive: SensitiveConfig
 }
 
 /** 除 NapCat 连接信息外的全部默认值。 */
@@ -114,6 +120,7 @@ export const DEFAULT_CONFIG: Omit<QQBotConfig, "napcat"> = {
   keepAlive: { enabled: true, seconds: 20 * 60 },
   history: { count: 20 },
   rateLimit: { maxPerMinute: 8, maxPerHour: 60, minGapMs: 1500 },
+  sensitive: { enabled: true },
 }
 
 /** 配置告警回调。 */
@@ -361,6 +368,12 @@ function createConfigSchema(
       })
       .prefault({})
       .catch(defaults.rateLimit),
+    sensitive: z
+      .object({
+        enabled: boolean("sensitive.enabled", defaults.sensitive.enabled),
+      })
+      .prefault({})
+      .catch(defaults.sensitive),
   })
 }
 
@@ -391,6 +404,7 @@ export const ENV_VARS = {
   "rateLimit.maxPerMinute": "QQ_RATE_MAX_PER_MINUTE",
   "rateLimit.maxPerHour": "QQ_RATE_MAX_PER_HOUR",
   "rateLimit.minGapMs": "QQ_RATE_MIN_GAP_MS",
+  "sensitive.enabled": "QQ_SENSITIVE_ENABLED",
 } as const
 
 const OPTION_KEYS = new Set([
@@ -410,6 +424,7 @@ const OPTION_KEYS = new Set([
   "keepAlive",
   "history",
   "rateLimit",
+  "sensitive",
 ])
 
 const NESTED_OPTION_KEYS: Record<string, ReadonlySet<string>> = {
@@ -425,6 +440,7 @@ const NESTED_OPTION_KEYS: Record<string, ReadonlySet<string>> = {
   keepAlive: new Set(["enabled", "seconds"]),
   history: new Set(["count"]),
   rateLimit: new Set(["maxPerMinute", "maxPerHour", "minGapMs"]),
+  sensitive: new Set(["enabled"]),
 }
 
 /** 报告被 schema 静默剥离的未知配置项。 */
@@ -507,6 +523,7 @@ export function resolveConfig(
     keepAlive: { ...parsed.keepAlive },
     history: { ...parsed.history },
     rateLimit: { ...parsed.rateLimit },
+    sensitive: { ...parsed.sensitive },
     napcat: { url, token: parsed.napcat.token },
   }
 }

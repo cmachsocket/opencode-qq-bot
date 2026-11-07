@@ -88,6 +88,7 @@ bun install
 | `rateLimit.maxPerMinute`            | `QQ_RATE_MAX_PER_MINUTE`        | `8`           | 每分钟最多发多少条消息，`0` 表示不限制          |
 | `rateLimit.maxPerHour`              | `QQ_RATE_MAX_PER_HOUR`          | `60`          | 每小时最多发多少条消息，`0` 表示不限制          |
 | `rateLimit.minGapMs`                | `QQ_RATE_MIN_GAP_MS`            | `1500`        | 相邻两次发送之间的最小间隔（毫秒）              |
+| `sensitive.enabled`                 | `QQ_SENSITIVE_ENABLED`          | `true`        | 拦截含凭证、令牌、私钥的出站消息                |
 
 没配置 `groups` 和 `users` 时插件不会响应任何消息（默认全部关闭）。
 
@@ -185,6 +186,17 @@ souls/
 - 被限流拒绝时本轮同样算已回复，不会再提醒模型补发。
 - `rateLimit.maxPerMinute` / `maxPerHour` / `minGapMs` 设为 `0` 表示不限制。
 - 插件自己生成的消息（`/emoji-label` 的结果与进度）单独计数，不会占用模型回复的额度。
+
+### 出站敏感信息拦截
+
+发给 QQ 的消息在发送前会扫一遍，命中凭证就整条拦下（`sensitive.enabled`，默认开启）：
+
+- 各家 API key、JWT、`Authorization: Bearer …`、PEM 私钥、`password=…` / `密码：…` 这类凭证赋值。
+- 环境变量里名字像密钥的值与 `napcat.token`：被空格或换行拆开、用全角 / 零宽字符混淆、或做了 base64 编码也能认出来。
+- `.ssh/id_rsa`、`~/.aws/credentials`、`.env` 这类凭证文件路径。
+
+只拦凭证，不拦邮箱、手机号、QQ 号这类群聊里正常出现的内容。命中时工具返回错误，模型可以删掉凭证后重发；
+本轮不算已回复，也不会触发补发提醒。细节见 [docs/configuration.md](docs/configuration.md#出站敏感信息拦截)。
 
 ## 收藏表情（表情包）
 
@@ -296,6 +308,7 @@ src/
   naplink/history.ts 冷启动 / 重启恢复时补齐历史消息
   naplink/render.ts  消息段 → 文本与图片附件
   outbound.ts        出站文本：markdown → 纯文本、字素簇安全切分
+  sensitive.ts       出站敏感信息检查：凭证、令牌、凭证路径
   session/prompt.ts  固定守则与系统提示
   session/soul.ts    角色设定定位、读取与热更新
   session/manager.ts 群聊 / 私聊 ↔ 会话映射、消息缓存
