@@ -269,6 +269,9 @@ src/
   tools/ask-guard.ts 拦截内置 question 工具
   tools/qq.ts        QQ 工具注册
 docs/
+  commit-audit-7a3a106.md  提交审计报告（7a3a106 起）
+  commit-audit-c90b2bc.md  提交审计报告（c90b2bc 起）
+  commit-audit-cb7bb0b.md  提交审计报告（cb7bb0b 起）
   configuration.md   配置取值规则与限制
   design-review.md   设计审查与修复记录
   emoji.md           收藏表情（表情包）说明
