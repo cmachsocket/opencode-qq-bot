@@ -68,6 +68,8 @@ export interface QQBotConfig {
   soulPath?: string
   /** souls 目录里的角色设定文件名，默认 default.txt。 */
   soulName?: string
+  /** 机器人会话统一使用的工作目录，默认使用 XDG 数据目录下的工作区。 */
+  home?: string
   /** QQ 会话使用的 OpenCode agent。 */
   agent?: string
   /** QQ 会话使用的模型。 */
@@ -295,6 +297,7 @@ function createConfigSchema(
     users,
     soulPath: text("soulPath", defaults.soulPath),
     soulName: text("soulName", defaults.soulName),
+    home: text("home", defaults.home),
     agent: text("agent", defaults.agent),
     model,
     sendDelayMs: nonNegative("sendDelayMs", defaults.sendDelayMs),
@@ -350,6 +353,7 @@ export const ENV_VARS = {
   users: "QQ_TARGET_USERS",
   soulPath: "QQ_BOT_SOUL_PATH",
   soulName: "QQ_BOT_SOUL_NAME",
+  home: "QQ_BOT_HOME",
   agent: "QQ_BOT_AGENT",
   model: "QQ_BOT_MODEL",
   sendDelayMs: "QQ_SEND_DELAY_MS",
@@ -373,6 +377,7 @@ const OPTION_KEYS = new Set([
   "users",
   "soulPath",
   "soulName",
+  "home",
   "agent",
   "model",
   "sendDelayMs",

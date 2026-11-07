@@ -93,7 +93,7 @@ function createHarness(
   }
 
   return {
-    manager: new SessionManager(ctx, config, logger, history),
+    manager: new SessionManager(ctx, config, logger, { directory: "/tmp" }, history),
     prompts,
     prompt,
     synthetics,
@@ -148,6 +148,7 @@ describe("SessionManager", () => {
     expect(sessionCreate).toHaveBeenCalledWith(
       expect.objectContaining({
         title: "QQ 私聊 200",
+        location: { directory: "/tmp" },
         metadata: { qqTargetKind: "private", qqTargetId: 200 },
       }),
     )

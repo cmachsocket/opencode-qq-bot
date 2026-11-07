@@ -41,3 +41,21 @@ describe("MediaStore.cleanup", () => {
     expect(removed).toBe(1)
   })
 })
+
+describe("MediaStore data URL", () => {
+  it("trusts the magic bytes instead of the declared type", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "qq-media-data-"))
+    try {
+      const store = await createMediaStore(logger, { root: dir, ttlMs: 0 })
+      const payload = Buffer.from(PNG).toString("base64")
+      const stored = await store.storeImage(`data:image/svg+xml;base64,${payload}`)
+      expect(stored?.ext).toBe("png")
+      const invalid = await store.storeImage(
+        `data:image/png;base64,${Buffer.from("not an image").toString("base64")}`,
+      )
+      expect(invalid).toBeUndefined()
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+})

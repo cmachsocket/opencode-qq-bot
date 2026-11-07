@@ -1,8 +1,10 @@
 import type { Plugin } from "@opencode/plugin"
+import type { Location } from "@opencode/schema"
 import { SessionMessage } from "@opencode/schema"
 import { Mutex } from "async-mutex"
 import { type ChatTarget, isTargetEnabled, parseTargetKey, targetKey, targetLabel } from "../chat"
 import type { QQBotConfig } from "../config"
+import type { BotHome } from "../home"
 import type { Logger } from "../logger"
 import type { HistoryPosition, HistoryProvider } from "../naplink/history"
 import { limitFiles, type PromptFile } from "../naplink/render"
@@ -148,8 +150,16 @@ export class SessionManager {
     private readonly ctx: Plugin.Context,
     private readonly config: QQBotConfig,
     private readonly logger: Logger,
+    /** 机器人固定服务的工作目录，所有 QQ 会话都建在这里。 */
+    private readonly home: BotHome,
     private readonly history?: HistoryProvider,
   ) {}
+
+  /** 会话统一落在机器人工作目录，避免接管后上下文散落到别的项目。 */
+  private get location(): Location.PublicRef {
+    // 目录最初就取自 location.directory，这里只是把存储里的字符串还原成品牌类型。
+    return { directory: this.home.directory as Location.PublicRef["directory"] }
+  }
 
   /** 载入上次运行时保存的目标与会话绑定。 */
   async load(): Promise<void> {
@@ -685,6 +695,7 @@ export class SessionManager {
 
     const created = await this.ctx.session.create({
       title: target.kind === "group" ? `QQ 群 ${target.id}` : `QQ 私聊 ${target.id}`,
+      location: this.location,
       ...(this.config.agent ? { agent: this.config.agent } : {}),
       ...(this.config.model ? { model: this.config.model } : {}),
       metadata: {
@@ -753,7 +764,7 @@ export class SessionManager {
     try {
       for (let page = 0; page < 5; page += 1) {
         const result = await this.ctx.session.list({
-          directory: this.ctx.location.directory,
+          directory: this.location.directory,
           limit: 100,
           order: "desc",
           ...(cursor ? { cursor } : {}),

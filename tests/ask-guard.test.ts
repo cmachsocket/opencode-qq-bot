@@ -15,15 +15,19 @@ interface Harness {
   callback: (event: HookEvent) => Promise<void>
   registration: { dispose(): Promise<void> }
   release: ReturnType<typeof vi.fn>
-  manager: { targetForSession: ReturnType<typeof vi.fn> }
+  manager: {
+    targetForSession: ReturnType<typeof vi.fn>
+    hasActiveTurn: ReturnType<typeof vi.fn>
+  }
   logger: Record<keyof Logger, ReturnType<typeof vi.fn>>
 }
 
 const group = (id: number): ChatTarget => ({ kind: "group", id })
 
-async function createHarness(target: ChatTarget | undefined): Promise<Harness> {
+async function createHarness(target: ChatTarget | undefined, activeTurn = true): Promise<Harness> {
   const manager = {
     targetForSession: vi.fn(() => target),
+    hasActiveTurn: vi.fn(() => activeTurn),
   }
   const logger = {
     debug: vi.fn(),
@@ -65,7 +69,16 @@ describe("registerAskGuard", () => {
       ASK_REFUSAL,
     )
     expect(harness.manager.targetForSession).toHaveBeenCalledWith("ses_1")
+    expect(harness.manager.hasActiveTurn).toHaveBeenCalledWith("ses_1")
     expect(harness.logger.warn).toHaveBeenCalled()
+  })
+
+  it("人工在 TUI 里驱动同一个会话时放行 question 工具", async () => {
+    const harness = await createHarness(group(100), false)
+    await expect(
+      harness.callback({ tool: QUESTION_TOOL, sessionID: "ses_4" }),
+    ).resolves.toBeUndefined()
+    expect(harness.logger.warn).not.toHaveBeenCalled()
   })
 
   it("非 QQ 会话不拦截 question 工具", async () => {

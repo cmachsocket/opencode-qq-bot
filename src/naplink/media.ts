@@ -150,15 +150,21 @@ function decodeBase64(value: string): Uint8Array | undefined {
   return bytes.byteLength > MAX_IMAGE_BYTES ? undefined : new Uint8Array(bytes)
 }
 
-function parseDataUrl(uri: string): ImageBytes | undefined {
+function parseDataUrl(uri: string, logger: Logger): ImageBytes | undefined {
   const match = /^data:([^;,]+)?(?:;[^,]*)*;base64,(.*)$/s.exec(uri)
   if (!match) return undefined
   const bytes = decodeBase64(match[2] ?? "")
   if (!bytes) return undefined
+  // 以魔数嗅探为准：URI 里声明的类型由消息发送方控制，不能直接信任。
+  const mime = mimeFromBytes(bytes)
+  if (!mime) {
+    logger.warn("data URL 图片类型无法识别")
+    return undefined
+  }
   const declared = match[1]?.trim()
-  const mime =
-    declared?.startsWith("image/") === true ? declared : (mimeFromBytes(bytes) ?? undefined)
-  if (!mime) return undefined
+  if (declared && declared !== mime) {
+    logger.warn(`data URL 声明类型与实际内容不符 declared=${declared} actual=${mime}`)
+  }
   return { bytes, mime }
 }
 
@@ -203,7 +209,7 @@ export class MediaStore {
       }
       return { bytes, mime }
     }
-    if (url.startsWith("data:")) return parseDataUrl(url)
+    if (url.startsWith("data:")) return parseDataUrl(url, this.logger)
     if (!url.startsWith("http://") && !url.startsWith("https://")) {
       this.logger.warn(`不支持的图片地址，跳过下载 url=${truncateForLog(url)}`)
       return undefined

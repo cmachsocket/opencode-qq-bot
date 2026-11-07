@@ -189,15 +189,6 @@ export class QQClient {
     this.link.on("message.private", handler)
   }
 
-  /** 补全消息里媒体段的直链，便于下载图片。 */
-  async hydrate(message: MessageSegment[]): Promise<void> {
-    try {
-      await hydrateMedia(this.api, message, this.logger)
-    } catch (error) {
-      this.logger.warn("补全媒体直链失败", error)
-    }
-  }
-
   /** 机器人自己的 QQ 号，未连接时返回 undefined。 */
   get selfId(): string | undefined {
     return this.botId

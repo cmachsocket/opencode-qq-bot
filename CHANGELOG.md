@@ -23,6 +23,10 @@
   （`QQ_KEEP_ALIVE_ENABLED`）与 `keepAlive.seconds`（`QQ_KEEP_ALIVE_SECONDS`）。
   推荐同时在 `opencode.json(c)` 里设置 `experimental.location_idle_timeout: false`，
   彻底关掉 OpenCode 的自动卸载；插件卸载时的日志也会提示这一项。
+- 固定机器人工作目录：新增配置项 `home`（`QQ_BOT_HOME`），未配置时使用
+  `$XDG_DATA_HOME/opencode-qq-bot/workspace`（默认 `~/.local/share/...`），启动时自动创建。
+  群聊/私聊会话都在该目录创建（`session.create` 显式传 `location`），历史会话也按该目录查找，
+  不再跟随加载插件的项目目录。
 
 ### Changed
 
@@ -34,6 +38,8 @@
   插件自己生成的提示文本保持原样。
 - `warnLength` 默认值从 `20` 改成 `500`：原值下几乎每条回复都会告警，告警因此失去意义。
   判定口径是单次发送的内容长度，只告警，不截断也不影响发送。
+- 单实例范围从「同一个机器人」扩到「整台机器」：锁路径不再按 NapCat 端点与令牌派生，
+  改为机器级固定路径；进程内注册表也只在同一工作目录的实例之间交接。
 
 ### Fixed
 
@@ -44,6 +50,9 @@
 - `.env.example` 仍列着 0.3.2 已移除的 `QQ_BUSY_TIMEOUT_MS`，并把默认角色设定写成包内
   `SOUL.txt`（实际是 `souls/default.txt`）；同时补上漏掉的 `QQ_BOT_SOUL_NAME`。
 - README 里 `warnLength` 的说明写成「一轮回复总长度」，与实现（单次发送的内容长度）不符。
+- data URL 图片改为按魔数判定类型，不再信任 URI 里声明的 MIME；无法识别时跳过并告警。
+- 每条 QQ 消息只水合一次媒体：删除插件入口里重复的 `hydrate` 调用，渲染阶段已经补全直链。
+- `question` 工具只在 QQ 轮次执行期间拦截：人工在 TUI 里驱动同一个会话时不再被误拦。
 
 ## [0.4.0] - 2026-11-07
 

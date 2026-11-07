@@ -1,9 +1,10 @@
 import { Plugin } from "@opencode/plugin"
 import type { GroupMessageEvent, MessageEvent } from "@naplink/naplink"
 import { Mutex } from "async-mutex"
-import { acquireBotLock, type BotLock, botIdentity, botLockPath } from "./bot-lock"
+import { acquireBotLock, type BotLock, botLockPath } from "./bot-lock"
 import { type ChatTarget, configuredTargets, isTargetEnabled, targetKey, targetLabel } from "./chat"
 import { resolveConfig, type QQBotConfig } from "./config"
+import { resolveHome } from "./home"
 import { claimInstance } from "./instance"
 import { KeepAlive } from "./keepalive"
 import { createLogger } from "./logger"
@@ -49,9 +50,21 @@ export default Plugin.define({
       )
     }
 
-    // OpenCode 重新加载插件时未必调用旧的清理函数，接管同一连接的单例并主动卸载旧实例。
-    const { previous, lease } = claimInstance(`${ctx.location.directory}\n${config.napcat.url}`)
+    // 机器人固定服务的工作目录：配置优先，否则固定使用 XDG 数据目录下的工作区。
+    const home = await resolveHome(config.home, logger)
+
+    // 同一台机器只允许一个插件实例：OpenCode 可能为不同项目目录加载插件，
+    // 新实例接管旧实例并让旧实例整体卸载，避免多条 NapCat 连接与重复投递。
+    const { previous, occupied, lease } = claimInstance(
+      home.directory,
+      `${ctx.location.directory}\n${config.napcat.url}`,
+    )
+    if (occupied) {
+      logger.warn("本机机器人已绑定到其它工作目录，本实例不会运行", `工作目录：${occupied}`)
+      return
+    }
     if (previous?.dispose) {
+      logger.info("接管已有的插件实例并卸载它", previous.label)
       try {
         await previous.dispose()
       } catch (error) {
@@ -59,10 +72,9 @@ export default Plugin.define({
       }
     }
 
-    // 同一台机器上只允许一个实例消费 NapCat 消息流：
-    // 多个实例各自连接，NapCat 会把同一条消息推给所有连接，模型就会收到重复消息。
-    const identity = botIdentity(config.napcat)
+    // 机器级锁：抢不到就保持安静，等持有者退出后再接管。
     let botLock: BotLock | undefined
+    let disposed = false
 
     // 角色设定：读取生效文件并监听改动，改完下一轮即生效。
     const soul = new SoulStore(
@@ -80,7 +92,7 @@ export default Plugin.define({
     const media = await createMediaStore(logger)
     const nameCache = new Map<string, { name: string; expires: number }>()
     const history = createHistoryProvider({ api: client.api, logger, media, names: nameCache })
-    const manager = new SessionManager(ctx, config, logger, history)
+    const manager = new SessionManager(ctx, config, logger, home, history)
     await manager.load()
     // 保活心跳：OpenCode 长时间没有会话活动时会卸载 location，插件随之被卸载。
     const keepAlive = new KeepAlive(ctx, config, logger)
@@ -192,7 +204,6 @@ export default Plugin.define({
         if (!isTargetEnabled(config, target)) return
         if (!shouldProcess(event.message, selfId)) return
 
-        await client.hydrate(event.message)
         const renderCtx = {
           api: client.api,
           target,
@@ -264,31 +275,47 @@ export default Plugin.define({
     }
 
     /**
-     * 抢占机器人连接。
+     * 抢占机器级锁。
      *
      * 拿到锁才能消费消息流；锁被占用说明别的实例已经在消费，这里保持安静。
      */
     const claimBot = async (): Promise<boolean> => {
       if (botLock) return true
-      const lock = await acquireBotLock(identity, {
-        onCompromised: (error) => {
-          // 心跳失效意味着锁已不再独占，立刻停止投递，等重新抢到锁再消费。
-          logger.error("机器人连接锁失效，停止接收 QQ 消息", error)
-          botLock = undefined
-        },
-      })
+      if (disposed) return false
+      let lock: BotLock | undefined
+      try {
+        lock = await acquireBotLock({
+          onCompromised: (error) => {
+            // 心跳失效意味着锁已不再独占，立刻停止投递，等重新抢到锁再消费。
+            logger.error("机器人连接锁失效，停止接收 QQ 消息", error)
+            botLock = undefined
+          },
+        })
+      } catch (error) {
+        // 锁目录异常（tmpdir 不可写、权限不足）不能拖垮插件，退化成不消费消息，稍后重试。
+        logger.error("获取机器人连接锁失败，稍后重试", error)
+        return false
+      }
       if (!lock) return false
+      if (disposed) {
+        // 卸载与抢锁并发：立刻交回锁，不要在卸载之后重新连接 NapCat。
+        await lock.release().catch((error: unknown) => logger.error("释放机器人连接锁失败", error))
+        return false
+      }
       botLock = lock
-      logger.info("已占用 NapCat 机器人连接", botLockPath(identity))
+      logger.info("已占用机器级锁", botLockPath())
       await startConsuming()
       return true
     }
 
-    const claimed = await claimBot()
+    const claimed = await claimBot().catch((error: unknown) => {
+      logger.error("抢占机器人连接失败，稍后重试", error)
+      return false
+    })
     if (!claimed) {
       logger.warn(
-        "另一个 OpenCode 实例正在使用该 NapCat 机器人，本实例不会接收 QQ 消息",
-        `锁目录：${botLockPath(identity)}`,
+        "同一台机器上已有另一个实例在运行，本实例不会接收 QQ 消息",
+        `锁目录：${botLockPath()}`,
       )
     }
 
@@ -334,7 +361,6 @@ export default Plugin.define({
       agent: config.agent ?? "(默认)",
     })
 
-    let disposed = false
     const dispose = async () => {
       if (disposed) return
       disposed = true
@@ -352,8 +378,13 @@ export default Plugin.define({
       await contextRegistration.dispose()
       await idleRegistration.dispose()
       client.dispose()
-      // 先断开 NapCat 再释放身份锁，避免新实例接管时出现两条连接。
-      await botLock?.release()
+      // 先断开 NapCat 再释放机器级锁，避免新实例接管时出现两条连接。
+      try {
+        await botLock?.release()
+      } catch (error) {
+        // 释放失败也要继续释放实例租约，否则旧实例的租约会一直占着槽位。
+        logger.error("释放机器人连接锁失败", error)
+      }
       botLock = undefined
       lease.release()
       logger.info(

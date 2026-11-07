@@ -69,6 +69,7 @@ bun install
 | `users`                             | `QQ_TARGET_USERS`               | `[]`          | 参与对话的私聊 QQ 号，逗号分隔                  |
 | `soulPath`                          | `QQ_BOT_SOUL_PATH`              | 包内 `souls/` | 角色设定文件或目录路径                          |
 | `soulName`                          | `QQ_BOT_SOUL_NAME`              | `default.txt` | `souls` 目录里的角色设定文件名                  |
+| `home`                              | `QQ_BOT_HOME`                   | XDG 工作区    | 机器人会话的工作目录，必须是绝对路径或 `~/`     |
 | `agent`                             | `QQ_BOT_AGENT`                  | OpenCode 默认 | 会话使用的 agent                                |
 | `model`                             | `QQ_BOT_MODEL`                  | OpenCode 默认 | 会话使用的模型，格式 `provider/model[/variant]` |
 | `sendDelayMs`                       | `QQ_SEND_DELAY_MS`              | `1000`        | 超长消息分段发送时每段之间的间隔                |
@@ -86,6 +87,10 @@ bun install
 | `history.count`                     | `QQ_HISTORY_COUNT`              | `20`          | 新建或恢复会话时补多少条历史，`0` 表示关闭      |
 
 没配置 `groups` 和 `users` 时插件不会响应任何消息（默认全部关闭）。
+
+`home` 未配置时固定使用 `$XDG_DATA_HOME/opencode-qq-bot/workspace`（默认
+`~/.local/share/opencode-qq-bot/workspace`），启动时自动创建。会话的 cwd、文件工具、
+`AGENTS.md` 和 git 都取这个目录，不再跟随加载插件的项目目录。
 
 布尔环境变量接受 `true/false`、`1/0`、`yes/no`、`on/off`；数值直接写数字。
 写错的配置项会输出告警并回退到默认值，不会静默失效。
@@ -215,8 +220,9 @@ souls/
 - **消息合并**：会话正在跑模型时新到的消息进缓存，会话空闲后合并成一轮再投进去。
 - **顺序处理**：同一聊天的消息按到达顺序完成渲染和入队，不会因图片下载或成员查询而乱序。
 - **单实例消费**：同一台机器上只允许一个插件实例连接 NapCat 接收消息，其余实例不连接并
-  等待接管，避免同一条 QQ 消息被重复投递给模型。锁按 NapCat 端点与令牌标识，基于文件系统
-  实现，Windows、macOS、Linux 行为一致。
+  等待接管，避免同一条 QQ 消息被重复投递给模型。锁是机器级固定路径的文件锁，不区分机器人
+  身份，基于文件系统实现，Windows、macOS、Linux 行为一致。群聊与私聊会话的工作目录取
+  `home`（默认 XDG 工作区），与加载插件的项目目录无关，历史会话也按该目录查找。
 - **异常恢复**：模型失败、中断或长时间无响应时会释放忙碌状态并放行缓存消息。
 - **保活**：默认每 20 分钟写回一次会话元数据，OpenCode 不会因为长时间没有会话活动而卸载插件。
 - **提醒**：模型一轮完全没调用任何发送工具时，插件会补一条合成消息提醒它，最多 `reminder.max` 次，
@@ -249,6 +255,7 @@ bun run format      # prettier --write .
 souls/               角色设定文件（可多份，按文件名切换）
 src/
   config.ts          配置合并与校验
+  home.ts            机器人固定工作目录（配置或 XDG 工作区）
   index.ts           插件入口
   instance.ts        插件重载时的实例接管
   keepalive.ts       location 保活心跳

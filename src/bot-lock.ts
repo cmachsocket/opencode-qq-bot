@@ -1,46 +1,41 @@
-import { createHash } from "node:crypto"
 import os from "node:os"
 import path from "node:path"
 import lockfile from "@bybrave/proper-lockfile2"
 
-/** 机器人连接的身份锁。 */
+/** 机器人连接的机器级锁。 */
 export interface BotLock {
   /** 释放锁；必须等待完成，确保底层句柄真正关闭。 */
   release(): Promise<void>
 }
 
-/** 身份锁的可选参数。 */
+/** 机器级锁的可选参数。 */
 export interface BotLockOptions {
   /** 心跳失效时回调：锁已无法保证独占，调用方必须停止消费消息。 */
   onCompromised?: (error: Error) => void
 }
 
-/** 锁的过期时间：超过这么久没有心跳，锁可被其他进程接管。 */
-const STALE_MS = 30_000
+/**
+ * 锁的过期时间：超过这么久没有心跳，锁可被其他进程接管。
+ *
+ * 插件与 OpenCode 同进程，事件循环被长任务阻塞时心跳会延迟，
+ * 窗口太小会把"机器繁忙"误判成"锁失效"，白白停掉消息消费。
+ */
+const STALE_MS = 120_000
 /** 心跳间隔：必须明显小于过期时间，避免机器繁忙时被误判为失效。 */
-const UPDATE_MS = 10_000
-
-/** 同一个 NapCat 端点（含令牌）视为同一个机器人。 */
-export function botIdentity(napcat: { url: string; token?: string }): string {
-  return `${napcat.url}\n${napcat.token ?? ""}`
-}
-
-/** 身份摘要，作为跨进程互斥用的短名字。 */
-export function botLockName(identity: string): string {
-  return createHash("sha256").update(identity).digest("hex").slice(0, 16)
-}
+const UPDATE_MS = 30_000
 
 /**
  * 锁目录路径。
  *
- * 目录本身就是互斥凭据：库用原子 `mkdir` 抢占，心跳刷新目录的修改时间。
+ * 同一台机器只允许一个插件实例，锁不按机器人身份区分：
+ * 目录本身就是互斥凭据，库用原子 `mkdir` 抢占，心跳刷新目录的修改时间。
  */
-export function botLockPath(identity: string): string {
-  return path.join(os.tmpdir(), `opencode-qq-bot-${botLockName(identity)}.lock`)
+export function botLockPath(): string {
+  return path.join(os.tmpdir(), "opencode-qq-bot.lock")
 }
 
 /**
- * 独占一个 QQ 机器人连接。
+ * 独占一台机器上的插件实例。
  *
  * 同一台机器上可能有多个 OpenCode 实例加载插件（不同进程或不同工作区），
  * 每个实例都会向 NapCat 建立反向 WebSocket，而 NapCat 会把同一条消息推给
@@ -50,15 +45,11 @@ export function botLockPath(identity: string): string {
  * 锁基于文件系统，Windows、macOS、Linux 行为一致。持锁进程崩溃后，锁目录
  * 会在 `STALE_MS` 内过期并被接管，不会永久卡死。
  *
- * @param identity 机器人身份，通常是 NapCat 端点与令牌。
  * @param options 可选参数，`onCompromised` 用于感知心跳失效。
  * @returns 取得锁时返回释放句柄，已被占用时返回 undefined。
  */
-export async function acquireBotLock(
-  identity: string,
-  options: BotLockOptions = {},
-): Promise<BotLock | undefined> {
-  const lockPath = botLockPath(identity)
+export async function acquireBotLock(options: BotLockOptions = {}): Promise<BotLock | undefined> {
+  const lockPath = botLockPath()
   try {
     const release = await lockfile.lock(lockPath, {
       lockfilePath: lockPath,

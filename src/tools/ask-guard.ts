@@ -17,8 +17,8 @@ export interface AskGuardDeps {
 }
 
 /**
- * 在 QQ 会话里拦截内置 question 工具，要求模型改用 qq_send_message 询问用户。
- * 非 QQ 会话不受影响。
+ * 在 QQ 消息轮次执行期间拦截内置 question 工具，要求模型改用 qq_send_message 询问用户。
+ * 只绑定 QQ 目标、但没有 QQ 轮次在跑的会话（人工在 TUI 里驱动）不受影响。
  */
 export async function registerAskGuard(deps: AskGuardDeps): Promise<{ dispose(): Promise<void> }> {
   const { ctx, logger, manager } = deps
@@ -26,6 +26,7 @@ export async function registerAskGuard(deps: AskGuardDeps): Promise<{ dispose():
     if (event.tool !== QUESTION_TOOL) return
     const target = manager.targetForSession(event.sessionID)
     if (!target) return
+    if (!manager.hasActiveTurn(event.sessionID)) return
     logger.warn(`${targetLabel(target)} 会话里模型尝试调用 ${QUESTION_TOOL} 工具，已拒绝`)
     throw new Error(ASK_REFUSAL)
   })
