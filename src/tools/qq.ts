@@ -11,6 +11,8 @@ import type { FavoriteIndex } from "../emoji/favorite-index"
 import type { Logger } from "../logger"
 import type { QQClient } from "../naplink/client"
 import { splitGraphemes, splitMessage, toPlainText } from "../outbound"
+import type { RateLimitVerdict, SendRateLimiter } from "../rate-limit"
+import { modelSendScope, pluginSendScope } from "../rate-limit"
 import type { SessionManager } from "../session/manager"
 
 /** 工具命名空间，最终工具名为 qq_send_message 等。 */
@@ -26,6 +28,8 @@ export interface ToolDeps {
   favorites: FavoriteStore
   /** 收藏表情编号索引，供 qq_send_sticker 与 qq_favorite_list 使用。 */
   favoriteIndex: FavoriteIndex
+  /** 出站限流器，所有发送类工具共用一个实例。 */
+  limiter: SendRateLimiter
 }
 
 interface SendMessageInput {
@@ -80,21 +84,28 @@ function messageIdOf(response: unknown): string | undefined {
   return value === undefined || value === null ? undefined : String(value)
 }
 
+/** 插件自己发的消息同样按操作 id 分组：一次发送拆出的多段共用一个 id。 */
+let plainSeq = 0
+const nextPlainOperation = (): string => `plain-${++plainSeq}`
+
 /**
  * 向一个目标发送纯文本消息，超长时按段落拆分。
  *
  * 命令、后台任务这类没有会话轮次的场景用它回消息，
- * 内容由插件自己生成，不做 markdown 剥离。
+ * 内容由插件自己生成，不做 markdown 剥离；
+ * 发送前只做节奏控制，不会被硬上限拦下。
  */
 export async function sendPlainMessage(
   client: QQClient,
   target: ChatTarget,
   content: string,
-  options: { delayMs?: number } = {},
+  options: { delayMs?: number; limiter: SendRateLimiter },
 ): Promise<number> {
   const chunks = splitMessage(content)
+  const operation = nextPlainOperation()
   let sent = 0
   for (const [index, chunk] of chunks.entries()) {
+    await options.limiter.pace(pluginSendScope(target), operation)
     if (target.kind === "group") {
       await client.api.sendGroupMessage(target.id, chunk)
     } else {
@@ -115,7 +126,7 @@ export async function sendPlainMessage(
  * 只暴露消息收发与只读查询，不提供封禁/踢人等破坏性操作。
  */
 export async function registerTools(deps: ToolDeps): Promise<{ dispose(): Promise<void> }> {
-  const { ctx, config, logger, manager, client, favorites, favoriteIndex } = deps
+  const { ctx, config, logger, manager, client, favorites, favoriteIndex, limiter } = deps
 
   const requireTarget = (sessionID: string): ChatTarget | undefined => {
     const target = manager.targetForSession(sessionID)
@@ -129,6 +140,29 @@ export async function registerTools(deps: ToolDeps): Promise<{ dispose(): Promis
       return undefined
     }
     return target
+  }
+
+  // 同一次工具调用拆出的多段共用一个操作 id：段与段之间不再额外等间隔。
+  let operationSeq = 0
+  const nextOperation = (): string => `send-${++operationSeq}`
+
+  /**
+   * 申请一次出站发送许可。
+   *
+   * 超出每分钟 / 每小时上限时拒绝这次发送，并把原因回给模型，
+   * 让它立刻停下，而不是把群刷爆。
+   */
+  const permit = async (target: ChatTarget, operation: string): Promise<RateLimitVerdict> => {
+    const verdict = await limiter.acquire(modelSendScope(target), operation)
+    if (!verdict.allowed) logger.warn(`${targetLabel(target)} 出站限流：${verdict.reason}`)
+    return verdict
+  }
+
+  /** 限流拒绝时的工具返回值：本轮算已回复，避免模型被反复提醒补发。 */
+  const refuse = (sessionID: string, verdict: RateLimitVerdict, sent = 0, total = 0) => {
+    manager.markMessageSent(sessionID)
+    const progress = total > 0 ? `（已发送 ${sent}/${total} 段）` : ""
+    return text(`error: ${verdict.reason}${progress}`)
   }
 
   const sendText = (target: ChatTarget, chunk: string) =>
@@ -205,9 +239,12 @@ export async function registerTools(deps: ToolDeps): Promise<{ dispose(): Promis
         }
 
         const chunks = splitMessage(plain)
+        const operation = nextOperation()
         let sent = 0
         try {
           for (const [index, chunk] of chunks.entries()) {
+            const verdict = await permit(target, operation)
+            if (!verdict.allowed) return refuse(context.sessionID, verdict, sent, chunks.length)
             const response = await sendText(target, chunk)
             const messageId = messageIdOf(response)
             if (messageId) manager.rememberOutgoing(target, messageId)
@@ -246,6 +283,8 @@ export async function registerTools(deps: ToolDeps): Promise<{ dispose(): Promis
         if (!target) return text("error: 当前会话没有绑定 QQ 群聊或私聊")
         const file = input.file ?? (input.base64 ? `base64://${input.base64}` : undefined)
         if (!file) return text("error: 缺少 file 或 base64")
+        const verdict = await permit(target, nextOperation())
+        if (!verdict.allowed) return refuse(context.sessionID, verdict)
         const response = await sendSegments(target, [{ type: "image", data: { file } }])
         const messageId = messageIdOf(response)
         if (messageId) manager.rememberOutgoing(target, messageId)
@@ -299,6 +338,8 @@ export async function registerTools(deps: ToolDeps): Promise<{ dispose(): Promis
         }
         const url = typeof row.face.url === "string" ? row.face.url : undefined
         if (!url) return text(`error: 编号 ${id} 的收藏表情缺少可用地址`)
+        const verdict = await permit(target, nextOperation())
+        if (!verdict.allowed) return refuse(context.sessionID, verdict)
         const response = await sendSegments(target, [
           { type: "image", data: { file: url, sub_type: CUSTOM_FACE_SUB_TYPE } },
         ])
@@ -325,6 +366,8 @@ export async function registerTools(deps: ToolDeps): Promise<{ dispose(): Promis
         const target = requireTarget(context.sessionID)
         if (!target) return text("error: 当前会话没有绑定 QQ 群聊或私聊")
         if (!input.file) return text("error: 缺少 file")
+        const verdict = await permit(target, nextOperation())
+        if (!verdict.allowed) return refuse(context.sessionID, verdict)
         const response = await sendSegments(target, [
           { type: "record", data: { file: input.file } },
         ])
@@ -382,6 +425,8 @@ export async function registerTools(deps: ToolDeps): Promise<{ dispose(): Promis
           })
         }
         if (nodes.length === 0) return text("error: nodes 为空")
+        const verdict = await permit(target, nextOperation())
+        if (!verdict.allowed) return refuse(context.sessionID, verdict)
         const response = await sendForward(target, nodes)
         const messageId = messageIdOf(response)
         if (messageId) manager.rememberOutgoing(target, messageId)
@@ -407,6 +452,8 @@ export async function registerTools(deps: ToolDeps): Promise<{ dispose(): Promis
         const target = requireTarget(context.sessionID)
         if (!target) return text("error: 当前会话没有绑定 QQ 群聊或私聊")
         if (!input.user_id) return text("error: 缺少 user_id")
+        const verdict = await permit(target, nextOperation())
+        if (!verdict.allowed) return refuse(context.sessionID, verdict)
         await sendPoke(target, input.user_id)
         manager.markMessageSent(context.sessionID)
         return text("你已成功戳一下用户，可以选择结束对话")

@@ -13,6 +13,7 @@ import { QQClient } from "./naplink/client"
 import { createHistoryProvider } from "./naplink/history"
 import { createMediaStore } from "./naplink/media"
 import { mentionsUser, renderMessage, resolveUserName, shouldProcess } from "./naplink/render"
+import { SendRateLimiter } from "./rate-limit"
 import { SessionManager } from "./session/manager"
 import { currentTimeText, PROACTIVE_HINT } from "./session/prompt"
 import { proactiveTickProbability } from "./session/proactive"
@@ -93,6 +94,8 @@ export default Plugin.define({
     const media = await createMediaStore(logger)
     const nameCache = new Map<string, { name: string; expires: number }>()
     const history = createHistoryProvider({ api: client.api, logger, media, names: nameCache })
+    // 出站限流：模型驱动的发送与插件自己发的消息共用一个限流器。
+    const limiter = new SendRateLimiter(config.rateLimit)
     const manager = new SessionManager(ctx, config, logger, home, history)
     await manager.load()
     // 保活心跳：OpenCode 长时间没有会话活动时会卸载 location，插件随之被卸载。
@@ -118,6 +121,7 @@ export default Plugin.define({
       client,
       favorites,
       favoriteIndex,
+      limiter,
     })
     const emojiCommandRegistration = await registerEmojiCommand({
       ctx,
@@ -128,6 +132,7 @@ export default Plugin.define({
       favorites,
       favoriteIndex,
       labeler,
+      limiter,
     })
     // QQ 会话里禁止模型调用内置 question 工具，改用 qq_send_message 询问用户。
     const askGuardRegistration = await registerAskGuard({ ctx, logger, manager })

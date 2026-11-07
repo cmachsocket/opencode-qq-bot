@@ -7,6 +7,7 @@ import type { CustomFace } from "../src/emoji/favorites"
 import { FavoriteIndex, type IndexStorage } from "../src/emoji/favorite-index"
 import type { Logger } from "../src/logger"
 import type { QQClient } from "../src/naplink/client"
+import { SendRateLimiter } from "../src/rate-limit"
 import type { SessionManager } from "../src/session/manager"
 
 interface ToolDefinition {
@@ -94,6 +95,7 @@ async function createHarness(
     groups: [100],
     users: [200],
     sendDelayMs: 0,
+    rateLimit: { maxPerMinute: 0, maxPerHour: 0, minGapMs: 0 },
     ...configOverrides,
   }
 
@@ -120,6 +122,7 @@ async function createHarness(
     client: { api } as unknown as QQClient,
     favorites: favorites as never,
     favoriteIndex,
+    limiter: new SendRateLimiter(config.rateLimit),
   })
 
   return { tools, api, favorites, manager, logger }
@@ -374,6 +377,63 @@ describe("registerTools", () => {
       ?.execute({ reply: false }, context)
     expect(result?.content).toBe("skipped")
     expect(manager.markMessageSent).toHaveBeenCalledWith("session-1")
+  })
+
+  describe("出站限流", () => {
+    it("超过每分钟上限时拒绝发送，并标记本轮已回复", async () => {
+      const { tools, api, manager } = await createHarness(group(100), {
+        rateLimit: { maxPerMinute: 1, maxPerHour: 0, minGapMs: 0 },
+      })
+      const first = await tools
+        .get(`${TOOL_NAMESPACE}_send_message`)
+        ?.execute({ content: "第一条" }, context)
+      expect(first?.content).toContain("你已成功发送消息")
+      const second = await tools
+        .get(`${TOOL_NAMESPACE}_send_message`)
+        ?.execute({ content: "第二条" }, context)
+      expect(second?.content).toContain("发送频率超限")
+      expect(api["sendGroupMessage"]).toHaveBeenCalledTimes(1)
+      // 被限流也要算已回复，否则模型会被反复提醒补发。
+      expect(manager.markMessageSent).toHaveBeenCalledTimes(2)
+    })
+
+    it("图片发送同样受限", async () => {
+      const { tools, api } = await createHarness(group(100), {
+        rateLimit: { maxPerMinute: 1, maxPerHour: 0, minGapMs: 0 },
+      })
+      await tools.get(`${TOOL_NAMESPACE}_send_image`)?.execute({ file: "a.png" }, context)
+      const result = await tools
+        .get(`${TOOL_NAMESPACE}_send_image`)
+        ?.execute({ file: "b.png" }, context)
+      expect(result?.content).toContain("发送频率超限")
+      expect(api["sendGroupMessage"]).toHaveBeenCalledTimes(1)
+    })
+
+    it("超长消息按段计数", async () => {
+      const { tools, api } = await createHarness(group(100), {
+        rateLimit: { maxPerMinute: 1, maxPerHour: 0, minGapMs: 0 },
+      })
+      const result = await tools
+        .get(`${TOOL_NAMESPACE}_send_message`)
+        ?.execute({ content: "长".repeat(5000) }, context)
+      expect(result?.content).toContain("已发送 1/2 段")
+      expect(api["sendGroupMessage"]).toHaveBeenCalledTimes(1)
+    })
+
+    it("不同目标各自计数", async () => {
+      const { tools, api, manager } = await createHarness(group(100), {
+        rateLimit: { maxPerMinute: 1, maxPerHour: 0, minGapMs: 0 },
+      })
+      manager.targetForSession.mockImplementation((sessionID: string) =>
+        sessionID === "session-2" ? privateChat(200) : group(100),
+      )
+      await tools.get(`${TOOL_NAMESPACE}_send_message`)?.execute({ content: "群消息" }, context)
+      const privateResult = await tools
+        .get(`${TOOL_NAMESPACE}_send_message`)
+        ?.execute({ content: "私聊消息" }, { sessionID: "session-2" })
+      expect(privateResult?.content).toContain("你已成功发送消息")
+      expect(api["sendPrivateMessage"]).toHaveBeenCalledTimes(1)
+    })
   })
 
   describe("private chats", () => {

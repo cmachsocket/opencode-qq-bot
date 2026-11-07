@@ -214,6 +214,41 @@ describe("resolveConfig", () => {
     expect(config.keepAlive.seconds).toBe(DEFAULT_CONFIG.keepAlive.seconds)
   })
 
+  it("reads the outbound rate limit options from the environment", () => {
+    const config = resolveConfig(
+      {},
+      {
+        ...ENV,
+        QQ_RATE_MAX_PER_MINUTE: "3",
+        QQ_RATE_MAX_PER_HOUR: "30",
+        QQ_RATE_MIN_GAP_MS: "500",
+      },
+    )
+    expect(config.rateLimit.maxPerMinute).toBe(3)
+    expect(config.rateLimit.maxPerHour).toBe(30)
+    expect(config.rateLimit.minGapMs).toBe(500)
+  })
+
+  it("merges nested rate limit options with the defaults", () => {
+    const config = resolveConfig({ rateLimit: { maxPerMinute: 2 } }, ENV)
+    expect(config.rateLimit.maxPerMinute).toBe(2)
+    expect(config.rateLimit.maxPerHour).toBe(DEFAULT_CONFIG.rateLimit.maxPerHour)
+    expect(config.rateLimit.minGapMs).toBe(DEFAULT_CONFIG.rateLimit.minGapMs)
+  })
+
+  it("rejects negative rate limit options", () => {
+    const warnings: string[] = []
+    const config = resolveConfig(
+      { rateLimit: { maxPerMinute: -1, minGapMs: -10 } },
+      ENV,
+      (message) => warnings.push(message),
+    )
+    expect(config.rateLimit.maxPerMinute).toBe(DEFAULT_CONFIG.rateLimit.maxPerMinute)
+    expect(config.rateLimit.minGapMs).toBe(DEFAULT_CONFIG.rateLimit.minGapMs)
+    expect(warnings.join("\n")).toContain("rateLimit.maxPerMinute")
+    expect(warnings.join("\n")).toContain("rateLimit.minGapMs")
+  })
+
   it("deduplicates groups and warns about invalid entries", () => {
     const warnings: string[] = []
     const config = resolveConfig({ groups: [1, 1, -2, 3] }, ENV, (message) =>
@@ -268,6 +303,8 @@ describe("resolveConfig", () => {
   it("does not expose mutable default references", () => {
     const config = resolveConfig({}, ENV)
     config.proactive.startProbability = 0.9
+    config.rateLimit.maxPerMinute = 99
     expect(DEFAULT_CONFIG.proactive.startProbability).not.toBe(0.9)
+    expect(DEFAULT_CONFIG.rateLimit.maxPerMinute).not.toBe(99)
   })
 })

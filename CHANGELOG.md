@@ -6,6 +6,16 @@
 
 ### Added
 
+- 出站限流：出站消息按目标（群 / 私聊）单独计数，模型一轮连发不再把群刷爆，也降低平台风控风险。
+  每分钟最多 `rateLimit.maxPerMinute` 条（默认 8）、每小时最多 `rateLimit.maxPerHour` 条（默认 60），
+  超出则拒绝这次发送并把原因回给模型（说明里写明请停止发送并结束本轮），本轮同样算已回复，
+  不会再触发补发提醒。相邻两次发送至少隔 `rateLimit.minGapMs` 毫秒（默认 1500），间隔不足先等一等，不丢消息。
+  计数按目标分开；超长消息拆出的每一段都算一条，同一段消息内部的多段共用一个操作 id，
+  段与段之间只按 `sendDelayMs` 等待，不叠加限流间隔。主动说话走同一条路径，同样受限流约束。
+  插件自己生成的消息（`/emoji-label` 的结果与进度）走另一个计数域，不占用模型回复的额度。
+  三个值都为 `0` 表示不限制；计数只存在内存里，插件重启后重新开始。
+  新增配置项 `rateLimit.maxPerMinute`（`QQ_RATE_MAX_PER_MINUTE`）、`rateLimit.maxPerHour`（`QQ_RATE_MAX_PER_HOUR`）、
+  `rateLimit.minGapMs`（`QQ_RATE_MIN_GAP_MS`）。
 - 入站模型视图（`src/model-view.ts`）：群友可控的文本进模型前先做结构净化——换行折成空格、
   零宽字符清掉、全角方括号换半角，`<quote>` / `<forward>` / `<history>` 这类结构标签换成全角，
   群里伪造不出系统段落；净化覆盖正文、引用块、合并转发节点、语音转写、文件名和群名片。

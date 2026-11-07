@@ -17,6 +17,7 @@ import type { ChatTarget } from "../src/chat"
 import type { Logger } from "../src/logger"
 import type { QQClient } from "../src/naplink/client"
 import type { MediaStore } from "../src/naplink/media"
+import { SendRateLimiter } from "../src/rate-limit"
 import type { SessionManager } from "../src/session/manager"
 
 const face = (desc: string, extra: Partial<CustomFace> = {}): CustomFace => {
@@ -493,6 +494,7 @@ async function createCommandHarness(
     groups: [100],
     users: [200],
     sendDelayMs: 0,
+    rateLimit: { maxPerMinute: 0, maxPerHour: 0, minGapMs: 0 },
     ...options.config,
   }
 
@@ -515,6 +517,7 @@ async function createCommandHarness(
       labelFace,
       signal: options.aborted ? AbortSignal.abort() : new AbortController().signal,
     } as never,
+    limiter: new SendRateLimiter(config.rateLimit),
   })
 
   return {

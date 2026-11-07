@@ -52,6 +52,15 @@ export interface HistoryConfig {
   count: number
 }
 
+export interface RateLimitConfig {
+  /** 每分钟最多发出多少条消息，0 表示不限制。 */
+  maxPerMinute: number
+  /** 每小时最多发出多少条消息，0 表示不限制。 */
+  maxPerHour: number
+  /** 相邻两次发送之间的最小间隔（毫秒），0 表示不限制。 */
+  minGapMs: number
+}
+
 export interface ModelRef {
   providerID: string
   id: string
@@ -84,6 +93,7 @@ export interface QQBotConfig {
   reminder: ReminderConfig
   keepAlive: KeepAliveConfig
   history: HistoryConfig
+  rateLimit: RateLimitConfig
 }
 
 /** 除 NapCat 连接信息外的全部默认值。 */
@@ -103,6 +113,7 @@ export const DEFAULT_CONFIG: Omit<QQBotConfig, "napcat"> = {
   reminder: { enabled: true, max: 2 },
   keepAlive: { enabled: true, seconds: 20 * 60 },
   history: { count: 20 },
+  rateLimit: { maxPerMinute: 8, maxPerHour: 60, minGapMs: 1500 },
 }
 
 /** 配置告警回调。 */
@@ -342,6 +353,14 @@ function createConfigSchema(
       })
       .prefault({})
       .catch(defaults.history),
+    rateLimit: z
+      .object({
+        maxPerMinute: nonNegative("rateLimit.maxPerMinute", defaults.rateLimit.maxPerMinute),
+        maxPerHour: nonNegative("rateLimit.maxPerHour", defaults.rateLimit.maxPerHour),
+        minGapMs: nonNegative("rateLimit.minGapMs", defaults.rateLimit.minGapMs),
+      })
+      .prefault({})
+      .catch(defaults.rateLimit),
   })
 }
 
@@ -369,6 +388,9 @@ export const ENV_VARS = {
   "keepAlive.enabled": "QQ_KEEP_ALIVE_ENABLED",
   "keepAlive.seconds": "QQ_KEEP_ALIVE_SECONDS",
   "history.count": "QQ_HISTORY_COUNT",
+  "rateLimit.maxPerMinute": "QQ_RATE_MAX_PER_MINUTE",
+  "rateLimit.maxPerHour": "QQ_RATE_MAX_PER_HOUR",
+  "rateLimit.minGapMs": "QQ_RATE_MIN_GAP_MS",
 } as const
 
 const OPTION_KEYS = new Set([
@@ -387,6 +409,7 @@ const OPTION_KEYS = new Set([
   "reminder",
   "keepAlive",
   "history",
+  "rateLimit",
 ])
 
 const NESTED_OPTION_KEYS: Record<string, ReadonlySet<string>> = {
@@ -401,6 +424,7 @@ const NESTED_OPTION_KEYS: Record<string, ReadonlySet<string>> = {
   reminder: new Set(["enabled", "max"]),
   keepAlive: new Set(["enabled", "seconds"]),
   history: new Set(["count"]),
+  rateLimit: new Set(["maxPerMinute", "maxPerHour", "minGapMs"]),
 }
 
 /** 报告被 schema 静默剥离的未知配置项。 */
@@ -482,6 +506,7 @@ export function resolveConfig(
     reminder: { ...parsed.reminder },
     keepAlive: { ...parsed.keepAlive },
     history: { ...parsed.history },
+    rateLimit: { ...parsed.rateLimit },
     napcat: { url, token: parsed.napcat.token },
   }
 }

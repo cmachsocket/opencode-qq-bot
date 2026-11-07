@@ -3,6 +3,7 @@ import { type ChatTarget, configuredTargets, isTargetEnabled, targetLabel } from
 import type { QQBotConfig } from "../config"
 import type { Logger } from "../logger"
 import type { QQClient } from "../naplink/client"
+import type { SendRateLimiter } from "../rate-limit"
 import type { SessionManager } from "../session/manager"
 import { sendPlainMessage } from "../tools/qq"
 import { type CustomFace, faceTag, type FavoriteStore, formatFavoriteList } from "./favorites"
@@ -64,6 +65,8 @@ export interface EmojiCommandDeps {
   favorites: FavoriteStore
   favoriteIndex: FavoriteIndex
   labeler: EmojiLabeler
+  /** 出站限流器：命令结果同样要走节奏控制。 */
+  limiter: SendRateLimiter
 }
 
 /** 找出命令结果应该发到哪里：会话绑定的目标，没有就用第一个配置目标。 */
@@ -84,12 +87,15 @@ export function resolveCommandTarget(
 export async function registerEmojiCommand(
   deps: EmojiCommandDeps,
 ): Promise<{ dispose(): Promise<void> }> {
-  const { ctx, config, logger, client, favorites, favoriteIndex, labeler } = deps
+  const { ctx, config, logger, client, favorites, favoriteIndex, labeler, limiter } = deps
   let running = false
 
   const report = async (target: ChatTarget, content: string): Promise<void> => {
     try {
-      await sendPlainMessage(client, target, content, { delayMs: config.sendDelayMs })
+      await sendPlainMessage(client, target, content, {
+        delayMs: config.sendDelayMs,
+        limiter,
+      })
     } catch (error) {
       logger.error(`${targetLabel(target)} 发送表情标签结果失败`, error)
     }
