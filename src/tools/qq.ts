@@ -10,6 +10,7 @@ import {
 import type { FavoriteIndex } from "../emoji/favorite-index"
 import type { Logger } from "../logger"
 import type { QQClient } from "../naplink/client"
+import { splitMessage, toPlainText } from "../outbound"
 import type { SessionManager } from "../session/manager"
 
 /** 工具命名空间，最终工具名为 qq_send_message 等。 */
@@ -61,7 +62,7 @@ interface MessageIdInput {
 }
 
 /** QQ 单条消息的保守长度上限，超过时按段发送。 */
-export const MAX_MESSAGE_CHARS = 4000
+export { MAX_MESSAGE_CHARS } from "../outbound"
 
 function text(value: string) {
   return { content: value }
@@ -79,34 +80,11 @@ function messageIdOf(response: unknown): string | undefined {
   return value === undefined || value === null ? undefined : String(value)
 }
 
-/** 按长度切分消息，保留原有换行与空行。 */
-export function splitMessage(content: string, max = MAX_MESSAGE_CHARS): string[] {
-  if (Array.from(content).length <= max) return [content]
-  const chunks: string[] = []
-  let current = ""
-  for (const line of content.split("\n")) {
-    const candidate = current ? `${current}\n${line}` : line
-    if (Array.from(candidate).length <= max) {
-      current = candidate
-      continue
-    }
-    if (current) chunks.push(current)
-    let rest = line
-    while (Array.from(rest).length > max) {
-      const part = Array.from(rest).slice(0, max).join("")
-      chunks.push(part)
-      rest = Array.from(rest).slice(max).join("")
-    }
-    current = rest
-  }
-  if (current) chunks.push(current)
-  return chunks.length > 0 ? chunks : [content]
-}
-
 /**
  * 向一个目标发送纯文本消息，超长时按段落拆分。
  *
- * 命令、后台任务这类没有会话轮次的场景用它回消息。
+ * 命令、后台任务这类没有会话轮次的场景用它回消息，
+ * 内容由插件自己生成，不做 markdown 剥离。
  */
 export async function sendPlainMessage(
   client: QQClient,
@@ -212,11 +190,19 @@ export async function registerTools(deps: ToolDeps): Promise<{ dispose(): Promis
           return text("skipped")
         }
 
-        if (content.length > config.warnLength && input.unlimit_length !== true) {
-          logger.warn(`send_message 内容长度 ${content.length} 超过 ${config.warnLength}`)
+        // 模型偶尔不听话写 markdown，剥成纯文本再发出去。
+        const plain = toPlainText(content).trim()
+        if (!plain) {
+          logger.info(`${label} 回复内容剥离后为空`)
+          manager.markMessageSent(context.sessionID)
+          return text("skipped")
         }
 
-        const chunks = splitMessage(content)
+        if (plain.length > config.warnLength && input.unlimit_length !== true) {
+          logger.warn(`send_message 内容长度 ${plain.length} 超过 ${config.warnLength}`)
+        }
+
+        const chunks = splitMessage(plain)
         let sent = 0
         try {
           for (const [index, chunk] of chunks.entries()) {
@@ -234,7 +220,7 @@ export async function registerTools(deps: ToolDeps): Promise<{ dispose(): Promis
           return text(`error: 消息只发送了 ${sent}/${chunks.length} 段`)
         }
         manager.markMessageSent(context.sessionID)
-        logger.info(`${label} 已发送 ${content.length} 字`)
+        logger.info(`${label} 已发送 ${plain.length} 字`)
         return text("你已成功发送消息，可以选择结束对话")
       },
     })
@@ -390,7 +376,7 @@ export async function registerTools(deps: ToolDeps): Promise<{ dispose(): Promis
           nodes.push({
             user_id: userId,
             nickname: node.nickname?.trim() || "未知用户",
-            content: [{ type: "text", data: { text: node.content ?? "" } }],
+            content: [{ type: "text", data: { text: toPlainText(node.content ?? "").trim() } }],
           })
         }
         if (nodes.length === 0) return text("error: nodes 为空")

@@ -222,6 +222,9 @@ souls/
 - **图片**：远端图片下载到受控临时目录后以 `file:` 引用进入提示，单张不超过 5MB、
   单轮最多 8 张、总量不超过 16MB，超出的图片只保留 `[图片]` 占位文本。
   临时文件默认保留 7 天，插件会定期清理过期文件。
+- **出站文本**：模型写的 markdown 会先剥成纯文本再发出去——标题、强调、代码围栏去掉，
+  列表符号去掉只留正文，表格整块丢弃，链接与图片保留 URL；超长消息按字素簇切分，
+  不会把 emoji 序列、肤色修饰符或组合字符切坏。插件自己生成的提示文本不做剥离。
 
 ## 开发
 
@@ -250,6 +253,7 @@ src/
   emoji/label.ts     用模型给收藏表情起标签
   naplink/client.ts  NapLink 连接与 API 门面
   naplink/render.ts  消息段 → 文本与图片附件
+  outbound.ts        出站文本：markdown → 纯文本、字素簇安全切分
   session/prompt.ts  固定守则与系统提示
   session/soul.ts    角色设定定位、读取与热更新
   session/manager.ts 群聊 / 私聊 ↔ 会话映射、消息缓存
@@ -265,3 +269,5 @@ tests/               vitest 用例
 ## License
 
 [CC BY-NC-SA 4.0](./LICENSE)
+
+第三方依赖的版权声明与许可文本见 [NOTICE](./NOTICE)。

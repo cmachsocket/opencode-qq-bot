@@ -17,11 +17,21 @@
 
 ### Changed
 
+- 出站文本质量：模型回复里的 markdown 会先剥成纯文本再发出去（`remove-markdown`）——
+  标题、强调、代码围栏、HTML 标签去掉，列表符号去掉只留正文，表格整块丢弃，
+  链接与图片保留 URL（`文档: https://...`）。超长消息改用 `Intl.Segmenter`
+  按字素簇切分，不再切坏 ZWJ emoji 序列、肤色修饰符、区域指示符旗帜和组合字符。
+  只作用于模型产出的文本（`qq_send_message` 的 content 与 `qq_send_forward` 的节点文本），
+  插件自己生成的提示文本保持原样。
 - `warnLength` 默认值从 `20` 改成 `500`：原值下几乎每条回复都会告警，告警因此失去意义。
   判定口径是单次发送的内容长度，只告警，不截断也不影响发送。
 
 ### Fixed
 
+- 只含 QQ 官方表情（`face`）的消息、只含 `at` 的消息被整条丢弃：门卫只放行
+  `text` / `image` / `record` / `forward` / `reply`，其余段类型即使渲染器支持也会被挡掉。
+  现在门卫按"渲染器能产出文本的段类型"放行，`video` / `audio` / `file` / `json` /
+  `xml` / `markdown` 同样不再被丢。
 - `.env.example` 仍列着 0.3.2 已移除的 `QQ_BUSY_TIMEOUT_MS`，并把默认角色设定写成包内
   `SOUL.txt`（实际是 `souls/default.txt`）；同时补上漏掉的 `QQ_BOT_SOUL_NAME`。
 - README 里 `warnLength` 的说明写成「一轮回复总长度」，与实现（单次发送的内容长度）不符。

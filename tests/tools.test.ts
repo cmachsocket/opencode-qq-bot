@@ -174,6 +174,32 @@ describe("registerTools", () => {
     expect(api["sendGroupMessage"]).not.toHaveBeenCalled()
   })
 
+  it("strips markdown before sending", async () => {
+    const { tools, api } = await createHarness()
+    await tools
+      .get(`${TOOL_NAMESPACE}_send_message`)
+      ?.execute({ content: "# 标题\n\n- 第一项" }, context)
+    expect(api["sendGroupMessage"]).toHaveBeenCalledWith(100, "标题\n\n第一项")
+  })
+
+  it("keeps the url of a link", async () => {
+    const { tools, api } = await createHarness()
+    await tools
+      .get(`${TOOL_NAMESPACE}_send_message`)
+      ?.execute({ content: "[文档](https://example.com/doc)" }, context)
+    expect(api["sendGroupMessage"]).toHaveBeenCalledWith(100, "文档: https://example.com/doc")
+  })
+
+  it("skips sending content that is only a table", async () => {
+    const { tools, api, manager } = await createHarness()
+    const result = await tools
+      .get(`${TOOL_NAMESPACE}_send_message`)
+      ?.execute({ content: "| a | b |\n| --- | --- |\n| 1 | 2 |" }, context)
+    expect(result?.content).toBe("skipped")
+    expect(api["sendGroupMessage"]).not.toHaveBeenCalled()
+    expect(manager.markMessageSent).toHaveBeenCalledWith("session-1")
+  })
+
   it("warns about content longer than the limit", async () => {
     const { tools, logger } = await createHarness()
     await tools
@@ -247,6 +273,20 @@ describe("registerTools", () => {
       .get(`${TOOL_NAMESPACE}_send_forward`)
       ?.execute({ nodes: [] }, context)
     expect(result?.content).toContain("error")
+  })
+
+  it("strips markdown from the forward nodes", async () => {
+    const { tools, api } = await createHarness()
+    await tools
+      .get(`${TOOL_NAMESPACE}_send_forward`)
+      ?.execute({ nodes: [{ user_id: "1", nickname: "甲", content: "**转发**" }] }, context)
+    expect(api["sendGroupForwardMessage"]).toHaveBeenCalledWith(100, [
+      {
+        user_id: 1,
+        nickname: "甲",
+        content: [{ type: "text", data: { text: "转发" } }],
+      },
+    ])
   })
 
   it("returns the group member info", async () => {
