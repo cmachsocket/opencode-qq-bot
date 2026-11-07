@@ -4,6 +4,7 @@ import { targetKey } from "../chat"
 import { isCustomFaceImage } from "../emoji/favorites"
 import { renderFace } from "../emoji/faces"
 import type { Logger } from "../logger"
+import { sanitizeSenderName, sanitizeUntrustedText } from "../model-view"
 import { hydrateSegment } from "./client"
 import {
   MAX_IMAGE_BYTES,
@@ -191,7 +192,7 @@ async function renderForwardSegments(
     try {
       switch (segment.type) {
         case "text":
-          parts.push(segment.data.text)
+          parts.push(sanitizeUntrustedText(segment.data.text))
           break
         case "at":
           parts.push(`@${segment.data.qq} `)
@@ -217,7 +218,7 @@ async function renderForwardSegments(
           parts.push("[音频]")
           break
         case "file":
-          parts.push(`[文件]${segment.data.name || segment.data.file}`)
+          parts.push(`[文件]${sanitizeUntrustedText(segment.data.name || segment.data.file)}`)
           break
         case "face":
           parts.push(renderFace(segment.data.id))
@@ -276,8 +277,9 @@ export async function renderForward(
       }[]
     }
     nodes = (data.messages ?? []).map((entry) => ({
-      name:
+      name: sanitizeSenderName(
         entry.sender?.card || entry.sender?.nickname || String(entry.sender?.user_id ?? "未知用户"),
+      ),
       segments: (entry.message ?? []) as MessageSegment[],
     }))
   } catch (error) {
@@ -358,7 +360,7 @@ export async function renderMessage(
           { sender?: { user_id?: number }; message?: MessageSegment[] } | undefined
         if (!data) continue
         const name = data.sender?.user_id
-          ? await resolveUserName(ctx, String(data.sender.user_id))
+          ? sanitizeSenderName(await resolveUserName(ctx, String(data.sender.user_id)))
           : "未知用户"
         const quoted = await renderForwardSegments(
           ctx,
@@ -384,10 +386,12 @@ export async function renderMessage(
     try {
       switch (segment.type) {
         case "text":
-          textBuffer.push(segment.data.text)
+          textBuffer.push(sanitizeUntrustedText(segment.data.text))
           break
         case "at":
-          textBuffer.push(`@${await resolveUserName(ctx, String(segment.data.qq))} `)
+          textBuffer.push(
+            `@${sanitizeSenderName(await resolveUserName(ctx, String(segment.data.qq)))} `,
+          )
           break
         case "image": {
           textBuffer.push(`${imagePlaceholder(segment)} `)
@@ -415,7 +419,7 @@ export async function renderMessage(
             voiceText = await fetchVoiceText(ctx, messageId)
             voiceCache.set(key, voiceText)
           }
-          textBuffer.push(voiceText ? `[语音] ${voiceText}` : "[语音]")
+          textBuffer.push(voiceText ? `[语音] ${sanitizeUntrustedText(voiceText)}` : "[语音]")
           break
         }
         case "reply":
@@ -442,7 +446,7 @@ export async function renderMessage(
           textBuffer.push("[音频]")
           break
         case "file":
-          textBuffer.push(`[文件]${segment.data.name || segment.data.file}`)
+          textBuffer.push(`[文件]${sanitizeUntrustedText(segment.data.name || segment.data.file)}`)
           break
         case "face":
           textBuffer.push(renderFace(segment.data.id))

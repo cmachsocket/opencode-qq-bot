@@ -7,6 +7,7 @@ import { resolveConfig, type QQBotConfig } from "./config"
 import { claimInstance } from "./instance"
 import { KeepAlive } from "./keepalive"
 import { createLogger } from "./logger"
+import { formatModelMessage } from "./model-view"
 import { QQClient } from "./naplink/client"
 import { createHistoryProvider } from "./naplink/history"
 import { createMediaStore } from "./naplink/media"
@@ -207,7 +208,12 @@ export default Plugin.define({
         const atMe = target.kind === "private" || mentionsUser(event.message, selfId)
 
         await manager.enqueue(target, {
-          text: `${userName}: ${rendered.text}`,
+          text: formatModelMessage({
+            sender: userName,
+            userId: String(event.user_id),
+            text: rendered.text,
+            time: event.time,
+          }),
           files: rendered.files,
           atMe,
           source: { id: String(event.message_id), time: event.time },

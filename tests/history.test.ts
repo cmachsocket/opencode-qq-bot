@@ -4,6 +4,7 @@ import type { ChatTarget } from "../src/chat"
 import type { Logger } from "../src/logger"
 import type { MediaStore } from "../src/naplink/media"
 import { createHistoryProvider } from "../src/naplink/history"
+import { formatTimestamp } from "../src/model-view"
 
 const logger: Logger = {
   debug: () => {},
@@ -54,7 +55,9 @@ describe("createHistoryProvider", () => {
       message_seq: "0",
       count: 20,
     })
-    expect(result.text).toBe("<history>\n之前的聊天记录（按时间顺序）：\n小明: 早上好\n</history>")
+    expect(result.text).toBe(
+      `<history>\n之前的聊天记录（按时间顺序）：\n[${formatTimestamp(100)}] 小明(42): 早上好\n</history>`,
+    )
     expect(result.files).toEqual([])
   })
 
@@ -78,7 +81,11 @@ describe("createHistoryProvider", () => {
     const history = createProvider(api)
     const result = await history.fetch(group(100), { count: 20 })
     expect(result.text).toBe(
-      "<history>\n之前的聊天记录（按时间顺序）：\n小明: 第一条\n小明: 第二条\n小明: 第三条\n</history>",
+      `<history>\n之前的聊天记录（按时间顺序）：\n` +
+        `[${formatTimestamp(100)}] 小明(42): 第一条\n` +
+        `[${formatTimestamp(200)}] 小明(42): 第二条\n` +
+        `[${formatTimestamp(300)}] 小明(42): 第三条\n` +
+        `</history>`,
     )
   })
 
@@ -160,8 +167,8 @@ describe("createHistoryProvider", () => {
     }))
     const history = createProvider(api)
     const result = await history.fetch(group(100), { count: 20 })
-    expect(result.text).toContain("名片甲: 甲")
-    expect(result.text).toContain("昵称乙: 乙")
-    expect(result.text).toContain("42: 丙")
+    expect(result.text).toContain("名片甲(1): 甲")
+    expect(result.text).toContain("昵称乙(2): 乙")
+    expect(result.text).toContain("42(42): 丙")
   })
 })

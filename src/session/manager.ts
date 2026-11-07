@@ -88,21 +88,29 @@ interface ChatState {
 type SessionListCursor = NonNullable<Parameters<Plugin.Context["session"]["list"]>[0]>["cursor"]
 
 export function mergeTurns(turns: readonly Turn[]): Turn {
+  // 同一条消息重复投递时只留一份。
+  const seen = new Set<string>()
+  const unique = turns.filter((turn) => {
+    if (!turn.source) return true
+    if (seen.has(turn.source.id)) return false
+    seen.add(turn.source.id)
+    return true
+  })
   // 批次的位置取最后一条带位置的消息。
-  const source = turns.reduce<HistoryPosition | undefined>(
+  const source = unique.reduce<HistoryPosition | undefined>(
     (latest, turn) => turn.source ?? latest,
     undefined,
   )
   return {
     // 合并后的批次沿用第一条消息的幂等键，重试时保持一致。
-    ...(turns[0]?.id ? { id: turns[0].id } : {}),
-    text: turns
+    ...(unique[0]?.id ? { id: unique[0].id } : {}),
+    text: unique
       .map((turn) => turn.text.trim())
       .filter((text) => text.length > 0)
       .join("\n"),
-    files: limitFiles(turns.flatMap((turn) => turn.files)),
-    atMe: turns.some((turn) => turn.atMe),
-    ...(turns.some((turn) => turn.proactive) ? { proactive: true } : {}),
+    files: limitFiles(unique.flatMap((turn) => turn.files)),
+    atMe: unique.some((turn) => turn.atMe),
+    ...(unique.some((turn) => turn.proactive) ? { proactive: true } : {}),
     ...(source ? { source } : {}),
   }
 }

@@ -1,6 +1,7 @@
 import type { MessageEvent, MessageSegment, OneBotApi } from "@naplink/naplink"
 import type { ChatTarget } from "../chat"
 import type { Logger } from "../logger"
+import { formatModelMessage, sanitizeSenderName } from "../model-view"
 import type { MediaStore } from "./media"
 import { createImageBudget, renderMessage, type PromptFile, type RenderContext } from "./render"
 
@@ -79,7 +80,14 @@ export function createHistoryProvider(deps: {
         const rendered = await renderMessage(ctx, toEvent(entry), budget)
         const text = rendered.text.trim()
         if (!text && rendered.files.length === 0) continue
-        lines.push(`${senderName(entry)}: ${text}`)
+        lines.push(
+          formatModelMessage({
+            sender: senderName(entry),
+            userId: String(entry.sender?.user_id ?? entry.user_id ?? ""),
+            text: rendered.text,
+            time: entry.time ?? 0,
+          }),
+        )
         for (const file of rendered.files) {
           files.push({ ...file, name: `qq-history-${files.length + 1}-${file.name}` })
         }
@@ -237,8 +245,8 @@ function toEvent(entry: RawMessage): MessageEvent {
 /** 历史消息里的显示名，优先用群名片。 */
 function senderName(entry: RawMessage): string {
   const card = entry.sender?.card?.trim()
-  if (card) return card
+  if (card) return sanitizeSenderName(card)
   const nickname = entry.sender?.nickname?.trim()
-  if (nickname) return nickname
-  return String(entry.user_id ?? "未知用户")
+  if (nickname) return sanitizeSenderName(nickname)
+  return sanitizeSenderName(String(entry.user_id ?? "未知用户"))
 }
