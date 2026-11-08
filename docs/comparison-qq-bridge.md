@@ -190,14 +190,14 @@ qq-bridge 把这些也自己做了一遍（39 个 MCP 工具 + token 台账）�
 
 ### C. 基础设施类
 
-| #   | 条目                     | 本项目现状                                         | qq-bridge 对照                                                                                                | 结论                                    |
-| --- | ------------------------ | -------------------------------------------------- | ------------------------------------------------------------------------------------------------------------- | --------------------------------------- |
-| C1  | 无 CI                    | 无 `.github/`                                      | 3 job：syntax 全量 `node --check` + JSON.parse + 许可证一致性 / privacy-scan / windows 上 npm audit + 59 脚本 | **采纳**                                |
-| C2  | 无隐私扫描               | 仅靠 `.gitignore` 挡 `.env`/`opencode.json`        | `privacy-scan.mjs` 扫工作树 + **全部 git 历史**（9-10 位 QQ/群号、凭证赋值、PEM、绝对路径）                   | **采纳**                                |
-| C3  | 无安全基线与漏洞报告文档 | docs/ 仅 3 篇                                      | `SECURITY_BASELINE.md`、`SECURITY.md`、`NOTICE.md`（数据流）                                                  | **采纳**                                |
-| C4  | 无发布流程               | 无 publish 脚本、无 release workflow，版本手工维护 | 有 release 流程                                                                                               | **采纳**                                |
-| C5  | 日志只有 stdout 且无脱敏 | `src/logger.ts` 仅 console                         | 带上限的日志文件 + 每行脱敏                                                                                   | **采纳（已实现，见「C5 的落地方式」）** |
-| C6  | 配置面窄                 | 仅 groups/users 白名单 + 11 项配置                 | allow/deny 双列表 + ownerQQ + 每会话覆盖                                                                      | **采纳**                                |
+| #   | 条目                     | 本项目现状                                         | qq-bridge 对照                                                                                                | 结论                                              |
+| --- | ------------------------ | -------------------------------------------------- | ------------------------------------------------------------------------------------------------------------- | ------------------------------------------------- |
+| C1  | 无 CI                    | 无 `.github/`                                      | 3 job：syntax 全量 `node --check` + JSON.parse + 许可证一致性 / privacy-scan / windows 上 npm audit + 59 脚本 | **采纳（已实现，见「C1 / C3 / C4 的落地方式」）** |
+| C2  | 无隐私扫描               | 仅靠 `.gitignore` 挡 `.env`/`opencode.json`        | `privacy-scan.mjs` 扫工作树 + **全部 git 历史**（9-10 位 QQ/群号、凭证赋值、PEM、绝对路径）                   | **采纳**                                          |
+| C3  | 无安全基线与漏洞报告文档 | docs/ 仅 3 篇                                      | `SECURITY_BASELINE.md`、`SECURITY.md`、`NOTICE.md`（数据流）                                                  | **采纳（已实现，见「C1 / C3 / C4 的落地方式」）** |
+| C4  | 无发布流程               | 无 publish 脚本、无 release workflow，版本手工维护 | 有 release 流程                                                                                               | **采纳（已实现，见「C1 / C3 / C4 的落地方式」）** |
+| C5  | 日志只有 stdout 且无脱敏 | `src/logger.ts` 仅 console                         | 带上限的日志文件 + 每行脱敏                                                                                   | **采纳（已实现，见「C5 的落地方式」）**           |
+| C6  | 配置面窄                 | 仅 groups/users 白名单 + 11 项配置                 | allow/deny 双列表 + ownerQQ + 每会话覆盖                                                                      | **采纳**                                          |
 
 ### C5 的落地方式（已实现）
 
@@ -223,6 +223,23 @@ qq-bridge 把这些也自己做了一遍（39 个 MCP 工具 + token 台账）�
 - 已知限制：`winston-daily-rotate-file` 清理旧文件前会检查文件是否已落盘，启动瞬间的连续写入可能多留几个文件。
 
 落地位置：`src/logger.ts`、`src/sensitive.ts`（`maskSecrets`）、`src/config.ts`、`src/index.ts`
+
+### C1 / C3 / C4 的落地方式（已实现）
+
+三个基础设施项一起落地，共用一套门禁：本地 `bun run ci`、CI 里同样的命令、发布前再跑一遍。
+
+| #   | 落地                                                                                                                                                                                                               | 位置                                                                           |
+| --- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------ |
+| C1  | GitHub Actions 三个 job：`check`（冻结安装 → `tsc --noEmit` → `eslint .` → `prettier --check .` → `vitest run`）、`audit`（`bun audit --production --audit-level=high`）、`license`（只跑 `tests/notice.test.ts`） | `.github/workflows/ci.yml`                                                     |
+| C3  | 根目录 `SECURITY.md`（私密上报、无 SLA、范围与部署硬要求）+ 安全基线（信任边界、数据流、不变量清单，每条带实现与测试落点）+ `NOTICE` 数据流小节                                                                    | `SECURITY.md`、`docs/security-baseline.md`、`NOTICE`                           |
+| C4  | tag `v*` 触发：`verify` 跑完整门禁与 `release-check`，`publish` 用 npm `--provenance` 发布并按 CHANGELOG 段创建 GitHub Release                                                                                     | `.github/workflows/release.yml`、`scripts/release-check.ts`、`docs/release.md` |
+
+- 许可证 / NOTICE 一致性只写一次：`tests/notice.test.ts`，CI 的 `license` job 直接跑这个用例。
+- 不加 privacy-scan job：C2 还没落地，先加是空壳；C2 交付时再补第 4 个 job。
+- 只跑 ubuntu：Windows 路径差异留到真正出问题时再加，避免 CI 时间翻倍。
+- 版本号仍手工维护；`release-check` 只校验、不改写，也不自动提交。
+- `0.4.0` / `0.5.0` 从未发布到 npm，`0.5.1` 是 npm 上第一个带上它们内容的版本。
+- 发布凭据二选一：仓库 secret `NPM_TOKEN`，或在 npm 侧配置 GitHub OIDC trusted publishing（届时可删掉 token）。
 
 ### A4 的平台落点
 
@@ -447,9 +464,9 @@ NapLink 已经把事件按 `post_type` + `notice_type` 拆好并分发，但插�
 | B5  | 采纳（已实现）     | remove-markdown + Intl.Segmenter，不手写                |
 | B6  | 采纳               | 失败兜底文案（待实现）                                  |
 | B7  | 采纳               | 通知事件订阅做成可配置项                                |
-| C1  | 采纳               | CI（待实现）                                            |
+| C1  | 采纳（已实现）     | CI：check / audit / license 三个 job，ubuntu-only       |
 | C2  | 采纳               | 隐私扫描（待实现）                                      |
-| C3  | 采纳               | 安全基线文档（待实现）                                  |
-| C4  | 采纳               | 发布流程（待实现）                                      |
+| C3  | 采纳（已实现）     | SECURITY.md + 安全基线 + NOTICE 数据流                  |
+| C4  | 采纳（已实现）     | tag 触发：校验后 npm publish + GitHub Release           |
 | C5  | 采纳（已实现）     | 日志脱敏：Winston 日志文件（带上限）+ 逐行脱敏          |
 | C6  | 采纳               | 配置面扩展（待实现）                                    |

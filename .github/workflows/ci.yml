@@ -1,0 +1,73 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: 类型 / 风格 / 测试
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          # 与本机开发用的版本对齐，避免两边行为不一致
+          bun-version: "1.4.4"
+
+      - name: 安装依赖（冻结锁文件）
+        run: bun install --frozen-lockfile
+
+      - name: 类型检查
+        run: bun run typecheck
+
+      - name: Lint
+        run: bun run lint
+
+      - name: 格式检查
+        run: bun run format:check
+
+      - name: 测试
+        run: bun run test
+
+  audit:
+    name: 依赖漏洞扫描
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.4.4"
+
+      - name: 安装依赖（冻结锁文件）
+        run: bun install --frozen-lockfile
+
+      - name: bun audit（只查运行时依赖，高危及以上）
+        run: bun audit --production --audit-level=high
+
+  license:
+    name: 许可证与 NOTICE 一致性
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.4.4"
+
+      - name: 安装依赖（冻结锁文件）
+        run: bun install --frozen-lockfile
+
+      - name: 校验 LICENSE 与 NOTICE
+        run: bunx vitest run tests/notice.test.ts

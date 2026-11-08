@@ -4,6 +4,30 @@
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-11-08
+
+### Added
+
+- CI（`.github/workflows/ci.yml`）：推 `main`、PR、手动触发三条入口，跑
+  冻结锁文件安装 → `tsc --noEmit` → `eslint .` → `vitest run` → `prettier --check .`；
+  另有两个独立 job 跑 `bun audit --production --audit-level=high` 与许可证 / NOTICE 一致性检查。
+  只跑 ubuntu，Windows 路径差异等真出问题再补。
+- 发布流程（`.github/workflows/release.yml` + `scripts/release-check.ts` + `docs/release.md`）：
+  推 `vX.Y.Z` tag 后先做同样的门禁，通过才 `npm publish --provenance --access public` 并按
+  CHANGELOG 对应段创建 GitHub Release。`bun run release:check` 可在本地先跑一遍：
+  校验 semver、CHANGELOG 段、tag 与版本一致、LICENSE ↔ `package.json` license、
+  NOTICE 覆盖全部运行时依赖、工作区干净。
+- 安全文档：根目录 `SECURITY.md`（漏洞走 GitHub 私密通报，单人维护无 SLA）与
+  `docs/security-baseline.md`（信任边界、数据流与不变量清单，每条带实现与测试落点）。
+  `NOTICE` 增补「数据流与第三方处理」一节，写明哪些数据离开本机、落在本机哪里。
+- `package.json` 新增脚本 `format:check`、`ci`、`release:check`；
+  补齐 `repository` / `homepage` / `bugs`（npm `--provenance` 要求 `repository` 字段）。
+
+### Changed
+
+- 版本号补到 `0.5.1`。`0.4.0` / `0.5.0` 只改了版本号与 CHANGELOG，没有发布到 npm，
+  这次把它们的全部改动一起带出去，`0.5.1` 是 npm 上第一个包含这些内容的版本。
+
 ## [0.5.0] - 2026-11-08
 
 ### Added

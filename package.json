@@ -1,7 +1,15 @@
 {
   "name": "@cmach_socket/opencode-qq-bot",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "description": "OpenCode V2 plugin bridging a QQ group chat (NapCat via NapLink) to an OpenCode session.",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/cmachsocket/opencode-qq-bot.git"
+  },
+  "homepage": "https://github.com/cmachsocket/opencode-qq-bot#readme",
+  "bugs": {
+    "url": "https://github.com/cmachsocket/opencode-qq-bot/issues"
+  },
   "type": "module",
   "main": "./src/index.ts",
   "types": "./src/index.ts",
@@ -21,7 +29,10 @@
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
     "format": "prettier --write .",
-    "test": "vitest run"
+    "format:check": "prettier --check .",
+    "test": "vitest run",
+    "ci": "bun run typecheck && bun run lint && bun run test && bun run format:check",
+    "release:check": "bun scripts/release-check.ts"
   },
   "keywords": [
     "opencode",

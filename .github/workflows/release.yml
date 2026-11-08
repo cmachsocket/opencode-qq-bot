@@ -1,0 +1,86 @@
+name: Release
+
+on:
+  push:
+    # 只认 v 开头的 tag，例如 v0.5.1
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    name: 发布门禁
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          # release:check 会看工作区状态，取完整历史便于排查
+          fetch-depth: 0
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.4.4"
+
+      - name: 安装依赖（冻结锁文件）
+        run: bun install --frozen-lockfile
+
+      - name: 类型检查
+        run: bun run typecheck
+
+      - name: Lint
+        run: bun run lint
+
+      - name: 格式检查
+        run: bun run format:check
+
+      - name: 测试
+        run: bun run test
+
+      - name: 发布检查（tag 与版本 / CHANGELOG / 许可证 / NOTICE）
+        run: bun scripts/release-check.ts --tag "$GITHUB_REF_NAME"
+
+  publish:
+    name: 发布到 npm 与 GitHub Release
+    needs: verify
+    runs-on: ubuntu-latest
+    permissions:
+      # gh release create 需要写仓库；--provenance 需要 id-token
+      contents: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.4.4"
+
+      # --provenance 是 npm 的能力，用 npm 发布而不是 bun publish
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: 安装依赖（冻结锁文件）
+        run: bun install --frozen-lockfile
+
+      - name: 发布到 npm
+        run: npm publish --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: 从 CHANGELOG 取 Release 正文
+        run: bun scripts/release-check.ts --tag "$GITHUB_REF_NAME" --notes > notes.md
+
+      - name: 创建 GitHub Release
+        run: >-
+          gh release create "$GITHUB_REF_NAME"
+          --title "$GITHUB_REF_NAME"
+          --notes-file notes.md
+          --verify-tag
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

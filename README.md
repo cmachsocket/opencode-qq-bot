@@ -295,11 +295,23 @@ souls/
 
 ```sh
 bun install
-bun run typecheck   # tsc --noEmit
-bun run lint        # eslint .
-bun run test        # vitest run
-bun run format      # prettier --write .
+bun run typecheck     # tsc --noEmit
+bun run lint          # eslint .
+bun run test          # vitest run
+bun run format        # prettier --write .
+bun run format:check  # prettier --check .
+bun run ci            # 上面四道门禁一次跑完
 ```
+
+CI 在 `.github/workflows/ci.yml`，推 `main` 与 PR 都会跑同一套门禁，另加依赖漏洞扫描
+（`bun audit --production --audit-level=high`）与许可证 / NOTICE 一致性检查。
+
+发布走 tag：推 `v<version>` 后由 `.github/workflows/release.yml` 校验并发布到 npm、创建
+GitHub Release。版本号策略、发布清单与回滚步骤见 [docs/release.md](docs/release.md)，
+发布前可在本地跑 `bun run release:check --tag v0.5.1`。
+
+安全方面：漏洞请走私密上报（[SECURITY.md](SECURITY.md)），不要开公开 issue；
+信任边界、数据流与不变量清单见 [docs/security-baseline.md](docs/security-baseline.md)。
 
 ## 目录
 
@@ -336,7 +348,12 @@ docs/
   configuration.md   配置取值规则与限制
   design-review.md   设计审查与修复记录
   emoji.md           收藏表情（表情包）说明
+  release.md         版本号策略、发布清单与回滚
+  security-baseline.md 信任边界、数据流与不变量清单
+scripts/
+  release-check.ts   发布门禁与 GitHub Release 正文
 tests/               vitest 用例
+SECURITY.md         漏洞上报渠道与范围
 ```
 
 ## License

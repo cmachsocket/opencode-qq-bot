@@ -20,6 +20,28 @@
 | winston-daily-rotate-file           | Copyright (c) 2015-2024 winstonjs                                                            |
 | zod                                 | Copyright (c) 2025 Colin McDonnell                                                          |
 
+## 数据流与第三方处理
+
+这个插件在运行时会把数据交给本机之外的第三方，使用前请确认你能接受：
+
+| 数据 | 交给谁 | 什么时候 |
+| --- | --- | --- |
+| 聊天文本、群名片、文件名、引用与转发 | 你配置的模型供应商 API | 每一轮会话进模型时 |
+| 图片内容 | 你配置的模型供应商 API | 图片进入会话时（插件先下载到本地媒体目录） |
+| 入站图片 URL | 图片所在的第三方图床 / CDN | 收到图片消息、插件下载图片时 |
+| 出站远端媒体 URL | NapCat → 目标站点 | `qq_send_image` / `qq_send_record` 传 http(s) 地址时 |
+
+留在本机的数据：
+
+- 工作目录：`$XDG_DATA_HOME/opencode-qq-bot/workspace`（未设置时 `~/.local/share/...`）
+- 日志：`$XDG_STATE_HOME/opencode-qq-bot/logs`（未设置时 `~/.local/state/...`），逐行脱敏后写入
+- 媒体缓存：`$XDG_STATE_HOME/opencode-qq-bot/media`
+
+凭证（`napcat.token`、模型密钥）只在本机使用，不写入日志、不进入模型上下文、不随消息发出。
+
+许可边界：本项目自身以 [CC-BY-NC-SA-4.0](LICENSE) 发布，**不允许商业使用**；
+上表第三方组件仍按各自的 MIT 许可分发，不受本项目许可限制。
+
 ## MIT License
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
