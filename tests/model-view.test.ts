@@ -105,19 +105,34 @@ describe("formatModelMessage", () => {
   it("拼成带绝对时间的一行", () => {
     const time = 1_700_000_000
     expect(formatModelMessage({ sender: "小明", userId: "123", text: "你好", time })).toBe(
-      `[${formatTimestamp(time)}] 小明(123): 你好`,
+      `[${formatTimestamp(time)}] 小明: 你好`,
     )
   })
 
   it("没有时间时不加时间前缀", () => {
     expect(formatModelMessage({ sender: "小明", userId: "123", text: "你好", time: 0 })).toBe(
-      "小明(123): 你好",
+      "小明: 你好",
     )
+  })
+
+  it("owner 与管理员带上角色标记", () => {
+    expect(
+      formatModelMessage({ sender: "小明", userId: "123", text: "你好", time: 0, role: "owner" }),
+    ).toBe("小明(owner): 你好")
+    expect(
+      formatModelMessage({ sender: "小明", userId: "123", text: "你好", time: 0, role: "admin" }),
+    ).toBe("小明(admin): 你好")
+  })
+
+  it("普通成员不加角色标记，也不显示 QQ 号", () => {
+    expect(
+      formatModelMessage({ sender: "小明", userId: "123", text: "你好", time: 0, role: "member" }),
+    ).toBe("小明: 你好")
   })
 
   it("没有名字时用 QQ 号兜底", () => {
     expect(formatModelMessage({ sender: "", userId: "123", text: "你好", time: 0 })).toBe(
-      "123(123): 你好",
+      "123: 你好",
     )
   })
 })

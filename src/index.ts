@@ -123,7 +123,13 @@ export default Plugin.define({
       allowedDirs: [home.directory, mediaDir, ...config.media.allowedDirs],
     })
     const nameCache = new Map<string, { name: string; expires: number }>()
-    const history = createHistoryProvider({ api: client.api, logger, media, names: nameCache })
+    const history = createHistoryProvider({
+      api: client.api,
+      logger,
+      media,
+      names: nameCache,
+      roleOf: (userId) => roleOf(config, userId),
+    })
     // 出站限流：模型驱动的发送与插件自己发的消息共用一个限流器。
     const limiter = new SendRateLimiter(config.rateLimit)
     // 出站敏感信息拦截：环境变量里的凭证与 NapCat 令牌都当作已知凭证。

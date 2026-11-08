@@ -5,6 +5,7 @@ import type { Logger } from "../src/logger"
 import type { MediaStore } from "../src/naplink/media"
 import { createHistoryProvider } from "../src/naplink/history"
 import { formatTimestamp } from "../src/model-view"
+import type { Role } from "../src/tools/policy"
 
 const logger: Logger = {
   debug: () => {},
@@ -37,15 +38,29 @@ function createApi(history: (params: unknown) => unknown) {
   } as unknown as OneBotApi
 }
 
-function createProvider(api: OneBotApi) {
+function createProvider(api: OneBotApi, roleOf?: (userId: string) => Role) {
   return createHistoryProvider({
     api,
     logger,
     media: {} as MediaStore,
+    ...(roleOf ? { roleOf } : {}),
   })
 }
 
 describe("createHistoryProvider", () => {
+  it("历史里的 owner / admin 消息也带角色标记", async () => {
+    const api = createApi(() => ({ messages: [message(1, 100, "在场")] }))
+    const history = createProvider(api, (userId) => (userId === "42" ? "owner" : "member"))
+    expect((await history.fetch(group(100), { count: 20 })).text).toContain(
+      `[${formatTimestamp(100)}] 小明(owner): 在场`,
+    )
+
+    const admin = createProvider(api, () => "admin")
+    expect((await admin.fetch(group(100), { count: 20 })).text).toContain(
+      `[${formatTimestamp(100)}] 小明(admin): 在场`,
+    )
+  })
+
   it("群聊走群历史接口并渲染成 history 块", async () => {
     const api = createApi(() => ({ messages: [message(1, 100, "早上好")] }))
     const history = createProvider(api)
@@ -57,7 +72,7 @@ describe("createHistoryProvider", () => {
       reverse_order: false,
     })
     expect(result.text).toBe(
-      `<history>\n之前的聊天记录（按时间顺序）：\n[${formatTimestamp(100)}] 小明(42): 早上好\n</history>`,
+      `<history>\n之前的聊天记录（按时间顺序）：\n[${formatTimestamp(100)}] 小明: 早上好\n</history>`,
     )
     expect(result.files).toEqual([])
   })
@@ -84,9 +99,9 @@ describe("createHistoryProvider", () => {
     const result = await history.fetch(group(100), { count: 20 })
     expect(result.text).toBe(
       `<history>\n之前的聊天记录（按时间顺序）：\n` +
-        `[${formatTimestamp(100)}] 小明(42): 第一条\n` +
-        `[${formatTimestamp(200)}] 小明(42): 第二条\n` +
-        `[${formatTimestamp(300)}] 小明(42): 第三条\n` +
+        `[${formatTimestamp(100)}] 小明: 第一条\n` +
+        `[${formatTimestamp(200)}] 小明: 第二条\n` +
+        `[${formatTimestamp(300)}] 小明: 第三条\n` +
         `</history>`,
     )
   })
@@ -199,8 +214,8 @@ describe("createHistoryProvider", () => {
     }))
     const history = createProvider(api)
     const result = await history.fetch(group(100), { count: 20 })
-    expect(result.text).toContain("名片甲(1): 甲")
-    expect(result.text).toContain("昵称乙(2): 乙")
-    expect(result.text).toContain("42(42): 丙")
+    expect(result.text).toContain("名片甲: 甲")
+    expect(result.text).toContain("昵称乙: 乙")
+    expect(result.text).toContain("42: 丙")
   })
 })

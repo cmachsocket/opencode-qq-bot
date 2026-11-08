@@ -107,6 +107,8 @@ export function formatTimestamp(seconds: number): string {
   return TIMESTAMP_FORMAT.format(new Date(seconds * 1000))
 }
 
+import type { Role } from "./tools/policy"
+
 /** 一条消息的模型视图。 */
 export interface ModelMessage {
   /** 发送者显示名。 */
@@ -117,14 +119,18 @@ export interface ModelMessage {
   text: string
   /** 发送时间（Unix 秒）。 */
   time: number
+  /** 发送者角色；owner / admin 会在模型视图里带上对应的角色标记。 */
+  role?: Role
 }
 
-/** 拼成一行模型视图消息：`[绝对时间] 名字(QQ号): 正文`。 */
+/** 拼成一行模型视图消息：`[绝对时间] 名字(owner): 正文`；普通成员没有角色标记。 */
 export function formatModelMessage(message: ModelMessage): string {
   // QQ 号来自 QQ 服务，但仍是外部输入，按显示名净化一遍。
   const userId = sanitizeSenderName(message.userId)
   const name = sanitizeSenderName(message.sender) || userId || "未知用户"
   const stamp = formatTimestamp(message.time)
   const prefix = stamp ? `[${stamp}] ` : ""
-  return `${prefix}${name}(${userId}): ${message.text.trim()}`
+  // 只给 owner / admin 加角色标记，让模型知道这句话是谁说的。
+  const role = message.role === "owner" ? "(owner)" : message.role === "admin" ? "(admin)" : ""
+  return `${prefix}${name}${role}: ${message.text.trim()}`
 }
