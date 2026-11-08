@@ -27,6 +27,15 @@ export const SUBMIT_GRACE_MS = 5_000
 export const PENDING_MAX_ATTEMPTS = 3
 /** 缓存里还有消息时的兜底轮询间隔：上游结束事件丢了也能把消息放出去。 */
 export const RESUME_INTERVAL_MS = 30_000
+/** 回合失败且模型一句话都没发出时，补到聊天里的固定文案。 */
+export const FAILURE_NOTICE = "⚠️ 暂时无法处理这条消息，请稍后再试。"
+/** 回合被中断时的固定文案。 */
+export const INTERRUPTED_NOTICE = "⏹️ 已停止"
+/** 同一目标两次失败提示的最小间隔，连续失败不会刷屏。 */
+export const FAILURE_NOTICE_INTERVAL_MS = 5 * 60 * 1000
+
+/** 插件自己往聊天里补话的通道，失败兜底用。 */
+export type FailureNotifier = (target: ChatTarget, text: string) => Promise<void>
 function toMillis(value: unknown): number | undefined {
   if (value instanceof Date) return value.getTime()
   if (typeof value === "number") return value
@@ -153,6 +162,8 @@ export class SessionManager {
   private readonly restoredPositions = new Map<string, HistoryPosition>()
   /** 兜底轮询定时器：上游结束事件丢失时把缓存的消息投出去。 */
   private watchdog: ReturnType<typeof setTimeout> | undefined
+  /** 每个目标上一次失败提示的时间戳。 */
+  private readonly noticeAt = new Map<string, number>()
   private disposed = false
 
   constructor(
@@ -162,6 +173,8 @@ export class SessionManager {
     /** 机器人固定服务的工作目录，所有 QQ 会话都建在这里。 */
     private readonly home: BotHome,
     private readonly history?: HistoryProvider,
+    /** 失败兜底通道；不传就只写日志。 */
+    private readonly notify?: FailureNotifier,
   ) {}
 
   /** 会话统一落在机器人工作目录，避免接管后上下文散落到别的项目。 */
@@ -498,6 +511,8 @@ export class SessionManager {
         )
         state.pending = undefined
         state.pendingAttempts = 0
+        // 这批消息再也进不了会话，群里得有个交代。
+        await this.notifyFailure(state, FAILURE_NOTICE)
       } else {
         state.pending = undefined
         state.pendingAttempts = 0
@@ -658,8 +673,33 @@ export class SessionManager {
     })
   }
 
-  /** 模型执行失败或被中断：结束事件之后直接放行缓存。 */
-  async handleExecutionEnd(sessionID: string, reason: string): Promise<void> {
+  /**
+   * 往聊天里补一条固定提示。
+   *
+   * 同一目标有冷却，连续失败只提示一次；发送失败也只写日志，不影响接下来的缓存投递。
+   */
+  private async notifyFailure(state: ChatState, text: string): Promise<void> {
+    if (!this.notify) return
+    const key = targetKey(state.target)
+    const now = Date.now()
+    const last = this.noticeAt.get(key)
+    if (last !== undefined && now - last < FAILURE_NOTICE_INTERVAL_MS) return
+    this.noticeAt.set(key, now)
+    try {
+      await this.notify(state.target, text)
+      this.logger.debug(`${targetLabel(state.target)} 已补发失败提示`)
+    } catch (error) {
+      this.logger.warn(`${targetLabel(state.target)} 补发失败提示失败`, error)
+    }
+  }
+
+  /**
+   * 回合失败或被中断：结束事件之后直接放行缓存。
+   *
+   * 模型一句话都没发出时往聊天里补一条固定提示，否则群里表现为「不回话」。
+   * 上游异常原文只进日志，绝不发到 QQ。
+   */
+  async handleExecutionEnd(sessionID: string, reason: string, detail?: string): Promise<void> {
     const state = this.sessions.get(sessionID)
     if (!state) return
     await this.targetMutex(state.target).runExclusive(async () => {
@@ -667,7 +707,13 @@ export class SessionManager {
         this.logger.debug(`${targetLabel(state.target)} 忽略上一轮迟到的结束事件（${reason}）`)
         return
       }
-      this.logger.warn(`${targetLabel(state.target)} 会话执行结束（${reason}）`)
+      const label = targetLabel(state.target)
+      const interrupted = reason === "session.execution.interrupted"
+      this.logger.warn(`${label} 会话执行结束（${reason}）${detail ? `：${detail}` : ""}`)
+      // 模型已经发过东西就不用再补提示；主动搭话失败也不往群里道歉。
+      if (state.awaitingSend && !state.current?.proactive) {
+        await this.notifyFailure(state, interrupted ? INTERRUPTED_NOTICE : FAILURE_NOTICE)
+      }
       state.current = undefined
       state.awaitingSend = false
       state.idleAt = Date.now()

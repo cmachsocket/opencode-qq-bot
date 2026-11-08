@@ -64,6 +64,7 @@ NapCat（OneBot 11，本机或远端）        ← 不可信边界
 | 10  | 同一台机器只跑一个实例：进程内接管 + 机器级锁                        | `src/instance.ts`、`src/bot-lock.ts`                 | `tests/instance.test.ts`、`tests/bot-lock.test.ts` |
 | 11  | 会话工作目录固定，不随加载插件的项目漂移                             | `src/home.ts`                                        | `tests/home.test.ts`                               |
 | 12  | 白名单为空即不响应，配置错误按拒绝处理                               | `src/config.ts`                                      | `tests/config.test.ts`                             |
+| 13  | 回合失败只补固定文案：上游异常原文不进聊天，同目标 5 分钟节流        | `src/session/manager.ts`                             | `tests/manager.test.ts`                            |
 
 已知局限（不是 bug，但改代码时要记住）：
 

@@ -1,6 +1,9 @@
 import { describe, expect, it, vi } from "vitest"
 import type { Plugin } from "@opencode/plugin"
 import {
+  FAILURE_NOTICE,
+  FAILURE_NOTICE_INTERVAL_MS,
+  INTERRUPTED_NOTICE,
   MAX_BUFFER_TURNS,
   PENDING_MAX_ATTEMPTS,
   RESUME_INTERVAL_MS,
@@ -35,6 +38,7 @@ interface Harness {
   }
   sessionGet: ReturnType<typeof vi.fn>
   sessionCreate: ReturnType<typeof vi.fn>
+  notices: Array<{ target: ChatTarget; text: string }>
 }
 
 function createHarness(
@@ -71,6 +75,7 @@ function createHarness(
       prompts.push(input)
     },
   )
+  const notices: Array<{ target: ChatTarget; text: string }> = []
 
   const ctx = {
     location: { directory: "/tmp" },
@@ -95,7 +100,17 @@ function createHarness(
   }
 
   return {
-    manager: new SessionManager(ctx, config, logger, { directory: "/tmp" }, history),
+    manager: new SessionManager(
+      ctx,
+      config,
+      logger,
+      { directory: "/tmp" },
+      history,
+      async (target, text) => {
+        notices.push({ target, text })
+      },
+    ),
+    notices,
     prompts,
     prompt,
     synthetics,
@@ -781,6 +796,82 @@ describe("SessionManager", () => {
     await manager.handleExecutionEnd("session-1", "session.execution.failed")
     expect(prompts).toHaveLength(2)
     expect(prompts[1]?.text).toBe("第二条")
+  })
+
+  it("posts a fixed notice when a turn fails before the model replies", async () => {
+    const { manager, notices } = createHarness()
+    await manager.enqueue(group(100), { text: "你好", files: [], atMe: false })
+    await manager.handleExecutionEnd("session-1", "session.execution.failed", "provider 500")
+    expect(notices).toEqual([{ target: group(100), text: FAILURE_NOTICE }])
+  })
+
+  it("stays quiet when the model already sent a reply", async () => {
+    const { manager, notices } = createHarness()
+    await manager.enqueue(group(100), { text: "你好", files: [], atMe: false })
+    manager.markMessageSent("session-1")
+    await manager.handleExecutionEnd("session-1", "session.execution.failed")
+    expect(notices).toHaveLength(0)
+  })
+
+  it("does not apologise for a failed proactive turn", async () => {
+    const { manager, notices } = createHarness()
+    await manager.enqueue(group(100), { text: "主动说话", files: [], atMe: false, proactive: true })
+    await manager.handleExecutionEnd("session-1", "session.execution.failed")
+    expect(notices).toHaveLength(0)
+  })
+
+  it("uses the interrupted notice when the turn is aborted", async () => {
+    const { manager, notices } = createHarness()
+    await manager.enqueue(group(100), { text: "你好", files: [], atMe: false })
+    await manager.handleExecutionEnd("session-1", "session.execution.interrupted")
+    expect(notices).toEqual([{ target: group(100), text: INTERRUPTED_NOTICE }])
+  })
+
+  it("throttles failure notices per target", async () => {
+    vi.useFakeTimers()
+    try {
+      const { manager, notices } = createHarness()
+      vi.setSystemTime(new Date(10_000))
+      await manager.enqueue(group(100), { text: "第一条", files: [], atMe: false })
+      await manager.handleExecutionEnd("session-1", "session.execution.failed")
+
+      // 冷却期内再失败一次，不再补提示。
+      await manager.enqueue(group(100), { text: "第二条", files: [], atMe: false })
+      await manager.handleExecutionEnd("session-1", "session.execution.failed")
+      expect(notices).toHaveLength(1)
+
+      // 过了冷却期才允许再提示一次。
+      vi.setSystemTime(new Date(10_000 + FAILURE_NOTICE_INTERVAL_MS))
+      await manager.enqueue(group(100), { text: "第三条", files: [], atMe: false })
+      await manager.handleExecutionEnd("session-1", "session.execution.failed")
+      expect(notices).toHaveLength(2)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it("tells the chat when a batch is dropped after the delivery limit", async () => {
+    vi.useFakeTimers()
+    try {
+      const { manager, prompt, sessionGet, notices } = createHarness()
+      vi.setSystemTime(new Date(10_000))
+      sessionGet.mockResolvedValue({
+        id: "session-1",
+        time: { busy: new Date(9_000), idle: new Date(9_500) },
+      })
+      prompt.mockRejectedValue(new Error("upstream refused"))
+
+      await manager.enqueue(group(100), { text: "第一条", files: [], atMe: false })
+      // 第 2 次失败，仍保留这批消息。
+      await manager.resumeBuffered()
+      expect(notices).toHaveLength(0)
+
+      // 这一轮重试到上限，批次被丢弃，群里补一条提示。
+      await manager.resumeBuffered()
+      expect(notices).toEqual([{ target: group(100), text: FAILURE_NOTICE }])
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it("creates only one session for concurrent ensureSession calls", async () => {

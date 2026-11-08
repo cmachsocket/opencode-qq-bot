@@ -22,7 +22,7 @@ import { proactiveTickProbability } from "./session/proactive"
 import { packageDirectory, SoulStore } from "./session/soul"
 import { registerAskGuard } from "./tools/ask-guard"
 import { registerSendGuard } from "./tools/send-guard"
-import { registerTools } from "./tools/qq"
+import { registerTools, sendPlainMessage } from "./tools/qq"
 import { registerEmojiCommand } from "./emoji/command"
 import { FavoriteStore } from "./emoji/favorites"
 import { FavoriteIndex } from "./emoji/favorite-index"
@@ -129,7 +129,10 @@ export default Plugin.define({
         (secret) => secret.length > 0,
       ),
     })
-    const manager = new SessionManager(ctx, config, logger, home, history)
+    const manager = new SessionManager(ctx, config, logger, home, history, async (target, text) => {
+      // 失败兜底只发插件自己的固定文案，走上游异常原文永远不进聊天。
+      await sendPlainMessage(client, target, text, { limiter })
+    })
     await manager.load()
     // 保活心跳：OpenCode 长时间没有会话活动时会卸载 location，插件随之被卸载。
     const keepAlive = new KeepAlive(ctx, config, logger)
@@ -223,7 +226,10 @@ export default Plugin.define({
             } else if (event.type === "session.execution.succeeded") {
               await manager.flushBuffered(event.data.sessionID)
             } else {
-              await manager.handleExecutionEnd(event.data.sessionID, event.type)
+              // 失败事件带上游错误信息，只进日志（logger 会脱敏），不进聊天。
+              const detail =
+                event.type === "session.execution.failed" ? event.data.error.message : undefined
+              await manager.handleExecutionEnd(event.data.sessionID, event.type, detail)
             }
           }
         } catch (error) {
