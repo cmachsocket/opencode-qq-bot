@@ -63,15 +63,16 @@ jobs:
       - uses: actions/setup-node@v5
         with:
           node-version: "22"
-          registry-url: "https://registry.npmjs.org"
+
+      # trusted publishing 需要 npm >= 11.5.1；Node 22 自带的是 10.x
+      - name: 升级 npm
+        run: npm install -g npm@latest
 
       - name: 安装依赖（冻结锁文件）
         run: bun install --frozen-lockfile
 
-      - name: 发布到 npm
+      - name: 发布到 npm（OIDC trusted publishing，无需 token）
         run: npm publish --provenance --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: 从 CHANGELOG 取 Release 正文
         run: bun scripts/release-check.ts --tag "$GITHUB_REF_NAME" --notes > notes.md

@@ -69,19 +69,14 @@
 
 ## 首次配置（只需要做一次）
 
-二选一：
-
-**A. `NPM_TOKEN` secret（工作流当前写法）**
-
-1. 在 npm 生成一个 Automation / Granular Access Token，权限限定为
-   `@cmach_socket` 范围的 publish。
-2. 仓库 Settings → Secrets and variables → Actions 新建 `NPM_TOKEN`。
-
-**B. npm trusted publishing（OIDC，无需长期 token）**
+工作流默认走 **npm trusted publishing（OIDC）**，不需要长期 token：
 
 1. 在 npm 包设置里添加 Trusted Publisher：GitHub Actions，
-   仓库 `cmachsocket/opencode-qq-bot`，工作流文件名 `release.yml`。
-2. 之后可以删掉 `NPM_TOKEN` 与 `NODE_AUTH_TOKEN`，`id-token: write` 已经具备。
+   仓库 `cmachsocket/opencode-qq-bot`，工作流文件名 `release.yml`，Environment 留空。
+2. 工作流已经带 `id-token: write`，并把 npm 升到 `>= 11.5.1`（Node 22 自带的 10.x 不支持）。
+
+如果改用长期 token，需要把 workflow 的发布步骤改回去：加 `registry-url`，
+并给 `npm publish` 传 `NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}`。
 
 `gh release create` 用的是 Actions 自带的 `GITHUB_TOKEN`，不需要额外配置。
 

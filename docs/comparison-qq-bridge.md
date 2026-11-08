@@ -239,7 +239,7 @@ qq-bridge 把这些也自己做了一遍（39 个 MCP 工具 + token 台账）�
 - 只跑 ubuntu：Windows 路径差异留到真正出问题时再加，避免 CI 时间翻倍。
 - 版本号仍手工维护；`release-check` 只校验、不改写，也不自动提交。
 - `0.4.0` / `0.5.0` 从未发布到 npm，`0.5.1` 是 npm 上第一个带上它们内容的版本。
-- 发布凭据二选一：仓库 secret `NPM_TOKEN`，或在 npm 侧配置 GitHub OIDC trusted publishing（届时可删掉 token）。
+- 发布凭据走 npm trusted publishing（GitHub OIDC），工作流把 npm 升到 `>= 11.5.1`，不需要长期 token。
 
 ### A4 的平台落点
 
