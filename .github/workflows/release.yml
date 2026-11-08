@@ -45,7 +45,7 @@ jobs:
         run: bun scripts/release-check.ts --tag "$GITHUB_REF_NAME"
 
   publish:
-    name: 发布到 npm 与 GitHub Release
+    name: 暂存到 npm 并创建 GitHub Release
     needs: verify
     runs-on: ubuntu-latest
     permissions:
@@ -64,18 +64,23 @@ jobs:
         with:
           node-version: "22"
 
-      # trusted publishing 需要 npm >= 11.5.1；Node 22 自带的是 10.x
+      # stage publish 需要 npm >= 11.15.0；Node 22 自带的是 10.x。
+      # 固定小版本，避免 latest 漂移把发布行为改掉。
       - name: 升级 npm
-        run: npm install -g npm@latest
+        run: npm install -g npm@11.15.0
 
       - name: 安装依赖（冻结锁文件）
         run: bun install --frozen-lockfile
 
-      - name: 发布到 npm（OIDC trusted publishing，无需 token）
-        run: npm publish --provenance --access public
+      # trusted publisher 只允许 stage publish：这里只把包放进暂存区，
+      # 维护者用 2FA 执行 npm stage approve 之后版本才真正可安装。
+      - name: 暂存到 npm（OIDC trusted publishing，无需 token）
+        run: npm stage publish --provenance --access public
 
       - name: 从 CHANGELOG 取 Release 正文
-        run: bun scripts/release-check.ts --tag "$GITHUB_REF_NAME" --notes > notes.md
+        run: |
+          bun scripts/release-check.ts --tag "$GITHUB_REF_NAME" --notes > notes.md
+          printf '\n> npm 包已由 CI 暂存，需维护者在 npm 侧 2FA 批准后才可安装。\n' >> notes.md
 
       - name: 创建 GitHub Release
         run: >-

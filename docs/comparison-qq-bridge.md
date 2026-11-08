@@ -232,14 +232,15 @@ qq-bridge 把这些也自己做了一遍（39 个 MCP 工具 + token 台账）�
 | --- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------ |
 | C1  | GitHub Actions 一个 job：冻结安装 → `tsc --noEmit` → `eslint .` → `prettier --check .` → `vitest run`（含 NOTICE 一致性用例）→ `bun audit --production --audit-level=high` | `.github/workflows/ci.yml`                                                     |
 | C3  | 根目录 `SECURITY.md`（私密上报、无 SLA、范围与部署硬要求）+ 安全基线（信任边界、数据流、不变量清单，每条带实现与测试落点）+ `NOTICE` 数据流小节                            | `SECURITY.md`、`docs/security-baseline.md`、`NOTICE`                           |
-| C4  | tag `v*` 触发：`verify` 跑完整门禁与 `release-check`，`publish` 用 npm `--provenance` 发布并按 CHANGELOG 段创建 GitHub Release                                             | `.github/workflows/release.yml`、`scripts/release-check.ts`、`docs/release.md` |
+| C4  | tag `v*` 触发：`verify` 跑完整门禁与 `release-check`，`publish` 把包 `npm stage publish` 到暂存区并按 CHANGELOG 段创建 GitHub Release；维护者 2FA 批准后才可安装           | `.github/workflows/release.yml`、`scripts/release-check.ts`、`docs/release.md` |
 
 - 许可证 / NOTICE 一致性只写一次：`tests/notice.test.ts`，CI 跑全量测试时一并执行。
 - 不加 privacy-scan job：C2 还没落地，先加是空壳；C2 交付时再补第 4 个 job。
 - 只跑 ubuntu：Windows 路径差异留到真正出问题时再加，避免 CI 时间翻倍。
 - 版本号仍手工维护；`release-check` 只校验、不改写，也不自动提交。
 - `0.4.0` / `0.5.0` 从未发布到 npm，`0.5.1` 是 npm 上第一个带上它们内容的版本。
-- 发布凭据走 npm trusted publishing（GitHub OIDC），工作流把 npm 升到 `>= 11.5.1`，不需要长期 token。
+- 发布凭据走 npm trusted publishing（GitHub OIDC），工作流把 npm 固定到 `11.15.0`，不需要长期 token；
+  信任关系是 stage-only：CI 只能 `npm stage publish`，维护者用 2FA 执行 `npm stage approve` 后版本才上线。
 
 ### A4 的平台落点
 
@@ -449,24 +450,24 @@ NapLink 已经把事件按 `post_type` + `notice_type` 拆好并分发，但插�
 
 ## 八、评审记录
 
-| #   | 结论               | 备注                                                          |
-| --- | ------------------ | ------------------------------------------------------------- |
-| A1  | 采纳（已实现）     | 出站速率限制：每分钟 / 每小时硬上限 + 相邻发送最小间隔        |
-| A2  | 采纳（已实现）     | 出站敏感信息 / 令牌拦截：flare-redact + 已知凭证分片          |
-| A3  | 采纳（已实现）     | 群消息注入净化：结构净化 + 绝对时间标注                       |
-| A4  | 采纳               | 拦 question 保留（TUI 弹窗阻塞）；其余工具待评审              |
-| A5  | 采纳（已实现）     | SSRF 判定加固：连接级 IP 判定 + 端口白名单 + 不跟随跳转       |
-| A6  | 采纳（已实现）     | 媒体路径白名单：工作区 + 媒体目录 + 配置放开                  |
-| B1  | 采纳（已实现）     | 一次性冷启动补历史，不做回看工具                              |
-| B2  | 采纳（方案待商讨） | 分对象记忆存储，优先级低                                      |
-| B3  | 采纳               | QQ 侧管理命令（待实现）                                       |
-| B4  | 采纳               | 会话重置 / 退役（待实现）                                     |
-| B5  | 采纳（已实现）     | remove-markdown + Intl.Segmenter，不手写                      |
-| B6  | 采纳               | 失败兜底文案（待实现）                                        |
-| B7  | 采纳               | 通知事件订阅做成可配置项                                      |
-| C1  | 采纳（已实现）     | CI：单个 job 跑类型 / Lint / 格式 / 测试 / audit，ubuntu-only |
-| C2  | 采纳               | 隐私扫描（待实现）                                            |
-| C3  | 采纳（已实现）     | SECURITY.md + 安全基线 + NOTICE 数据流                        |
-| C4  | 采纳（已实现）     | tag 触发：校验后 npm publish + GitHub Release                 |
-| C5  | 采纳（已实现）     | 日志脱敏：Winston 日志文件（带上限）+ 逐行脱敏                |
-| C6  | 采纳               | 配置面扩展（待实现）                                          |
+| #   | 结论               | 备注                                                           |
+| --- | ------------------ | -------------------------------------------------------------- |
+| A1  | 采纳（已实现）     | 出站速率限制：每分钟 / 每小时硬上限 + 相邻发送最小间隔         |
+| A2  | 采纳（已实现）     | 出站敏感信息 / 令牌拦截：flare-redact + 已知凭证分片           |
+| A3  | 采纳（已实现）     | 群消息注入净化：结构净化 + 绝对时间标注                        |
+| A4  | 采纳               | 拦 question 保留（TUI 弹窗阻塞）；其余工具待评审               |
+| A5  | 采纳（已实现）     | SSRF 判定加固：连接级 IP 判定 + 端口白名单 + 不跟随跳转        |
+| A6  | 采纳（已实现）     | 媒体路径白名单：工作区 + 媒体目录 + 配置放开                   |
+| B1  | 采纳（已实现）     | 一次性冷启动补历史，不做回看工具                               |
+| B2  | 采纳（方案待商讨） | 分对象记忆存储，优先级低                                       |
+| B3  | 采纳               | QQ 侧管理命令（待实现）                                        |
+| B4  | 采纳               | 会话重置 / 退役（待实现）                                      |
+| B5  | 采纳（已实现）     | remove-markdown + Intl.Segmenter，不手写                       |
+| B6  | 采纳               | 失败兜底文案（待实现）                                         |
+| B7  | 采纳               | 通知事件订阅做成可配置项                                       |
+| C1  | 采纳（已实现）     | CI：单个 job 跑类型 / Lint / 格式 / 测试 / audit，ubuntu-only  |
+| C2  | 采纳               | 隐私扫描（待实现）                                             |
+| C3  | 采纳（已实现）     | SECURITY.md + 安全基线 + NOTICE 数据流                         |
+| C4  | 采纳（已实现）     | tag 触发：校验后 stage 到 npm + GitHub Release，2FA 批准后上线 |
+| C5  | 采纳（已实现）     | 日志脱敏：Winston 日志文件（带上限）+ 逐行脱敏                 |
+| C6  | 采纳               | 配置面扩展（待实现）                                           |

@@ -14,8 +14,9 @@
   一起跑。只跑 ubuntu，Windows 路径差异等真出问题再补；合成一个 job 是为了避免多个 job
   同时下载 bun 二进制被限流。
 - 发布流程（`.github/workflows/release.yml` + `scripts/release-check.ts` + `docs/release.md`）：
-  推 `vX.Y.Z` tag 后先做同样的门禁，通过才 `npm publish --provenance --access public` 并按
-  CHANGELOG 对应段创建 GitHub Release。`bun run release:check` 可在本地先跑一遍：
+  推 `vX.Y.Z` tag 后先做同样的门禁，通过才把包 `npm stage publish` 到暂存区并按
+  CHANGELOG 对应段创建 GitHub Release。信任关系是 stage-only，维护者用 2FA 执行
+  `npm stage approve` 之后版本才进入 registry。`bun run release:check` 可在本地先跑一遍：
   校验 semver、CHANGELOG 段、tag 与版本一致、LICENSE ↔ `package.json` license、
   NOTICE 覆盖全部运行时依赖、工作区干净。
 - 安全文档：根目录 `SECURITY.md`（漏洞走 GitHub 私密通报，单人维护无 SLA）与
