@@ -198,7 +198,7 @@ qq-bridge 把这些也自己做了一遍（39 个 MCP 工具 + token 台账）�
 | C3  | 无安全基线与漏洞报告文档 | docs/ 仅 3 篇                                      | `SECURITY_BASELINE.md`、`SECURITY.md`、`NOTICE.md`（数据流）                                                  | **采纳（已实现，见「C1 / C3 / C4 的落地方式」）** |
 | C4  | 无发布流程               | 无 publish 脚本、无 release workflow，版本手工维护 | 有 release 流程                                                                                               | **采纳（已实现，见「C1 / C3 / C4 的落地方式」）** |
 | C5  | 日志只有 stdout 且无脱敏 | `src/logger.ts` 仅 console                         | 带上限的日志文件 + 每行脱敏                                                                                   | **采纳（已实现，见「C5 的落地方式」）**           |
-| C6  | 配置面窄                 | 仅 groups/users 白名单 + 11 项配置                 | allow/deny 双列表 + ownerQQ + 每会话覆盖                                                                      | **采纳**                                          |
+| C6  | 配置面窄                 | 仅 groups/users 白名单 + 11 项配置                 | allow/deny 双列表 + ownerQQ + 每会话覆盖                                                                      | **采纳（已实现，见第八节）**                      |
 
 ### C5 的落地方式（已实现）
 
@@ -528,7 +528,7 @@ NapLink 已经把事件按 `post_type` + `notice_type` 拆好并分发，但插�
 
 - 通知只写日志与上下文，**不自己发起一轮对话**：下一轮该聊天的上下文里附带一段
   「聊天里发生过的通知（不需要回复）」。
-- 通知同样受 `groups` / `users` 白名单限制，不在名单里的群不会被处理。
+- 通知同样受准入名单限制，不在放行名单里的群不会被处理。
 - 撤回类通知只说明「有消息被撤回」，不复述被撤回的内容。
 - 每个聊天最多缓存 20 条、等待 30 分钟，超时的通知不再注入。
 - 文件名、灰条内容等外部文本先净化再写进上下文。
@@ -538,7 +538,49 @@ NapLink 已经把事件按 `post_type` + `notice_type` 拆好并分发，但插�
 
 ---
 
-## 八、评审记录
+## 八、C6 配置面扩展（已实现）
+
+**原先**：`groups` / `users` 两个白名单 + 全局一套工具配置，配置面窄；
+每个群要不要被唤醒、用哪个模型和角色设定，只能改代码。
+
+**落地方式**：
+
+| 配置项                     | 环境变量                  | 默认值                        | 说明                                       |
+| -------------------------- | ------------------------- | ----------------------------- | ------------------------------------------ |
+| `access.allow.groups`      | `QQ_ALLOW_GROUPS`         | `[]`                          | 放行的群号                                 |
+| `access.allow.users`       | `QQ_ALLOW_USERS`          | `[]`                          | 放行的私聊 QQ 号                           |
+| `access.deny.groups`       | `QQ_DENY_GROUPS`          | `[]`                          | 拒绝的群号，优先于放行名单                 |
+| `access.deny.users`        | `QQ_DENY_USERS`           | `[]`                          | 拒绝的私聊 QQ 号，优先于放行名单           |
+| `access.allowAllWhenEmpty` | `QQ_ALLOW_ALL_WHEN_EMPTY` | `false`                       | 放行名单为空时是否放行全部目标             |
+| `ownerQQ`                  | `QQ_OWNER_QQ`             | 未设置                        | 所有者的私聊永远放行，管理命令只在这里生效 |
+| `chatOverridesPath`        | `QQ_CHAT_OVERRIDES`       | `""`（`chat-overrides.json`） | 每会话行为覆盖文件路径                     |
+
+**判定顺序**：owner 的私聊永远放行 → deny 命中拒绝 → allow 非空只放行名单 →
+否则按 `allowAllWhenEmpty`。owner 出现在 deny 名单里会被豁免并告警。
+
+**每会话覆盖**（`chat-overrides.json`，键是 `group:100` / `private:200`）：
+
+| 字段        | 说明                                                                                        |
+| ----------- | ------------------------------------------------------------------------------------------- |
+| `wake`      | `all` 每条必回 / `mention` 被 @ 必回（默认）/ `prefix` 前缀命中必回 / `none` 完全不理群消息 |
+| `prefix`    | 唤醒前缀，`wake` 为 `prefix` 时用                                                           |
+| `proactive` | 是否允许主动说话，`false` 表示这个聊天不主动开口                                            |
+| `agent`     | 覆盖该聊天使用的 OpenCode agent                                                             |
+| `model`     | 覆盖该聊天使用的模型，格式 `provider/model[/variant]`                                       |
+| `soul`      | 覆盖该聊天使用的角色设定文件路径                                                            |
+
+- 唤醒结果写进提示词：命中时明确要求模型回复，没命中时允许它不回复。
+- `agent` / `model` 在会话建立时生效；覆盖变化时对已有会话调用
+  `switchAgent` / `switchModel` 切换，值没变就不切。
+- `soul` 按 mtime 热加载，相对路径按当前工作目录解析。
+- 旧的 `QQ_TARGET_GROUPS` / `QQ_TARGET_USERS` 与插件选项 `groups` / `users` 已移除，
+  检测到就给出迁移提示。
+
+**本版不做**：群管理员提权分级、忽略 @all、群内首段 @别人不唤醒、按会话的概率覆盖。
+
+---
+
+## 九、评审记录
 
 | #   | 结论               | 备注                                                           |
 | --- | ------------------ | -------------------------------------------------------------- |
@@ -560,4 +602,4 @@ NapLink 已经把事件按 `post_type` + `notice_type` 拆好并分发，但插�
 | C3  | 采纳（已实现）     | SECURITY.md + 安全基线 + NOTICE 数据流                         |
 | C4  | 采纳（已实现）     | tag 触发：校验后 stage 到 npm + GitHub Release，2FA 批准后上线 |
 | C5  | 采纳（已实现）     | 日志脱敏：Winston 日志文件（带上限）+ 逐行脱敏                 |
-| C6  | 采纳               | 配置面扩展（待实现）                                           |
+| C6  | 采纳（已实现）     | 配置面扩展：allow/deny 双列表 + owner 豁免 + 每会话行为覆盖    |

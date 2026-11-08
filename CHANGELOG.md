@@ -6,11 +6,21 @@
 
 ### Added
 
+- 准入判定（C6）：`groups` / `users` 改成 `access.allow` 与 `access.deny` 双列表
+  （`QQ_ALLOW_GROUPS` / `QQ_ALLOW_USERS` / `QQ_DENY_GROUPS` / `QQ_DENY_USERS` /
+  `QQ_ALLOW_ALL_WHEN_EMPTY`），判定顺序是 deny 命中拒绝 → allow 非空只放行名单 →
+  否则按 `allowAllWhenEmpty`；owner 的私聊永远放行，在 deny 名单里会被豁免并告警。
+  旧的 `QQ_TARGET_GROUPS` / `QQ_TARGET_USERS` 与插件选项 `groups` / `users` 已移除，
+  检测到就给出迁移提示。
+- 会话覆盖（C6）：新增 `chatOverridesPath` 与 `chat-overrides.json`，按群 / 私聊覆盖
+  唤醒方式（`all` / `mention` / `prefix` / `none`）、是否主动说话、使用哪个 agent、
+  模型与角色设定文件。唤醒结果写进提示词；agent 与模型在会话建立时生效，覆盖变化时
+  对已有会话切换。文件按 mtime 热加载，缺失按默认走，单字段写错只忽略该项。
 - 通知事件订阅（B7）：新增 `events.subscribe` / `events.notices` / `events.inject`
   （`QQ_EVENT_SUBSCRIBE` / `QQ_EVENT_NOTICES` / `QQ_EVENT_INJECT`），默认只订阅消息类事件。
   订阅 `notice` 后可接收撤回、进退群、管理员变动、好友新增、群文件、戳一戳与灰条消息；
   通知只写日志并缓存，不自己发起一轮，下一轮该聊天的上下文里附带摘要。
-  通知同样受 `groups` / `users` 白名单限制，撤回类不复述被撤回的内容。
+  通知同样受准入名单限制，撤回类不复述被撤回的内容。
 - 模型视图里 owner / 管理员分别带 `(owner)` / `(admin)` 标记（实时消息与历史回填一致），
   发送者显示名不再附带 QQ 号。
 - 工具权限（A4 / B3）：新增 `ownerQQ`、`admins`、`toolProfilesPath` 与 `tool-profiles.json`，

@@ -21,28 +21,28 @@
 
 ## 二、与 qq-bridge 对比的 19 条候选 + 1 个缺陷
 
-| #   | 条目                     | 状态       | 落点                                                                                                   | 备注                                                                                                  |
-| --- | ------------------------ | ---------- | ------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------- |
-| A1  | 出站发送速率限制         | **已实现** | `src/rate-limit.ts`、`src/tools/send-guard.ts`、`tests/rate-limit.test.ts`、`tests/send-guard.test.ts` | 按目标计数；硬上限超出即拒绝，插件自身消息走 `pace()` 只等不拒；同一次工具调用拆出的多段共用配额      |
-| A2  | 出站敏感信息拦截         | **已实现** | `src/sensitive.ts`、`tests/sensitive.test.ts`                                                          | 基于 `flare-redact`；额外覆盖环境变量里的密钥值、NapCat token、凭证路径、base64 解码后复扫            |
-| A3  | 群消息注入净化           | **已实现** | `src/model-view.ts`、`tests/model-view.test.ts`                                                        | 结构标签折平、零宽字符清零、按消息 ID 去重；时间戳用绝对时间                                          |
-| A4  | QQ 会话的工具面处置      | **待评审** | `src/tools/ask-guard.ts`、`tests/ask-guard.test.ts`                                                    | 已拦内置 `question`（避免 TUI 弹窗阻塞）；其余工具是否按会话收敛未定                                  |
-| A5  | SSRF 防护                | **已实现** | `src/safe-fetch.ts`、`tests/safe-fetch.test.ts`                                                        | 连接层校验，端口白名单 `[80, 443, 8080, 8443]`，3xx 直接失败不跟随跳转                                |
-| A6  | 媒体路径白名单           | **已实现** | `src/media-path.ts`、`tests/media-path.test.ts`                                                        | `allowedDirs` 词法 + realpath 双重判定；**空名单 = 本地文件全部拒绝**，远程 URL 走 A5                 |
-| B1  | 冷启动补历史             | **已实现** | `src/naplink/history.ts`、`tests/history.test.ts`                                                      | 新建会话时一次性补齐最近 N 条；是补齐，不是落库，不新增工具面                                         |
-| B2  | 分对象的记忆存储         | **待商讨** | —                                                                                                      | 优先级低（已有 opencode-mem 时收益有限）                                                              |
-| B3  | QQ 侧管理命令            | **已实现** | `src/commands.ts`、`src/tui-commands.ts`、`tests/commands.test.ts`                                     | QQ 与 TUI 共用一张命令表；QQ 侧只在 owner 与管理员自己的私聊生效                                      |
-| B4  | 会话重置 / 退役          | **已实现** | `src/session/manager.ts`（`resetTarget`）、`tests/manager.test.ts`                                     | `/reset <目标>` 先打断执行中的回合再删会话，下一条消息重开并补历史                                    |
-| B5  | 出站文本质量             | **已实现** | `src/outbound.ts`、`tests/outbound.test.ts`                                                            | `remove-markdown` + `Intl.Segmenter` 字素簇切分；只作用于模型产出文本                                 |
-| B6  | 失败兜底文案             | **已实现** | `src/session/manager.ts`（`notifyFailure`）、`tests/manager.test.ts`                                   | 固定文案 + 每目标冷却，连续失败只提示一次；上游异常原文只进日志                                       |
-| B7  | 通知事件订阅             | **已实现** | `src/events/notice.ts`、`src/events/store.ts`、`tests/events.test.ts`                                  | 可配置订阅类别与通知类型；只记日志并注入上下文，不自己起一轮；默认只订阅消息类                        |
-| C1  | 持续集成                 | **已实现** | `.github/workflows/ci.yml`                                                                             | 隐私扫描 → 冻结安装 → `tsc --noEmit` → `eslint .` → `prettier --check .` → `vitest run` → `bun audit` |
-| C2  | 隐私扫描                 | **已实现** | CI 阶段、`scripts/trufflehog.yml`                                                                      | 扫工作树与 git 历史：QQ 号、凭证赋值、PEM、绝对路径                                                   |
-| C3  | 安全基线与漏洞报告       | **已实现** | `SECURITY.md`、`docs/security-baseline.md`、`NOTICE`                                                   | 信任边界、数据流、不变量清单，每条带实现与测试落点                                                    |
-| C4  | 发布流程                 | **已实现** | `.github/workflows/release.yml`、`scripts/release-check.ts`、`docs/release.md`                         | tag `v*` 触发；先跑完整门禁，再暂存发布并建 GitHub Release                                            |
-| C5  | 日志文件与脱敏           | **已实现** | `src/logger.ts`、`tests/logger.test.ts`                                                                | `winston` + `winston-daily-rotate-file`，文件轮转 + 出站脱敏                                          |
-| C6  | 配置面扩展               | **待实现** | `src/config.ts`、`tests/config.test.ts`                                                                | allow / deny 双列表、owner、每会话覆盖                                                                |
-| D1  | 只含 QQ 表情的消息被丢弃 | **已修复** | `src/naplink/render.ts`、`tests/render.test.ts`                                                        | 门卫改按可渲染段类型放行，与渲染分支一一对应                                                          |
+| #   | 条目                     | 状态       | 落点                                                                                                   | 备注                                                                                                    |
+| --- | ------------------------ | ---------- | ------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------- |
+| A1  | 出站发送速率限制         | **已实现** | `src/rate-limit.ts`、`src/tools/send-guard.ts`、`tests/rate-limit.test.ts`、`tests/send-guard.test.ts` | 按目标计数；硬上限超出即拒绝，插件自身消息走 `pace()` 只等不拒；同一次工具调用拆出的多段共用配额        |
+| A2  | 出站敏感信息拦截         | **已实现** | `src/sensitive.ts`、`tests/sensitive.test.ts`                                                          | 基于 `flare-redact`；额外覆盖环境变量里的密钥值、NapCat token、凭证路径、base64 解码后复扫              |
+| A3  | 群消息注入净化           | **已实现** | `src/model-view.ts`、`tests/model-view.test.ts`                                                        | 结构标签折平、零宽字符清零、按消息 ID 去重；时间戳用绝对时间                                            |
+| A4  | QQ 会话的工具面处置      | **已实现** | `src/tools/policy.ts`、`src/tools/policy-guard.ts`、`tests/policy.test.ts`                             | 按「发送者角色 + 聊天」分配工具：owner 与管理员全开，其他人按配置档白名单；上下文删一次、执行前再挡一次 |
+| A5  | SSRF 防护                | **已实现** | `src/safe-fetch.ts`、`tests/safe-fetch.test.ts`                                                        | 连接层校验，端口白名单 `[80, 443, 8080, 8443]`，3xx 直接失败不跟随跳转                                  |
+| A6  | 媒体路径白名单           | **已实现** | `src/media-path.ts`、`tests/media-path.test.ts`                                                        | `allowedDirs` 词法 + realpath 双重判定；**空名单 = 本地文件全部拒绝**，远程 URL 走 A5                   |
+| B1  | 冷启动补历史             | **已实现** | `src/naplink/history.ts`、`tests/history.test.ts`                                                      | 新建会话时一次性补齐最近 N 条；是补齐，不是落库，不新增工具面                                           |
+| B2  | 分对象的记忆存储         | **待商讨** | —                                                                                                      | 优先级低（已有 opencode-mem 时收益有限）                                                                |
+| B3  | QQ 侧管理命令            | **已实现** | `src/commands.ts`、`src/tui-commands.ts`、`tests/commands.test.ts`                                     | QQ 与 TUI 共用一张命令表；QQ 侧只在 owner 与管理员自己的私聊生效                                        |
+| B4  | 会话重置 / 退役          | **已实现** | `src/session/manager.ts`（`resetTarget`）、`tests/manager.test.ts`                                     | `/reset <目标>` 先打断执行中的回合再删会话，下一条消息重开并补历史                                      |
+| B5  | 出站文本质量             | **已实现** | `src/outbound.ts`、`tests/outbound.test.ts`                                                            | `remove-markdown` + `Intl.Segmenter` 字素簇切分；只作用于模型产出文本                                   |
+| B6  | 失败兜底文案             | **已实现** | `src/session/manager.ts`（`notifyFailure`）、`tests/manager.test.ts`                                   | 固定文案 + 每目标冷却，连续失败只提示一次；上游异常原文只进日志                                         |
+| B7  | 通知事件订阅             | **已实现** | `src/events/notice.ts`、`src/events/store.ts`、`tests/events.test.ts`                                  | 可配置订阅类别与通知类型；只记日志并注入上下文，不自己起一轮；默认只订阅消息类                          |
+| C1  | 持续集成                 | **已实现** | `.github/workflows/ci.yml`                                                                             | 隐私扫描 → 冻结安装 → `tsc --noEmit` → `eslint .` → `prettier --check .` → `vitest run` → `bun audit`   |
+| C2  | 隐私扫描                 | **已实现** | CI 阶段、`scripts/trufflehog.yml`                                                                      | 扫工作树与 git 历史：QQ 号、凭证赋值、PEM、绝对路径                                                     |
+| C3  | 安全基线与漏洞报告       | **已实现** | `SECURITY.md`、`docs/security-baseline.md`、`NOTICE`                                                   | 信任边界、数据流、不变量清单，每条带实现与测试落点                                                      |
+| C4  | 发布流程                 | **已实现** | `.github/workflows/release.yml`、`scripts/release-check.ts`、`docs/release.md`                         | tag `v*` 触发；先跑完整门禁，再暂存发布并建 GitHub Release                                              |
+| C5  | 日志文件与脱敏           | **已实现** | `src/logger.ts`、`tests/logger.test.ts`                                                                | `winston` + `winston-daily-rotate-file`，文件轮转 + 出站脱敏                                            |
+| C6  | 配置面扩展               | **已实现** | `src/access.ts`、`src/overrides.ts`、`src/session/soul.ts`、`src/session/manager.ts`                   | allow / deny 双列表与 owner 豁免；每会话覆盖唤醒、主动说话、agent、模型与角色设定                       |
+| D1  | 只含 QQ 表情的消息被丢弃 | **已修复** | `src/naplink/render.ts`、`tests/render.test.ts`                                                        | 门卫改按可渲染段类型放行，与渲染分支一一对应                                                            |
 
 ---
 
@@ -51,36 +51,45 @@
 AstrBot 自己充当 agent runtime（44 个 provider、工具循环、OS 沙箱、向量库 + BM25、上下文压缩、面板）。
 它的多数能力属于 OpenCode 职责，因此这里只列**落在 QQ 生命周期管理上**的增量。
 
-| #   | 条目                | 状态         | 落点                       | 备注                                                                                     |
-| --- | ------------------- | ------------ | -------------------------- | ---------------------------------------------------------------------------------------- |
-| A1  | 限流缺 `stall` 一档 | **待评审**   | `src/rate-limit.ts`        | 我们只有「超出即拒绝」；是否补「睡到窗口结束再发」未定                                   |
-| A2  | 唤醒判定过简        | **待实现**   | `src/index.ts`             | 现在只有「被 @ 必须回 / 没被 @ 可以不回」；缺前缀触发、忽略 @all、群内首段 @别人不唤醒等 |
-| A3  | 白名单只有 allow    | **待实现**   | `src/config.ts`            | 缺 deny 列表与分级（管理员 / 成员 / 群管理员）                                           |
-| B1  | 分段回复节奏固定    | **待实现**   | `src/tools/qq.ts`          | 只有恒定间隔；缺按长度递增的节奏与超长转合并转发                                         |
-| B2  | 群消息历史不落库    | **待商讨**   | `src/naplink/history.ts`   | 依赖 B2「分对象记忆存储」的结论；落库 = 新增一份数据留存面                               |
-| B3  | 主动回复策略简陋    | **待实现**   | `src/session/proactive.ts` | 只有全局概率公式，缺按会话圈定                                                           |
-| B4  | 失败文案不可配      | **待实现**   | `src/session/manager.ts`   | 兜底已实现，文案硬编码                                                                   |
-| C1  | 无调用链追踪        | **部分实现** | `src/logger.ts`            | 日志文件与轮转已有；没有 trace / span 概念                                               |
-| C2  | 配置写入无原子性    | **待实现**   | `src/config.ts`            | 目前只读配置，没有写入路径；面板一旦可改配置就必须带上                                   |
-| C3  | 面板 API 无契约真源 | **待实现**   | —                          | 面板尚未开工，开工时的做法参照                                                           |
+| #   | 条目                | 状态         | 落点                                           | 备注                                                                          |
+| --- | ------------------- | ------------ | ---------------------------------------------- | ----------------------------------------------------------------------------- |
+| A1  | 限流缺 `stall` 一档 | **待评审**   | `src/rate-limit.ts`                            | 我们只有「超出即拒绝」；是否补「睡到窗口结束再发」未定                        |
+| A2  | 唤醒判定过简        | **部分实现** | `src/overrides.ts`                             | 每会话可设 all / mention / prefix / none；仍缺忽略 @all、群内首段 @别人不唤醒 |
+| A3  | 白名单只有 allow    | **部分实现** | `src/access.ts`                                | 已有 allow / deny 双列表与 owner / 管理员角色；群管理员分级未做               |
+| B1  | 分段回复节奏固定    | **待实现**   | `src/tools/qq.ts`                              | 只有恒定间隔；缺按长度递增的节奏与超长转合并转发                              |
+| B2  | 群消息历史不落库    | **待商讨**   | `src/naplink/history.ts`                       | 依赖 B2「分对象记忆存储」的结论；落库 = 新增一份数据留存面                    |
+| B3  | 主动回复策略简陋    | **部分实现** | `src/overrides.ts`、`src/session/proactive.ts` | 每会话可关掉主动说话；仍缺按会话的概率覆盖                                    |
+| B4  | 失败文案不可配      | **待实现**   | `src/session/manager.ts`                       | 兜底已实现，文案硬编码                                                        |
+| C1  | 无调用链追踪        | **部分实现** | `src/logger.ts`                                | 日志文件与轮转已有；没有 trace / span 概念                                    |
+| C2  | 配置写入无原子性    | **待实现**   | `src/config.ts`                                | 目前只读配置，没有写入路径；面板一旦可改配置就必须带上                        |
+| C3  | 面板 API 无契约真源 | **待实现**   | —                                              | 面板尚未开工，开工时的做法参照                                                |
 
 ---
 
 ## 四、已实现条目的配置面
 
-| 配置项                   | 默认值                     | 环境变量                 | 对应条目 |
-| ------------------------ | -------------------------- | ------------------------ | -------- |
-| `rateLimit.maxPerMinute` | `8`                        | `QQ_RATE_MAX_PER_MINUTE` | A1       |
-| `rateLimit.maxPerHour`   | `60`                       | `QQ_RATE_MAX_PER_HOUR`   | A1       |
-| `rateLimit.minGapMs`     | `1500`                     | `QQ_RATE_MIN_GAP_MS`     | A1       |
-| `sensitive.enabled`      | `true`                     | `QQ_SENSITIVE_ENABLED`   | A2       |
-| `media.allowedDirs`      | `[]`（不放行任何本地文件） | `QQ_MEDIA_ALLOWED_DIRS`  | A6       |
-| `history.count`          | `20`                       | `QQ_HISTORY_COUNT`       | B1       |
-| `log.level`              | `"info"`                   | `QQ_LOG_LEVEL`           | C5       |
-| `log.dir`                | `""`（默认目录）           | `QQ_LOG_DIR`             | C5       |
-| `log.maxSize`            | `"5m"`                     | `QQ_LOG_MAX_SIZE`        | C5       |
-| `log.maxFiles`           | `5`                        | `QQ_LOG_MAX_FILES`       | C5       |
-| `sendDelayMs`            | `1000`                     | `QQ_SEND_DELAY_MS`       | B1       |
+| 配置项                     | 默认值                        | 环境变量                  | 对应条目 |
+| -------------------------- | ----------------------------- | ------------------------- | -------- |
+| `rateLimit.maxPerMinute`   | `8`                           | `QQ_RATE_MAX_PER_MINUTE`  | A1       |
+| `rateLimit.maxPerHour`     | `60`                          | `QQ_RATE_MAX_PER_HOUR`    | A1       |
+| `rateLimit.minGapMs`       | `1500`                        | `QQ_RATE_MIN_GAP_MS`      | A1       |
+| `sensitive.enabled`        | `true`                        | `QQ_SENSITIVE_ENABLED`    | A2       |
+| `media.allowedDirs`        | `[]`（不放行任何本地文件）    | `QQ_MEDIA_ALLOWED_DIRS`   | A6       |
+| `history.count`            | `20`                          | `QQ_HISTORY_COUNT`        | B1       |
+| `log.level`                | `"info"`                      | `QQ_LOG_LEVEL`            | C5       |
+| `log.dir`                  | `""`（默认目录）              | `QQ_LOG_DIR`              | C5       |
+| `log.maxSize`              | `"5m"`                        | `QQ_LOG_MAX_SIZE`         | C5       |
+| `log.maxFiles`             | `5`                           | `QQ_LOG_MAX_FILES`        | C5       |
+| `sendDelayMs`              | `1000`                        | `QQ_SEND_DELAY_MS`        | B1       |
+| `access.allow.groups`      | `[]`                          | `QQ_ALLOW_GROUPS`         | C6       |
+| `access.allow.users`       | `[]`                          | `QQ_ALLOW_USERS`          | C6       |
+| `access.deny.groups`       | `[]`                          | `QQ_DENY_GROUPS`          | C6       |
+| `access.deny.users`        | `[]`                          | `QQ_DENY_USERS`           | C6       |
+| `access.allowAllWhenEmpty` | `false`                       | `QQ_ALLOW_ALL_WHEN_EMPTY` | C6       |
+| `ownerQQ`                  | 未设置                        | `QQ_OWNER_QQ`             | C6       |
+| `admins`                   | `[]`                          | `QQ_ADMINS`               | C6       |
+| `toolProfilesPath`         | `""`（`tool-profiles.json`）  | `QQ_TOOL_PROFILES`        | A4       |
+| `chatOverridesPath`        | `""`（`chat-overrides.json`） | `QQ_CHAT_OVERRIDES`       | C6       |
 
 取值规则、限制与示例见 [`configuration.md`](./configuration.md)。
 
@@ -92,26 +101,18 @@ AstrBot 自己充当 agent runtime（44 个 provider、工具循环、OS 沙箱�
 
 ### 待实现
 
-| 来源      | #   | 条目            | 前置条件 / 说明                                                   |
-| --------- | --- | --------------- | ----------------------------------------------------------------- |
-| qq-bridge | B3  | QQ 侧管理命令   | 需要与白名单分级一起定权限口径                                    |
-| qq-bridge | B4  | 会话重置 / 退役 | 退役要同时处理缓存投递与忙碌状态                                  |
-| qq-bridge | B7  | 通知事件订阅    | 事件名以 NapLink 实际提供为准；默认应保持只订阅消息，避免行为突变 |
-| qq-bridge | C6  | 配置面扩展      | 与下方 AstrBot A3 同源，建议合并成一次改动                        |
-| AstrBot   | A2  | 唤醒判定        | 与 qq-bridge C6 的 allow / deny 共同定义「谁能唤醒」              |
-| AstrBot   | A3  | 白名单分级      | 同上                                                              |
-| AstrBot   | B1  | 分段回复节奏    | 依赖 qq-bridge B5 已落地的切分能力                                |
-| AstrBot   | B3  | 主动回复白名单  | 复用 qq-bridge C6 的 allow 列表                                   |
-| AstrBot   | B4  | 失败文案可配    | 文案应走配置，不应走代码                                          |
-| AstrBot   | C2  | 配置原子写      | 与面板开工绑定                                                    |
-| AstrBot   | C3  | 面板 API 契约   | 与面板开工绑定                                                    |
+| 来源    | #   | 条目          | 前置条件 / 说明                    |
+| ------- | --- | ------------- | ---------------------------------- |
+| AstrBot | B1  | 分段回复节奏  | 依赖 qq-bridge B5 已落地的切分能力 |
+| AstrBot | B4  | 失败文案可配  | 文案应走配置，不应走代码           |
+| AstrBot | C2  | 配置原子写    | 与面板开工绑定                     |
+| AstrBot | C3  | 面板 API 契约 | 与面板开工绑定                     |
 
 ### 待评审
 
-| 来源      | #   | 条目            | 待定问题                                                           |
-| --------- | --- | --------------- | ------------------------------------------------------------------ |
-| qq-bridge | A4  | QQ 会话工具面   | 按会话收敛的范围与默认值；落点是 `ctx.permission.hook("evaluate")` |
-| AstrBot   | A1  | 限流 `stall` 档 | 长等待是否会挤占会话队列；是否只用「拒绝」更可控                   |
+| 来源    | #   | 条目            | 待定问题                                         |
+| ------- | --- | --------------- | ------------------------------------------------ |
+| AstrBot | A1  | 限流 `stall` 档 | 长等待是否会挤占会话队列；是否只用「拒绝」更可控 |
 
 ### 待商讨
 

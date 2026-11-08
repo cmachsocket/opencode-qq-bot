@@ -254,6 +254,45 @@ souls/
 - 模型视图里 owner / 管理员的发言分别带 `(owner)` / `(admin)` 标记（实时消息与历史回填一致），
   模型能分清是谁在说话；发送者显示名不再附带 QQ 号。
 
+### 会话覆盖
+
+每个群 / 私聊可以单独改唤醒方式、要不要主动说话、用哪个 agent / 模型 / 角色设定，
+配置写在当前工作目录的 `chat-overrides.json`
+（`chatOverridesPath` 可改路径，模板见 `chat-overrides.example.json`）：
+
+```json
+{
+  "chats": {
+    "group:100": { "wake": "mention" },
+    "group:200": { "wake": "prefix", "prefix": "bot,", "proactive": false },
+    "private:300": {
+      "agent": "helper",
+      "model": "openai/gpt-4o",
+      "soul": "souls/helper.txt"
+    }
+  }
+}
+```
+
+| 字段        | 取值                                  | 说明                                 |
+| ----------- | ------------------------------------- | ------------------------------------ |
+| `wake`      | `all` / `mention` / `prefix` / `none` | 群里什么时候必须回复，默认 `mention` |
+| `prefix`    | 字符串                                | `wake` 为 `prefix` 时的唤醒前缀      |
+| `proactive` | 布尔                                  | `false` 表示这个聊天不主动开口       |
+| `agent`     | 字符串                                | 覆盖这个聊天使用的 OpenCode agent    |
+| `model`     | `provider/model[/variant]`            | 覆盖这个聊天使用的模型               |
+| `soul`      | 文件路径                              | 覆盖这个聊天使用的角色设定文件       |
+
+- `wake` 只作用于群聊，私聊永远回复：`all` 每条都必回，`mention` 被 @ 才必回，
+  `prefix` 命中前缀才必回（被 @ 同样必回），`none` 这个群完全不理。
+- 必回与不必回都会写进提示词，模型知道这轮该不该说话。
+- `proactive: false` 关掉这个聊天的主动说话心跳；`wake: none` 的群也不会主动开口。
+- agent 与模型只在会话首次建立或覆盖发生变化时切换，不会每条消息都动一次会话。
+- 文件缺失时按默认行为走；改完下一轮生效；单个字段写错只忽略这一项并告警，
+  整个文件解析失败会沿用上一份。
+
+`/status` 会列出每个聊天当前的唤醒方式与主动说话开关。
+
 ### 管理命令
 
 同一组命令注册在 QQ 与 TUI 两边，共用一份实现；TUI 侧加 `qq-` 前缀
@@ -369,6 +408,7 @@ QQ 私聊（owner / 管理员）用 `/emoji-label`，TUI 用加前缀的 `/qq-em
 
 - **回复是强制的**：系统提示要求模型每轮至少调用一个发送类工具，直接输出的文字会被丢弃。
 - **被 @ 才必须回**：群里没被 @ 时模型可以调用 `qq_send_message` 并设 `reply=false` 选择已读不回；私聊消息必须回复。
+  每个群可以用会话覆盖改这条规则（每条必回 / 前缀必回 / 完全不理），详见「会话覆盖」。
 - **消息合并**：会话正在跑模型时新到的消息进缓存，会话空闲后合并成一轮再投进去。
 - **顺序处理**：同一聊天的消息按到达顺序完成渲染和入队，不会因图片下载或成员查询而乱序。
 - **单实例消费**：同一台机器上只允许一个插件实例连接 NapCat 接收消息，其余实例不连接并
@@ -392,7 +432,7 @@ QQ 私聊（owner / 管理员）用 `/emoji-label`，TUI 用加前缀的 `/qq-em
 - **入站净化**：群友可控的文本（正文、引用、转发、语音转写、文件名、群名片）进模型前先净化——
   换行压成空格、零宽字符清掉、全角方括号换半角，`<history>` / `<quote>` / `<forward>` 这类结构标签
   换成全角，群里伪造不出系统段落；每条消息标上绝对时间 `[YY-MM-DD HH:MM] 名字(owner|admin)?: 正文`，
-  括号里的 QQ 号用来区分同名的人。整条消息拼好之后还会整体净化一次，
+  owner 与管理员带角色标记，普通成员只有显示名。整条消息拼好之后还会整体净化一次，
   标签拆成两段发过来同样伪造不出来。
 
 ## 开发
@@ -423,7 +463,10 @@ GitHub Release。版本号策略、发布清单与回滚步骤见 [docs/release.
 
 ```
 souls/               角色设定文件（可多份，按文件名切换）
+tool-profiles.json   工具权限配置档（模板：tool-profiles.example.json）
+chat-overrides.json  每会话的行为覆盖（模板：chat-overrides.example.json）
 src/
+  access.ts          准入判定：放行 / 拒绝名单与放行规则
   config.ts          配置合并与校验
   home.ts            机器人固定工作目录（配置或 XDG 工作区）
   index.ts           插件入口
@@ -431,6 +474,9 @@ src/
   keepalive.ts       location 保活心跳
   logger.ts          日志
   model-view.ts      入站模型视图：文本净化、绝对时间标注
+  commands.ts        QQ 与 TUI 共用的管理命令表
+  tui-commands.ts    管理命令的 TUI 注册（qq- 前缀）
+  overrides.ts       每会话的行为覆盖：唤醒、主动说话、agent / 模型 / 角色设定
   emoji/command.ts   /qq-emoji-label 命令（QQ 私聊里是 /emoji-label）
   emoji/faces.ts     QQ 官方表情 ID → 名称
   emoji/favorites.ts 收藏表情读写与编号格式化
@@ -446,6 +492,8 @@ src/
   session/manager.ts 群聊 / 私聊 ↔ 会话映射、消息缓存
   tools/ask-guard.ts 拦截内置 question 工具
   tools/send-guard.ts 拒绝连续调用发送工具
+  tools/policy.ts    工具权限配置档与热加载
+  tools/policy-guard.ts 执行前拦截越权工具
   tools/qq.ts        QQ 工具注册
 docs/
   commit-audit-7a3a106.md  提交审计报告（7a3a106 起）
