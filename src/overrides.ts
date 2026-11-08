@@ -1,6 +1,7 @@
 import { readFile, stat } from "node:fs/promises"
 import { join } from "node:path"
 import { type ChatTarget, targetKey } from "./chat"
+import { parseModelRef, type ModelRef } from "./config"
 import type { Logger } from "./logger"
 
 /** 唤醒方式：决定群里的消息要不要让模型必须回复。 */
@@ -20,6 +21,12 @@ export interface ChatOverride {
   prefix?: string
   /** 是否允许主动说话，false 表示这个聊天不主动开口。 */
   proactive?: boolean
+  /** 覆盖该聊天使用的 OpenCode agent。 */
+  agent?: string
+  /** 覆盖该聊天使用的模型，格式 `provider/model[/variant]`。 */
+  model?: ModelRef
+  /** 覆盖该聊天使用的角色设定文件路径。 */
+  soul?: string
 }
 
 /** `chat-overrides.json` 的结构。 */
@@ -86,6 +93,25 @@ export function parseChatOverrides(
         override.proactive = record.proactive
       } else {
         warn(`会话覆盖 ${key} 的 proactive 必须是布尔值，已忽略`)
+      }
+    }
+    if (record.agent !== undefined) {
+      if (typeof record.agent === "string" && record.agent.trim()) {
+        override.agent = record.agent.trim()
+      } else {
+        warn(`会话覆盖 ${key} 的 agent 必须是非空字符串，已忽略`)
+      }
+    }
+    if (record.model !== undefined) {
+      const model = parseModelRef(record.model)
+      if (model) override.model = model
+      else warn(`会话覆盖 ${key} 的 model 必须是 provider/model[/variant]，已忽略`)
+    }
+    if (record.soul !== undefined) {
+      if (typeof record.soul === "string" && record.soul.trim()) {
+        override.soul = record.soul.trim()
+      } else {
+        warn(`会话覆盖 ${key} 的 soul 必须是非空字符串，已忽略`)
       }
     }
     if (override.wake === "prefix" && !override.prefix) {
@@ -181,5 +207,8 @@ export function describeOverride(override: ChatOverride): string {
   parts.push(override.wake ? `唤醒 ${override.wake}` : "唤醒 mention（默认）")
   if (override.wake === "prefix") parts.push(`前缀 ${override.prefix ?? "（未设置）"}`)
   parts.push(override.proactive === false ? "不主动说话" : "允许主动说话")
+  if (override.agent) parts.push(`agent ${override.agent}`)
+  if (override.model) parts.push(`模型 ${override.model.providerID}/${override.model.id}`)
+  if (override.soul) parts.push(`角色设定 ${override.soul}`)
   return parts.join("，")
 }

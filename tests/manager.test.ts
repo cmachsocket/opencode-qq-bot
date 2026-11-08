@@ -1,4 +1,7 @@
 import { describe, expect, it, vi } from "vitest"
+import { mkdtemp, utimes, writeFile } from "node:fs/promises"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import type { Plugin } from "@opencode/plugin"
 import {
   FAILURE_NOTICE,
@@ -16,6 +19,7 @@ import type { ChatTarget } from "../src/chat"
 import type { HistoryOptions, HistoryPosition, HistoryProvider } from "../src/naplink/history"
 import { MAX_PROMPT_IMAGES } from "../src/naplink/render"
 import type { Logger } from "../src/logger"
+import { ChatOverrides } from "../src/overrides"
 import { accessConfig } from "./fixtures"
 
 const logger: Logger = {
@@ -41,6 +45,8 @@ interface Harness {
   sessionCreate: ReturnType<typeof vi.fn>
   sessionRemove: ReturnType<typeof vi.fn>
   sessionInterrupt: ReturnType<typeof vi.fn>
+  switchAgent: ReturnType<typeof vi.fn>
+  switchModel: ReturnType<typeof vi.fn>
   notices: Array<{ target: ChatTarget; text: string }>
 }
 
@@ -50,6 +56,8 @@ function createHarness(
   stored?: Record<string, string>,
   history?: HistoryProvider,
   positions?: Record<string, HistoryPosition>,
+  /** 按聊天的 agent / 模型覆盖。 */
+  chatOverrides?: ChatOverrides,
 ): Harness {
   const prompts: Harness["prompts"] = []
   const synthetics: Harness["synthetics"] = []
@@ -93,6 +101,8 @@ function createHarness(
         synthetics.push(input)
       }),
       list: vi.fn(async () => ({ data: [], cursor: {} })),
+      switchAgent: vi.fn(async () => {}),
+      switchModel: vi.fn(async () => {}),
     },
   } as unknown as Plugin.Context
 
@@ -113,6 +123,7 @@ function createHarness(
       async (target, text) => {
         notices.push({ target, text })
       },
+      chatOverrides,
     ),
     notices,
     prompts,
@@ -123,8 +134,108 @@ function createHarness(
     sessionCreate,
     sessionRemove: (ctx.session as unknown as { remove: ReturnType<typeof vi.fn> }).remove,
     sessionInterrupt: (ctx.session as unknown as { interrupt: ReturnType<typeof vi.fn> }).interrupt,
+    switchAgent: (ctx.session as unknown as { switchAgent: ReturnType<typeof vi.fn> }).switchAgent,
+    switchModel: (ctx.session as unknown as { switchModel: ReturnType<typeof vi.fn> }).switchModel,
   }
 }
+
+describe("按聊天覆盖 agent 与模型", () => {
+  const writeOverrides = async (
+    file: string,
+    chats: Record<string, Record<string, unknown>>,
+  ): Promise<void> => {
+    await writeFile(file, JSON.stringify({ chats }), "utf8")
+  }
+
+  it("新建会话时用覆盖里的 agent 与模型", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "qq-overrides-agent-"))
+    const file = join(dir, "chat-overrides.json")
+    await writeOverrides(file, { "group:100": { agent: "helper", model: "openai/gpt-4o" } })
+    const overrides = new ChatOverrides(file, logger)
+
+    const { manager, sessionCreate } = createHarness(
+      { agent: "default-agent", model: { providerID: "anthropic", id: "claude" } },
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      overrides,
+    )
+    await manager.enqueue(group(100), { text: "你好", files: [], atMe: false })
+
+    expect(sessionCreate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        agent: "helper",
+        model: { providerID: "openai", id: "gpt-4o" },
+      }),
+    )
+  })
+
+  it("没有覆盖时沿用全局配置", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "qq-overrides-agent-"))
+    const file = join(dir, "chat-overrides.json")
+    await writeOverrides(file, { "group:999": { agent: "other" } })
+    const overrides = new ChatOverrides(file, logger)
+
+    const { manager, sessionCreate } = createHarness(
+      { agent: "default-agent" },
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      overrides,
+    )
+    await manager.enqueue(group(100), { text: "你好", files: [], atMe: false })
+
+    expect(sessionCreate).toHaveBeenCalledWith(expect.objectContaining({ agent: "default-agent" }))
+  })
+
+  it("覆盖变化后切换已有会话", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "qq-overrides-agent-"))
+    const file = join(dir, "chat-overrides.json")
+    await writeOverrides(file, { "group:100": { agent: "helper" } })
+    const overrides = new ChatOverrides(file, logger)
+
+    const { manager, switchAgent } = createHarness(
+      {},
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      overrides,
+    )
+    expect(await manager.ensureSession(group(100))).toBe("session-1")
+    expect(switchAgent).not.toHaveBeenCalled()
+
+    await writeOverrides(file, { "group:100": { agent: "other" } })
+    const later = new Date(Date.now() + 5000)
+    await utimes(file, later, later)
+
+    expect(await manager.ensureSession(group(100))).toBe("session-1")
+    expect(switchAgent).toHaveBeenCalledWith({ sessionID: "session-1", agent: "other" })
+  })
+
+  it("覆盖没有变化时不重复切换", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "qq-overrides-agent-"))
+    const file = join(dir, "chat-overrides.json")
+    await writeOverrides(file, { "group:100": { agent: "helper" } })
+    const overrides = new ChatOverrides(file, logger)
+
+    const { manager, switchAgent, switchModel } = createHarness(
+      {},
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      overrides,
+    )
+    expect(await manager.ensureSession(group(100))).toBe("session-1")
+    expect(await manager.ensureSession(group(100))).toBe("session-1")
+
+    expect(switchAgent).not.toHaveBeenCalled()
+    expect(switchModel).not.toHaveBeenCalled()
+  })
+})
 
 describe("mergeTurns", () => {
   it("joins texts, collects files and keeps the at flag", () => {

@@ -2,7 +2,13 @@ import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, describe, expect, it } from "vitest"
-import { findSoulFile, resolveSoulPath, SoulStore, type SoulOptions } from "../src/session/soul"
+import {
+  findSoulFile,
+  resolveSoulPath,
+  SoulLibrary,
+  SoulStore,
+  type SoulOptions,
+} from "../src/session/soul"
 import type { Logger } from "../src/logger"
 
 const logger: Logger = {
@@ -142,5 +148,60 @@ describe("SoulStore", () => {
     expect(store.text).toBe("")
     expect(store.prompt).toContain("qq_send_message")
     store.dispose()
+  })
+})
+
+describe("SoulLibrary", () => {
+  it("默认档与指定路径各自生效", async () => {
+    const root = await makeDir("soul-library")
+    const custom = join(root, "custom.txt")
+    await writeFile(custom, "你是审阅者", "utf-8")
+
+    const library = new SoulLibrary(options({ soulPath: custom }), logger)
+    const fallback = await library.loadDefault()
+    expect(fallback.text).toBe("你是审阅者")
+
+    const other = join(root, "other.txt")
+    await writeFile(other, "你是作者", "utf-8")
+    const store = await library.at(other)
+    expect(store.text).toBe("你是作者")
+    expect(store.prompt).toContain("你是作者")
+
+    library.dispose()
+  })
+
+  it("路径为空时用默认档，同一路径只加载一次", async () => {
+    const root = await makeDir("soul-library-cache")
+    const custom = join(root, "custom.txt")
+    await writeFile(custom, "默认设定", "utf-8")
+
+    const library = new SoulLibrary(options({ soulPath: custom }), logger)
+    const first = await library.at(undefined)
+    const second = await library.at(custom)
+    expect(second).toBe(first)
+    expect(first.text).toBe("默认设定")
+
+    library.dispose()
+  })
+
+  it("相对路径按 cwd 解析", async () => {
+    const root = await makeDir("soul-library-relative")
+    await writeFile(join(root, "rel.txt"), "相对设定", "utf-8")
+
+    const library = new SoulLibrary(options({ cwd: root }), logger)
+    const store = await library.at("rel.txt")
+    expect(store.path).toBe(join(root, "rel.txt"))
+    expect(store.text).toBe("相对设定")
+
+    library.dispose()
+  })
+
+  it("文件不存在时给出空提示词", async () => {
+    const library = new SoulLibrary(options({ soulPath: "/nonexistent/soul.txt" }), logger)
+    const store = await library.at("/nonexistent/soul.txt")
+    expect(store.text).toBe("")
+    expect(store.prompt).toContain("qq_send_message")
+
+    library.dispose()
   })
 })

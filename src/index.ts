@@ -20,7 +20,7 @@ import { collectEnvSecrets, SensitiveChecker } from "./sensitive"
 import { SessionManager } from "./session/manager"
 import { currentTimeText, PROACTIVE_HINT } from "./session/prompt"
 import { proactiveTickProbability } from "./session/proactive"
-import { packageDirectory, SoulStore } from "./session/soul"
+import { packageDirectory, SoulLibrary } from "./session/soul"
 import { COMMANDS, handleCommand, isCommandChat } from "./commands"
 import {
   chatMuted,
@@ -117,8 +117,8 @@ export default Plugin.define({
     let botLock: BotLock | undefined
     let disposed = false
 
-    // 角色设定：读取生效文件并监听改动，改完下一轮即生效。
-    const soul = new SoulStore(
+    // 角色设定：默认档加上按聊天覆盖的其它文件，改完下一轮即生效。
+    const souls = new SoulLibrary(
       {
         soulPath: config.soulPath,
         soulName: config.soulName,
@@ -127,7 +127,7 @@ export default Plugin.define({
       },
       logger,
     )
-    await soul.load()
+    await souls.loadDefault()
 
     const client = new QQClient(config.napcat, logger)
     const mediaDir = defaultMediaDir()
@@ -163,10 +163,18 @@ export default Plugin.define({
       config.chatOverridesPath || defaultChatOverridesPath(),
       logger,
     )
-    const manager = new SessionManager(ctx, config, logger, home, history, async (target, text) => {
-      // 失败兜底只发插件自己的固定文案，走上游异常原文永远不进聊天。
-      await sendPlainMessage(client, target, text, { limiter })
-    })
+    const manager = new SessionManager(
+      ctx,
+      config,
+      logger,
+      home,
+      history,
+      async (target, text) => {
+        // 失败兜底只发插件自己的固定文案，走上游异常原文永远不进聊天。
+        await sendPlainMessage(client, target, text, { limiter })
+      },
+      overrides,
+    )
     await manager.load()
     // 保活心跳：OpenCode 长时间没有会话活动时会卸载 location，插件随之被卸载。
     const keepAlive = new KeepAlive(ctx, config, logger)
@@ -239,6 +247,9 @@ export default Plugin.define({
     const contextRegistration = await ctx.session.hook("context", async (event) => {
       const target = manager.targetForSession(event.sessionID)
       if (target === undefined) return
+      // 角色设定可以按聊天覆盖：先看覆盖里写的路径，没有就用默认档。
+      const override = await overrides.for(target)
+      const soul = await souls.at(override.soul)
       event.system.push({ type: "text", text: soul.prompt })
       event.system.push({ type: "text", text: `当前时间：${currentTimeText()}` })
       const active = manager.activeTurn(event.sessionID)
@@ -572,7 +583,7 @@ export default Plugin.define({
       idleAbort.abort()
       manager.dispose()
       await manager.flush()
-      soul.dispose()
+      souls.dispose()
       await toolRegistration.dispose()
       await tuiCommandRegistration.dispose()
       await labeler.dispose()

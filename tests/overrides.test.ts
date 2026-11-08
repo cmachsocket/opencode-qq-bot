@@ -56,6 +56,55 @@ describe("parseChatOverrides", () => {
     expect(warn).toHaveBeenCalledTimes(2)
   })
 
+  it("读取 agent、model 与 soul 覆盖", () => {
+    const warn = vi.fn()
+    const file = parseChatOverrides(
+      {
+        chats: {
+          "group:100": {
+            agent: "reviewer",
+            model: "anthropic/claude-sonnet-4",
+            soul: "souls/reviewer.txt",
+          },
+        },
+      },
+      warn,
+    )
+    expect(file.chats["group:100"]).toEqual({
+      agent: "reviewer",
+      model: { providerID: "anthropic", id: "claude-sonnet-4" },
+      soul: "souls/reviewer.txt",
+    })
+    expect(warn).not.toHaveBeenCalled()
+  })
+
+  it("model 带 variant 时保留 variant", () => {
+    const warn = vi.fn()
+    const file = parseChatOverrides(
+      { chats: { "group:100": { model: "openai/gpt-5#high" } } },
+      warn,
+    )
+    expect(file.chats["group:100"]?.model).toEqual({
+      providerID: "openai",
+      id: "gpt-5",
+      variant: "high",
+    })
+  })
+
+  it("写错的 agent、model 与 soul 只忽略这一项", () => {
+    const warn = vi.fn()
+    const file = parseChatOverrides(
+      {
+        chats: {
+          "group:100": { agent: "", model: "没有斜杠", soul: "  " },
+        },
+      },
+      warn,
+    )
+    expect(file.chats["group:100"]).toEqual({})
+    expect(warn).toHaveBeenCalledTimes(3)
+  })
+
   it("prefix 唤醒缺前缀时退回被 @ 才必回", () => {
     const warn = vi.fn()
     const file = parseChatOverrides({ chats: { "group:100": { wake: "prefix" } } }, warn)
@@ -142,6 +191,18 @@ describe("describeOverride", () => {
       "唤醒 prefix，前缀 bot,，允许主动说话",
     )
     expect(describeOverride({ proactive: false })).toBe("唤醒 mention（默认），不主动说话")
+  })
+
+  it("说明 agent、模型与角色设定", () => {
+    expect(
+      describeOverride({
+        agent: "reviewer",
+        model: { providerID: "anthropic", id: "claude-sonnet-4" },
+        soul: "souls/reviewer.txt",
+      }),
+    ).toBe(
+      "唤醒 mention（默认），允许主动说话，agent reviewer，模型 anthropic/claude-sonnet-4，角色设定 souls/reviewer.txt",
+    )
   })
 })
 

@@ -4,10 +4,11 @@ import { SessionMessage } from "@opencode/schema"
 import { Mutex } from "async-mutex"
 import { isTargetAllowed } from "../access"
 import { type ChatTarget, parseTargetKey, targetKey, targetLabel } from "../chat"
-import type { QQBotConfig } from "../config"
+import type { ModelRef, QQBotConfig } from "../config"
 import type { BotHome } from "../home"
 import type { Logger } from "../logger"
 import type { HistoryPosition, HistoryProvider } from "../naplink/history"
+import type { ChatOverrides } from "../overrides"
 import { limitFiles, type PromptFile } from "../naplink/render"
 import type { WakeReason } from "../overrides"
 import type { Role } from "../tools/policy"
@@ -150,6 +151,15 @@ export function mergeTurns(turns: readonly Turn[]): Turn {
   }
 }
 
+/** 判断两个模型引用是不是同一个。 */
+function sameModel(left: ModelRef | undefined, right: ModelRef | undefined): boolean {
+  if (left === right) return true
+  if (!left || !right) return false
+  return (
+    left.id === right.id && left.providerID === right.providerID && left.variant === right.variant
+  )
+}
+
 function turnBytes(turn: Turn): number {
   return (
     turn.text.length * 2 +
@@ -182,6 +192,8 @@ export class SessionManager {
   private watchdog: ReturnType<typeof setTimeout> | undefined
   /** 每个目标上一次失败提示的时间戳。 */
   private readonly noticeAt = new Map<string, number>()
+  /** 每个会话已经应用过的 agent / 模型覆盖，避免每条消息都切一次。 */
+  private readonly appliedOverrides = new Map<string, { agent?: string; model?: ModelRef }>()
   private disposed = false
 
   constructor(
@@ -193,6 +205,8 @@ export class SessionManager {
     private readonly history?: HistoryProvider,
     /** 失败兜底通道；不传就只写日志。 */
     private readonly notify?: FailureNotifier,
+    /** 按聊天覆盖 agent / 模型；不传就只用全局配置。 */
+    private readonly overrides?: ChatOverrides,
   ) {}
 
   /** 会话统一落在机器人工作目录，避免接管后上下文散落到别的项目。 */
@@ -906,8 +920,15 @@ export class SessionManager {
     await this.ensureBindings()
     const state = this.state(target)
     const label = targetLabel(target)
+    // 覆盖优先于全局配置；没写覆盖就用全局的。
+    const override = await this.overrides?.for(target)
+    const agent = override?.agent ?? this.config.agent
+    const model = override?.model ?? this.config.model
     if (state.sessionID) {
-      if (await this.sessionExists(state.sessionID)) return state.sessionID
+      if (await this.sessionExists(state.sessionID)) {
+        await this.applyOverride(state.sessionID, label, agent, model)
+        return state.sessionID
+      }
       this.unbind(state)
     }
 
@@ -918,6 +939,7 @@ export class SessionManager {
         this.verifiedSessions.add(reused)
         this.scheduleSave()
         this.logger.info(`${label} 复用已有会话 ${reused}`)
+        await this.applyOverride(reused, label, agent, model)
         return reused
       }
     }
@@ -925,8 +947,8 @@ export class SessionManager {
     const created = await this.ctx.session.create({
       title: target.kind === "group" ? `QQ 群 ${target.id}` : `QQ 私聊 ${target.id}`,
       location: this.location,
-      ...(this.config.agent ? { agent: this.config.agent } : {}),
-      ...(this.config.model ? { model: this.config.model } : {}),
+      ...(agent ? { agent } : {}),
+      ...(model ? { model } : {}),
       metadata: {
         qqTargetKind: target.kind,
         qqTargetId: target.id,
@@ -941,9 +963,43 @@ export class SessionManager {
     }
     this.verifiedSessions.add(created.id)
     state.sessionCreated = true
+    // 新建时已经带上覆盖值，记下来就不必再切一次。
+    this.appliedOverrides.set(created.id, { agent, model })
     this.scheduleSave()
     this.logger.info(`${label} 新建会话 ${created.id}`)
     return created.id
+  }
+
+  /**
+   * 把 agent / 模型覆盖应用到已有会话。
+   *
+   * 只在覆盖真的变了的时候切换，避免每条消息都动一次会话。
+   */
+  private async applyOverride(
+    sessionID: string,
+    label: string,
+    agent: string | undefined,
+    model: ModelRef | undefined,
+  ): Promise<void> {
+    const applied = this.appliedOverrides.get(sessionID)
+    if (applied?.agent === agent && sameModel(applied?.model, model)) return
+    if (agent !== undefined && applied?.agent !== agent) {
+      try {
+        await this.ctx.session.switchAgent({ sessionID, agent })
+        this.logger.info(`${label} 会话 ${sessionID} 切换到 agent ${agent}`)
+      } catch (error) {
+        this.logger.warn(`${label} 切换 agent ${agent} 失败`, error)
+      }
+    }
+    if (model !== undefined && !sameModel(applied?.model, model)) {
+      try {
+        await this.ctx.session.switchModel({ sessionID, model })
+        this.logger.info(`${label} 会话 ${sessionID} 切换到模型 ${model.providerID}/${model.id}`)
+      } catch (error) {
+        this.logger.warn(`${label} 切换模型失败`, error)
+      }
+    }
+    this.appliedOverrides.set(sessionID, { agent, model })
   }
 
   /** 确认恢复的会话仍然存在，避免陈旧绑定让每条消息都失败。 */
@@ -963,6 +1019,7 @@ export class SessionManager {
     if (!state.sessionID) return
     this.sessions.delete(state.sessionID)
     this.verifiedSessions.delete(state.sessionID)
+    this.appliedOverrides.delete(state.sessionID)
     state.sessionID = undefined
     this.scheduleSave()
   }

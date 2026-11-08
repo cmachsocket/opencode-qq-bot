@@ -178,3 +178,49 @@ export class SoulStore {
 export function packageDirectory(): string {
   return import.meta.dirname
 }
+
+/**
+ * 多份角色设定的持有者：默认档 + 按路径懒加载。
+ *
+ * 每个聊天可以用覆盖配置指定自己的角色设定文件；同一路径只加载一次，
+ * 每份设定各自监听文件变化，改完下一轮即生效。
+ */
+export class SoulLibrary {
+  readonly #stores = new Map<string, SoulStore>()
+  #defaultStore: SoulStore | undefined
+
+  constructor(
+    private readonly options: SoulOptions,
+    private readonly logger: Logger,
+  ) {}
+
+  /** 加载并返回默认角色设定。 */
+  async loadDefault(): Promise<SoulStore> {
+    if (this.#defaultStore) return this.#defaultStore
+    const path = resolveSoulPath(this.options)
+    const store = new SoulStore({ ...this.options, soulPath: path }, this.logger)
+    await store.load()
+    this.#defaultStore = store
+    this.#stores.set(path, store)
+    return store
+  }
+
+  /** 某个路径的角色设定；路径为空时用默认档。 */
+  async at(path: string | undefined): Promise<SoulStore> {
+    const explicit = path?.trim()
+    if (!explicit) return this.loadDefault()
+    const absolute = isAbsolute(explicit) ? explicit : resolve(this.options.cwd, explicit)
+    const cached = this.#stores.get(absolute)
+    if (cached) return cached
+    const store = new SoulStore({ ...this.options, soulPath: absolute }, this.logger)
+    await store.load()
+    this.#stores.set(absolute, store)
+    return store
+  }
+
+  dispose(): void {
+    for (const store of this.#stores.values()) store.dispose()
+    this.#stores.clear()
+    this.#defaultStore = undefined
+  }
+}

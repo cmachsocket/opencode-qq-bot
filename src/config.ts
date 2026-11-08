@@ -185,7 +185,7 @@ const RENAMED_ENV_VARS: Record<string, string> = {
 export type ConfigWarning = (message: string) => void
 
 /** 解析 "provider/model" 或 "provider/model/variant"，复用 SDK 的模型引用解析。 */
-function parseModelRef(value: unknown): ModelRef | undefined {
+export function parseModelRef(value: unknown): ModelRef | undefined {
   const raw = typeof value === "string" ? value.trim() : ""
   if (!raw) return undefined
   const [providerID, id, variant, ...rest] = raw.split("/").filter(Boolean)
