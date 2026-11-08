@@ -160,14 +160,39 @@ qq-bridge 把这些也自己做了一遍（39 个 MCP 工具 + token 台账）�
 
 ### C. 基础设施类
 
-| #   | 条目                     | 本项目现状                                         | qq-bridge 对照                                                                                                | 结论     |
-| --- | ------------------------ | -------------------------------------------------- | ------------------------------------------------------------------------------------------------------------- | -------- |
-| C1  | 无 CI                    | 无 `.github/`                                      | 3 job：syntax 全量 `node --check` + JSON.parse + 许可证一致性 / privacy-scan / windows 上 npm audit + 59 脚本 | **采纳** |
-| C2  | 无隐私扫描               | 仅靠 `.gitignore` 挡 `.env`/`opencode.json`        | `privacy-scan.mjs` 扫工作树 + **全部 git 历史**（9-10 位 QQ/群号、凭证赋值、PEM、绝对路径）                   | **采纳** |
-| C3  | 无安全基线与漏洞报告文档 | docs/ 仅 3 篇                                      | `SECURITY_BASELINE.md`、`SECURITY.md`、`NOTICE.md`（数据流）                                                  | **采纳** |
-| C4  | 无发布流程               | 无 publish 脚本、无 release workflow，版本手工维护 | 有 release 流程                                                                                               | **采纳** |
-| C5  | 日志只有 stdout 且无脱敏 | `src/logger.ts` 仅 console                         | 带上限的日志文件 + 每行脱敏                                                                                   | **采纳** |
-| C6  | 配置面窄                 | 仅 groups/users 白名单 + 11 项配置                 | allow/deny 双列表 + ownerQQ + 每会话覆盖                                                                      | **采纳** |
+| #   | 条目                     | 本项目现状                                         | qq-bridge 对照                                                                                                | 结论                                    |
+| --- | ------------------------ | -------------------------------------------------- | ------------------------------------------------------------------------------------------------------------- | --------------------------------------- |
+| C1  | 无 CI                    | 无 `.github/`                                      | 3 job：syntax 全量 `node --check` + JSON.parse + 许可证一致性 / privacy-scan / windows 上 npm audit + 59 脚本 | **采纳**                                |
+| C2  | 无隐私扫描               | 仅靠 `.gitignore` 挡 `.env`/`opencode.json`        | `privacy-scan.mjs` 扫工作树 + **全部 git 历史**（9-10 位 QQ/群号、凭证赋值、PEM、绝对路径）                   | **采纳**                                |
+| C3  | 无安全基线与漏洞报告文档 | docs/ 仅 3 篇                                      | `SECURITY_BASELINE.md`、`SECURITY.md`、`NOTICE.md`（数据流）                                                  | **采纳**                                |
+| C4  | 无发布流程               | 无 publish 脚本、无 release workflow，版本手工维护 | 有 release 流程                                                                                               | **采纳**                                |
+| C5  | 日志只有 stdout 且无脱敏 | `src/logger.ts` 仅 console                         | 带上限的日志文件 + 每行脱敏                                                                                   | **采纳（已实现，见「C5 的落地方式」）** |
+| C6  | 配置面窄                 | 仅 groups/users 白名单 + 11 项配置                 | allow/deny 双列表 + ownerQQ + 每会话覆盖                                                                      | **采纳**                                |
+
+### C5 的落地方式（已实现）
+
+日志改用 [Winston](https://github.com/winstonjs/winston)：console 保留人类可读输出，同时写一份带上限的 JSON 日志文件，每行落盘前统一脱敏。
+
+选 Winston 而不是 Pino：要的是「人类可读 console + 带大小上限的文件输出」两件事同时成立，`winston-daily-rotate-file` 自带 `maxSize` / `maxFiles`，每行脱敏能在 format 管道里统一做；聊天机器人日志量小，性能不是重点。
+
+| 手段     | 做法                                                                                                                      | 补上了什么                           |
+| -------- | ------------------------------------------------------------------------------------------------------------------------- | ------------------------------------ |
+| console  | Winston Console transport，沿用 `[时间] 级别 前缀 正文` 的格式，meta 用 `util.inspect` 展开；error 走 stderr              | 现有调用点一行不用改                 |
+| 日志文件 | `winston-daily-rotate-file` 写 JSON，一行一条，`qq-bot-%DATE%.log` 带日期                                                 | 事后可查，不用翻容器日志             |
+| 大小上限 | `maxSize`（默认 `5m`）+ `maxFiles`（默认 5），按天滚动                                                                    | 日志不会把磁盘写满                   |
+| 目录     | 默认 `$XDG_STATE_HOME/opencode-qq-bot/logs`，未设置则 `~/.local/state/opencode-qq-bot/logs`；不存在自动创建（0700）       | 不用手工 mkdir                       |
+| 逐行脱敏 | format 管道最后一步，对**最终序列化后的整行**做一次脱敏                                                                   | message、meta、Error stack 都覆盖到  |
+| 复用 A2  | `src/sensitive.ts` 新增 `maskSecrets()`，用 A2 同一套检测器集合（同样排除 email / obfuscated_email / credit_card / iban） | 日志里的凭证不落盘，又不误伤群聊内容 |
+
+- 日志场景是「打码」不是「整条拦截」：命中只把凭证换成 `[REDACTED:<检测器>]`，其余内容照常写。
+- 脱敏发生在序列化之后，所以 `meta` 里的 Error stack（多行折成一行后）同样会被覆盖。
+- 已知凭证（环境变量里像密钥的值 + `napcat.token`）作为自定义检测器一并参与脱敏。
+- 不误伤：普通中文聊天、QQ 号、手机号、邮箱、URL、UUID 原样保留。
+- 新增配置 `log.level` / `log.dir` / `log.maxSize` / `log.maxFiles`（`QQ_LOG_LEVEL` / `QQ_LOG_DIR` / `QQ_LOG_MAX_SIZE` / `QQ_LOG_MAX_FILES`）。
+- 插件卸载时 `closeLogger()` 等文件流落盘，避免丢掉最后几行。
+- 已知限制：`winston-daily-rotate-file` 清理旧文件前会检查文件是否已落盘，启动瞬间的连续写入可能多留几个文件。
+
+落地位置：`src/logger.ts`、`src/sensitive.ts`（`maskSecrets`）、`src/config.ts`、`src/index.ts`
 
 ### A4 的平台落点
 
@@ -396,5 +421,5 @@ NapLink 已经把事件按 `post_type` + `notice_type` 拆好并分发，但插�
 | C2  | 采纳               | 隐私扫描（待实现）                                      |
 | C3  | 采纳               | 安全基线文档（待实现）                                  |
 | C4  | 采纳               | 发布流程（待实现）                                      |
-| C5  | 采纳               | 日志脱敏（待实现）                                      |
+| C5  | 采纳（已实现）     | 日志脱敏：Winston 日志文件（带上限）+ 逐行脱敏          |
 | C6  | 采纳               | 配置面扩展（待实现）                                    |

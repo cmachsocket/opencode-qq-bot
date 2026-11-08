@@ -1,4 +1,4 @@
-import { DETECTORS, scan, type Detector } from "flare-redact"
+import { DETECTORS, redact, scan, type Detector } from "flare-redact"
 
 /** 命中的敏感信息。 */
 export interface SensitiveHit {
@@ -261,5 +261,41 @@ export class SensitiveChecker {
       hits: [...hits.values()],
       reason: `出站消息包含疑似敏感信息（${detectors.join("、")}），已拦截，没有发出去。请删掉这些凭证后再发一次。`,
     }
+  }
+}
+
+/** 日志打码的选项。 */
+export interface MaskOptions {
+  /** 已知的凭证明文：环境变量里的密钥、NapCat 访问令牌等。 */
+  knownSecrets?: string[]
+}
+
+/**
+ * 给日志打码：把凭证换成占位符，其余内容原样留下。
+ *
+ * 用的是出站拦截同一套检测器（`SECRET_DETECTORS`）：邮箱、卡号、IBAN 不在内，
+ * 群聊里的正常内容不会被误伤。环境里已知的凭证明文用 `known_secret` 额外兜住。
+ *
+ * 日志是「打码」不是「拦截」——整行照常写下来，只是凭证本身不落到文件里。
+ *
+ * @param text 已经序列化好的一行日志。
+ * @param options 已知凭证明文等附加条件。
+ * @returns 打码后的文本；脱敏器出错时整行换成 `[REDACTED]`，宁可少写也不写漏。
+ */
+export function maskSecrets(text: string, options: MaskOptions = {}): string {
+  if (text === "") return text
+  const known = knownSecretDetector(
+    (options.knownSecrets ?? []).filter((secret) => secret.length >= MIN_SECRET_LENGTH),
+  )
+  const custom = known ? [known] : []
+  const only = [...SECRET_DETECTORS, ...custom.map((detector) => detector.id)]
+  try {
+    return redact(text, {
+      only,
+      custom,
+      mask: ({ detector }) => `[REDACTED:${detector.id}]`,
+    })
+  } catch {
+    return "[REDACTED]"
   }
 }

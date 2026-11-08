@@ -89,12 +89,21 @@ bun install
 | `rateLimit.maxPerHour`              | `QQ_RATE_MAX_PER_HOUR`          | `60`          | 每小时最多发多少条消息，`0` 表示不限制          |
 | `rateLimit.minGapMs`                | `QQ_RATE_MIN_GAP_MS`            | `1500`        | 相邻两次发送之间的最小间隔（毫秒）              |
 | `sensitive.enabled`                 | `QQ_SENSITIVE_ENABLED`          | `true`        | 拦截含凭证、令牌、私钥的出站消息                |
+| `log.level`                         | `QQ_LOG_LEVEL`                  | `info`        | 日志级别：`debug` / `info` / `warn` / `error`   |
+| `log.dir`                           | `QQ_LOG_DIR`                    | XDG 日志目录  | 日志文件目录，不存在时自动创建                  |
+| `log.maxSize`                       | `QQ_LOG_MAX_SIZE`               | `5m`          | 单个日志文件的大小上限                          |
+| `log.maxFiles`                      | `QQ_LOG_MAX_FILES`              | `5`           | 保留多少个历史日志文件                          |
 
 没配置 `groups` 和 `users` 时插件不会响应任何消息（默认全部关闭）。
 
 `home` 未配置时固定使用 `$XDG_DATA_HOME/opencode-qq-bot/workspace`（默认
 `~/.local/share/opencode-qq-bot/workspace`），启动时自动创建。会话的 cwd、文件工具、
 `AGENTS.md` 和 git 都取这个目录，不再跟随加载插件的项目目录。
+
+`log.dir` 未配置时使用 `$XDG_STATE_HOME/opencode-qq-bot/logs`（默认
+`~/.local/state/opencode-qq-bot/logs`），启动时自动创建。日志按天滚动成
+`qq-bot-YYYY-MM-DD.log`，每行一条 JSON，写盘前统一脱敏：识别到的凭证会变成
+`[REDACTED:<检测器>]`，普通聊天内容原样保留。
 
 布尔环境变量接受 `true/false`、`1/0`、`yes/no`、`on/off`；数值直接写数字。
 写错的配置项会输出告警并回退到默认值，不会静默失效。

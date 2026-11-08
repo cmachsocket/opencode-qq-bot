@@ -59,6 +59,19 @@
   `$XDG_DATA_HOME/opencode-qq-bot/workspace`（默认 `~/.local/share/...`），启动时自动创建。
   群聊/私聊会话都在该目录创建（`session.create` 显式传 `location`），历史会话也按该目录查找，
   不再跟随加载插件的项目目录。
+- 日志落盘与逐行脱敏（`src/logger.ts`）：日志改用 [Winston](https://github.com/winstonjs/winston)，
+  console 保留人类可读格式（`[时间] 级别 前缀 正文`），同时用
+  [`winston-daily-rotate-file`](https://github.com/winstonjs/winston-daily-rotate-file) 写一份
+  一行一条 JSON 的日志文件：`qq-bot-YYYY-MM-DD.log` 按天滚动，超过 `log.maxSize`（默认 `5m`）再切一份，
+  历史最多保留 `log.maxFiles`（默认 5）份。目录默认 `$XDG_STATE_HOME/opencode-qq-bot/logs`
+  （未设置则 `~/.local/state/opencode-qq-bot/logs`），不存在时自动创建。
+  写盘前对最终序列化后的整行做一次脱敏，用的是出站拦截那套检测器
+  （`src/sensitive.ts` 新增 `maskSecrets()`）：识别到的凭证替换成 `[REDACTED:<检测器>]`，
+  `message`、`meta` 与 Error stack 全部覆盖。日志场景是打码不是拦截——
+  普通中文聊天、QQ 号、手机号、邮箱、URL、UUID 原样保留。
+  插件卸载时等文件流落盘，避免丢掉最后几行。
+  新增配置项 `log.level`（`QQ_LOG_LEVEL`）、`log.dir`（`QQ_LOG_DIR`）、
+  `log.maxSize`（`QQ_LOG_MAX_SIZE`）、`log.maxFiles`（`QQ_LOG_MAX_FILES`）。
 
 ### Changed
 

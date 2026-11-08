@@ -7,7 +7,7 @@ import { resolveConfig, type QQBotConfig } from "./config"
 import { resolveHome } from "./home"
 import { claimInstance } from "./instance"
 import { KeepAlive } from "./keepalive"
-import { createLogger } from "./logger"
+import { createLogger, closeLogger, flushLogger } from "./logger"
 import { formatModelMessage } from "./model-view"
 import { QQClient } from "./naplink/client"
 import { createHistoryProvider } from "./naplink/history"
@@ -38,14 +38,28 @@ function delay(ms: number): Promise<void> {
 export default Plugin.define({
   id: "opencode-qq-bot",
   async setup(ctx) {
-    const logger = createLogger("[qq-bot]")
+    // 配置还没解析出来，先用一个只写控制台的日志器兜底，解析完再换成正式日志器。
+    const bootstrap = createLogger("[qq-bot]", { file: false })
     let config: QQBotConfig
+    const warnings: string[] = []
     try {
-      config = resolveConfig(ctx.options, process.env, (message) => logger.warn(message))
+      config = resolveConfig(ctx.options, process.env, (message) => warnings.push(message))
     } catch (error) {
-      logger.error(error instanceof Error ? error.message : String(error))
+      for (const warning of warnings) bootstrap.warn(warning)
+      bootstrap.error(error instanceof Error ? error.message : String(error))
       return
     }
+
+    const logger = createLogger("[qq-bot]", {
+      level: config.log.level,
+      dir: config.log.dir,
+      maxSize: config.log.maxSize,
+      maxFiles: config.log.maxFiles,
+      knownSecrets: [...collectEnvSecrets(process.env), config.napcat.token ?? ""].filter(
+        (secret) => secret.length > 0,
+      ),
+    })
+    for (const warning of warnings) logger.warn(warning)
 
     if (config.groups.length === 0 && config.users.length === 0) {
       logger.warn(
@@ -410,6 +424,9 @@ export default Plugin.define({
         "插件已卸载",
         "若是被 OpenCode 卸载（长时间没有会话活动），可在 opencode.json 里设置 experimental.location_idle_timeout: false",
       )
+      // 关闭日志器，等文件传输把最后的日志写完，避免丢日志。
+      await flushLogger()
+      await closeLogger()
     }
     lease.setDispose(dispose)
     return dispose

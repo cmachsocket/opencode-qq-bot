@@ -12,7 +12,7 @@
   非正整数会被忽略并告警。
 - **模型**：`provider/model` 或 `provider/model/variant`。
   写错会回退到默认模型并输出告警。
-- **未知配置项**：顶层和 `napcat`、`proactive`、`reminder`、`keepAlive`、`history`、`rateLimit`、`sensitive` 下的未知键会输出告警，
+- **未知配置项**：顶层和 `napcat`、`proactive`、`reminder`、`keepAlive`、`history`、`rateLimit`、`sensitive`、`log` 下的未知键会输出告警，
   不会被静默忽略。
 
 ## 数值范围
@@ -32,6 +32,7 @@
 | `rateLimit.maxPerHour`              | 大于等于 0 |
 | `rateLimit.minGapMs`                | 大于等于 0 |
 | `sensitive.enabled`                 | 布尔值     |
+| `log.maxFiles`                      | 大于等于 1 |
 
 越界值会回退到默认值并告警。
 
@@ -111,6 +112,26 @@ NapCat 连接断开后机器人就不再响应。
 - 检查在拆分发送之前做，超长消息只要有一段命中，整条都不发。
 - 已识别的凭证不会出现在日志与错误说明里，只记录命中的检测器名称。
 - `sensitive.enabled` 设为 `false`（或 `QQ_SENSITIVE_ENABLED=0`）可以关闭。
+
+## 日志
+
+日志同时写两处：console 保留人类可读的格式，文件写一行一条的 JSON。
+
+| 配置项         | 默认值       | 含义                                          |
+| -------------- | ------------ | --------------------------------------------- |
+| `log.level`    | `info`       | 日志级别：`debug` / `info` / `warn` / `error` |
+| `log.dir`      | XDG 日志目录 | 日志文件目录                                  |
+| `log.maxSize`  | `5m`         | 单个日志文件的大小上限                        |
+| `log.maxFiles` | `5`          | 保留多少个历史日志文件                        |
+
+- `log.dir` 为空时使用 `$XDG_STATE_HOME/opencode-qq-bot/logs`；
+  未设置 `XDG_STATE_HOME` 时使用 `~/.local/state/opencode-qq-bot/logs`。目录不存在会自动创建。
+- 日志文件按天滚动，名为 `qq-bot-YYYY-MM-DD.log`；超过 `log.maxSize` 就再切一份，
+  历史最多保留 `log.maxFiles` 份。
+- 写盘前会对整行做一次脱敏（与出站拦截用同一套检测器）：识别到的凭证会被替换成
+  `[REDACTED:<检测器>]`，`message`、`meta` 里的 Error stack 一并覆盖。
+- 脱敏只打码不拦截：普通中文聊天、QQ 号、手机号、邮箱、URL、UUID 原样保留。
+- 插件卸载时会等文件流落盘，避免丢掉最后几行日志。
 
 ## 角色设定
 

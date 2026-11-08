@@ -16,6 +16,8 @@
 | ipaddr.js                           | Copyright (C) 2011-2017 whitequark \<whitequark@whitequark.org\>（request-filtering-agent 的依赖） |
 | remove-markdown                     | Copyright (c) 2015 Stian Grytøyr                                                            |
 | request-filtering-agent             | Copyright (c) 2019 azu                                                                       |
+| winston                             | Copyright (c) 2010 Charlie Robbins                                                          |
+| winston-daily-rotate-file           | Copyright (c) 2015-2024 winstonjs                                                            |
 | zod                                 | Copyright (c) 2025 Colin McDonnell                                                          |
 
 ## MIT License

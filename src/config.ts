@@ -1,5 +1,6 @@
 import { Model } from "@opencode/schema"
 import { z } from "zod"
+import type { LogLevel } from "./logger"
 
 /**
  * Plugin configuration: merges OpenCode plugin options, environment variables
@@ -12,6 +13,8 @@ import { z } from "zod"
 const NUMBER = /^-?(?:\d+\.?\d*|\.\d+)$/
 const TRUTHY = new Set(["1", "true", "yes", "on"])
 const BOOLEAN_SPELLINGS = ["1", "0", "true", "false", "yes", "no", "on", "off"] as const
+/** 合法的日志级别。 */
+const LOG_LEVELS: readonly string[] = ["debug", "info", "warn", "error"]
 
 export interface NapcatConfig {
   /** NapCat 正向 WebSocket 地址，必填。 */
@@ -66,6 +69,18 @@ export interface SensitiveConfig {
   enabled: boolean
 }
 
+/** 日志配置。 */
+export interface LogConfig {
+  /** 最低日志级别。 */
+  level: LogLevel
+  /** 日志目录，空表示用 XDG 状态目录。 */
+  dir: string
+  /** 单个日志文件的大小上限。 */
+  maxSize: string
+  /** 保留的历史日志份数。 */
+  maxFiles: number
+}
+
 export interface ModelRef {
   providerID: string
   id: string
@@ -100,6 +115,7 @@ export interface QQBotConfig {
   history: HistoryConfig
   rateLimit: RateLimitConfig
   sensitive: SensitiveConfig
+  log: LogConfig
 }
 
 /** 除 NapCat 连接信息外的全部默认值。 */
@@ -121,6 +137,7 @@ export const DEFAULT_CONFIG: Omit<QQBotConfig, "napcat"> = {
   history: { count: 20 },
   rateLimit: { maxPerMinute: 8, maxPerHour: 60, minGapMs: 1500 },
   sensitive: { enabled: true },
+  log: { level: "info", dir: "", maxSize: "5m", maxFiles: 5 },
 }
 
 /** 配置告警回调。 */
@@ -264,6 +281,46 @@ function createConfigSchema(
         return trimmed
       })
 
+  /** 必填的字符串：空值或非法值都回退到默认值。 */
+  const requiredText = (path: string, fallback: string) =>
+    z
+      .unknown()
+      .optional()
+      .transform((value) => {
+        if (!present(value)) return fallback
+        if (typeof value !== "string") {
+          warn(`${label(path)} 必须是字符串：${String(value)}`)
+          return fallback
+        }
+        const trimmed = value.trim()
+        if (!trimmed) {
+          warn(`${label(path)} 不能为空，已回退到默认值`)
+          return fallback
+        }
+        return trimmed
+      })
+
+  /** 日志级别：只认 debug/info/warn/error，写错就回退到默认值。 */
+  const logLevel = (path: string, fallback: LogLevel) =>
+    z
+      .unknown()
+      .optional()
+      .transform((value) => {
+        if (!present(value)) return fallback
+        const raw = typeof value === "string" ? value.trim().toLowerCase() : ""
+        if (!raw) {
+          warn(`${label(path)} 不能为空，已回退到默认值`)
+          return fallback
+        }
+        if (!LOG_LEVELS.includes(raw)) {
+          warn(
+            `${label(path)} 不是合法的日志级别：${String(value)}（可用：${LOG_LEVELS.join("/")}）`,
+          )
+          return fallback
+        }
+        return raw as LogLevel
+      })
+
   const groups = z
     .unknown()
     .optional()
@@ -374,6 +431,26 @@ function createConfigSchema(
       })
       .prefault({})
       .catch(defaults.sensitive),
+    log: z
+      .object({
+        level: logLevel("log.level", defaults.log.level),
+        dir: z
+          .unknown()
+          .optional()
+          .transform((value) => {
+            if (value === undefined || value === null) return defaults.log.dir
+            if (typeof value !== "string") {
+              warn(`${label("log.dir")} 必须是字符串：${String(value)}`)
+              return defaults.log.dir
+            }
+            // 空目录是有意义的：表示用 XDG 状态目录。
+            return value.trim()
+          }),
+        maxSize: requiredText("log.maxSize", defaults.log.maxSize),
+        maxFiles: integer("log.maxFiles", defaults.log.maxFiles, 1),
+      })
+      .prefault({})
+      .catch(defaults.log),
   })
 }
 
@@ -405,6 +482,10 @@ export const ENV_VARS = {
   "rateLimit.maxPerHour": "QQ_RATE_MAX_PER_HOUR",
   "rateLimit.minGapMs": "QQ_RATE_MIN_GAP_MS",
   "sensitive.enabled": "QQ_SENSITIVE_ENABLED",
+  "log.level": "QQ_LOG_LEVEL",
+  "log.dir": "QQ_LOG_DIR",
+  "log.maxSize": "QQ_LOG_MAX_SIZE",
+  "log.maxFiles": "QQ_LOG_MAX_FILES",
 } as const
 
 const OPTION_KEYS = new Set([
@@ -425,6 +506,7 @@ const OPTION_KEYS = new Set([
   "history",
   "rateLimit",
   "sensitive",
+  "log",
 ])
 
 const NESTED_OPTION_KEYS: Record<string, ReadonlySet<string>> = {
@@ -441,6 +523,7 @@ const NESTED_OPTION_KEYS: Record<string, ReadonlySet<string>> = {
   history: new Set(["count"]),
   rateLimit: new Set(["maxPerMinute", "maxPerHour", "minGapMs"]),
   sensitive: new Set(["enabled"]),
+  log: new Set(["level", "dir", "maxSize", "maxFiles"]),
 }
 
 /** 报告被 schema 静默剥离的未知配置项。 */
@@ -524,6 +607,7 @@ export function resolveConfig(
     history: { ...parsed.history },
     rateLimit: { ...parsed.rateLimit },
     sensitive: { ...parsed.sensitive },
+    log: { ...parsed.log },
     napcat: { url, token: parsed.napcat.token },
   }
 }
