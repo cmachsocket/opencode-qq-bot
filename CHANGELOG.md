@@ -6,6 +6,11 @@
 
 ### Added
 
+- 通知事件订阅（B7）：新增 `events.subscribe` / `events.notices` / `events.inject`
+  （`QQ_EVENT_SUBSCRIBE` / `QQ_EVENT_NOTICES` / `QQ_EVENT_INJECT`），默认只订阅消息类事件。
+  订阅 `notice` 后可接收撤回、进退群、管理员变动、好友新增、群文件、戳一戳与灰条消息；
+  通知只写日志并缓存，不自己发起一轮，下一轮该聊天的上下文里附带摘要。
+  通知同样受 `groups` / `users` 白名单限制，撤回类不复述被撤回的内容。
 - 模型视图里 owner / 管理员分别带 `(owner)` / `(admin)` 标记（实时消息与历史回填一致），
   发送者显示名不再附带 QQ 号。
 - 工具权限（A4 / B3）：新增 `ownerQQ`、`admins`、`toolProfilesPath` 与 `tool-profiles.json`，

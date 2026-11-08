@@ -12,7 +12,7 @@
   非正整数会被忽略并告警。
 - **模型**：`provider/model` 或 `provider/model/variant`。
   写错会回退到默认模型并输出告警。
-- **未知配置项**：顶层和 `napcat`、`proactive`、`reminder`、`keepAlive`、`history`、`rateLimit`、`sensitive`、`log`、`media` 下的未知键会输出告警，
+- **未知配置项**：顶层和 `napcat`、`proactive`、`reminder`、`keepAlive`、`history`、`rateLimit`、`sensitive`、`events`、`log`、`media` 下的未知键会输出告警，
   不会被静默忽略。
 
 ## 数值范围
@@ -195,6 +195,19 @@ TUI 侧执行时结果发到该会话绑定的 QQ 聊天，没有绑定就发第
 | `/reset group:123`              | 先打断执行中的回合并删除该聊天的会话，下一条消息重开 |
 | `/tools [group:123]`            | 查看配置档与可用工具                                 |
 | `/emoji-label [all\|inc\|list]` | 给收藏表情生成中文标签（TUI 侧是 `/qq-emoji-label`） |
+
+## 通知事件订阅
+
+| 配置项             | 环境变量             | 默认值    | 说明                                  |
+| ------------------ | -------------------- | --------- | ------------------------------------- |
+| `events.subscribe` | `QQ_EVENT_SUBSCRIBE` | `message` | 订阅的事件类别：`message` / `notice`  |
+| `events.notices`   | `QQ_EVENT_NOTICES`   | `[]`      | `notice` 里关心哪些通知，留空表示全收 |
+| `events.inject`    | `QQ_EVENT_INJECT`    | `true`    | 通知是否注入会话上下文                |
+
+- 类别列表与通知列表都用逗号分隔，写错的类别会被忽略并告警。
+- `events.notices` 可以写通知类型（`group_recall`），也可以写类型加子类型（`notify.poke`）；
+  列表为空表示这一类通知全收。
+- 通知只写日志与上下文，不会自己发起一轮对话；每个聊天最多缓存 20 条、等待 30 分钟。
 
 ## 角色设定
 

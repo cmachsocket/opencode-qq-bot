@@ -187,7 +187,7 @@ qq-bridge 把这些也自己做了一遍（39 个 MCP 工具 + token 台账）�
 | B4  | 会话无法重置 / 退役 | 绑定后永久复用，上下文持续增长                                                                  | `retireSession()` 全套 + `/api/session/reset`                            | **采纳（已实现，见「A4 / B3 / B4 的落地方式」）**                        |
 | B5  | 出站文本质量        | 不做 markdown→纯文本（只在提示词里要求）；`splitMessage` 按码点切，字素簇会被切坏               | `src/md-to-plain.js` + `splitForQQ()` 代理对安全切分                     | **采纳**（已实现）：remove-markdown + Intl.Segmenter，不手写（见第六节） |
 | B6  | 失败无兜底文案      | 失败只写日志，群内表现为「不回话」                                                              | `reportTurnFailure()`：统一文案 + 节流，绝不把上游异常原文发到 QQ        | **采纳（已实现，见「B6 的落地方式」）**                                  |
-| B7  | 通知事件订阅        | 仅订阅 `message.group.normal` / `message.private`；`notice` / `request` / `meta_event` 一律不接 | 处理撤回通知、戳一戳、成员增减                                           | **采纳**：做成可配置项（见第七节）                                       |
+| B7  | 通知事件订阅        | 仅订阅 `message.group.normal` / `message.private`；`notice` / `request` / `meta_event` 一律不接 | 处理撤回通知、戳一戳、成员增减                                           | **采纳（已实现，见第七节）**                                             |
 
 ### C. 基础设施类
 
@@ -496,45 +496,45 @@ const segmenter = new Intl.Segmenter("zh", { granularity: "grapheme" })
 
 ---
 
-## 七、B7 通知事件订阅：可配置项
+## 七、B7 通知事件订阅：可配置项（已实现）
 
-**现状**：`src/index.ts` 只挂了两个消息事件（`message.group.normal` / `message.private`）。
+**原先**：`src/index.ts` 只挂了两个消息事件（`message.group.normal` / `message.private`）。
 NapLink 已经把事件按 `post_type` + `notice_type` 拆好并分发，但插件只消费消息类。
 
-**naplink 已提供的事件名**（已核对 SDK 实现）：
+**落地方式**：
 
-| 类别      | 事件名                                                                                                                                                                                                                                                 |
-| --------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| 消息      | `message` / `message.group` / `message.group.normal` / `message.private`                                                                                                                                                                               |
-| 消息-自发 | `message_sent` / `message_sent.group`                                                                                                                                                                                                                  |
-| 通知      | `notice` / `notice.group_recall` / `notice.friend_recall` / `notice.group_upload` / `notice.group_admin` / `notice.group_decrease` / `notice.group_increase` / `notice.friend_add` / `notice.notify` / `notice.notify.poke` / `notice.notify.gray_tip` |
-| 请求      | `request` / `request.friend` / `request.group` / `request.group.add` / `request.group.invite`                                                                                                                                                          |
-| 元事件    | `meta_event` / `meta_event.lifecycle` / `meta_event.heartbeat`                                                                                                                                                                                         |
-| 原始流    | `raw`（全部事件）/ `unknown`；另有 `onAny(event, data)` 兜底订阅                                                                                                                                                                                       |
+| 配置项             | 环境变量             | 默认值    | 说明                                  |
+| ------------------ | -------------------- | --------- | ------------------------------------- |
+| `events.subscribe` | `QQ_EVENT_SUBSCRIBE` | `message` | 订阅的事件类别：`message` / `notice`  |
+| `events.notices`   | `QQ_EVENT_NOTICES`   | `[]`      | `notice` 里关心哪些通知，留空表示全收 |
+| `events.inject`    | `QQ_EVENT_INJECT`    | `true`    | 通知是否注入会话上下文                |
 
-**拟配置面**（两层：类别 + 具体项）：
+- 类别列表与通知列表都用逗号分隔；写错的类别被忽略并告警，不会静默失效。
+- `events.notices` 可写通知类型（`group_recall`），也可写类型加子类型（`notify.poke`）。
+- 默认只订阅 `message`：升级插件不会突然多出行为。
 
-```jsonc
-{
-  "events": {
-    "subscribe": ["message", "notice"], // 订阅哪些 post_type 类别
-    "notices": ["group_recall", "notify.poke"], // 类别内具体关心哪些 notice_type
-    "inject": true, // 收到后是否注入会话上下文
-  },
-}
-```
+**支持的通知类型**（NapCat 实际推送的 `notice_type`）：
 
-对应环境变量：`QQ_EVENT_SUBSCRIBE=message,notice`、`QQ_EVENT_NOTICES=group_recall,notify.poke`。
+| 通知                                | 注入上下文里的说法            |
+| ----------------------------------- | ----------------------------- |
+| `group_recall` / `friend_recall`    | 有消息被撤回（不复述内容）    |
+| `group_increase` / `group_decrease` | 有人加入 / 退出 / 被移出群    |
+| `group_admin`                       | 有人被设为 / 被取消管理员     |
+| `friend_add`                        | 新增好友                      |
+| `group_upload`                      | 群里有人上传了文件            |
+| `notify.poke` / `notify.gray_tip`   | 有人戳了一下 / 群里有一条灰条 |
 
-**待定问题**：
+**行为**：
 
-1. **订阅来干什么**——只记日志（观测）、注入会话上下文、还是触发动作（被戳时回一句）？
-2. **注入的话怎么写**——复用 B1 的一次性注入通道，还是每条通知单独成轮？是否算"必须回复"？
-3. **撤回语义**——模型可能已经看过被撤回的内容；插件本地没有消息库，要不要维护"已撤回"标记？
-4. **请求类事件**（好友申请 / 加群申请）算不算本项目的事？它偏"管理动作"，可能应交给 SnowLuma MCP。
-5. **默认订阅哪些**——保守默认只 `["message"]`，其余显式开启。
-6. **高频事件**——`meta_event.heartbeat` 频率很高，默认不订阅。
-7. **白名单一致性**——通知事件同样带 `group_id` / `user_id`，应和消息一样受 `isTargetEnabled` 过滤。
+- 通知只写日志与上下文，**不自己发起一轮对话**：下一轮该聊天的上下文里附带一段
+  「聊天里发生过的通知（不需要回复）」。
+- 通知同样受 `groups` / `users` 白名单限制，不在名单里的群不会被处理。
+- 撤回类通知只说明「有消息被撤回」，不复述被撤回的内容。
+- 每个聊天最多缓存 20 条、等待 30 分钟，超时的通知不再注入。
+- 文件名、灰条内容等外部文本先净化再写进上下文。
+
+**本版不做**：请求类事件（好友申请 / 加群申请）、`meta_event` 心跳、撤回的本地标记
+（模型可能已经读过被撤回的内容，这里不做「已撤回」状态维护）。
 
 ---
 
@@ -554,7 +554,7 @@ NapLink 已经把事件按 `post_type` + `notice_type` 拆好并分发，但插�
 | B4  | 采纳（已实现）     | /reset 先打断再删会话，下一条消息重开并补历史                  |
 | B5  | 采纳（已实现）     | remove-markdown + Intl.Segmenter，不手写                       |
 | B6  | 采纳（已实现）     | 失败兜底文案：固定提示 + 5 分钟节流，上游异常原文只进日志      |
-| B7  | 采纳               | 通知事件订阅做成可配置项                                       |
+| B7  | 采纳（已实现）     | 通知事件订阅做成可配置项：只记日志并注入上下文，不自己起一轮   |
 | C1  | 采纳（已实现）     | CI：单个 job 跑类型 / Lint / 格式 / 测试 / audit，ubuntu-only  |
 | C2  | 采纳（已实现）     | TruffleHog 自定义检测器扫全部历史，CI 拦截群号 / 凭证 / PEM    |
 | C3  | 采纳（已实现）     | SECURITY.md + 安全基线 + NOTICE 数据流                         |
