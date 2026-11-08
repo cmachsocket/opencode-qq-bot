@@ -77,16 +77,17 @@ jobs:
       - name: 暂存到 npm（OIDC trusted publishing，无需 token）
         run: npm stage publish --provenance --access public
 
+      # 写到 RUNNER_TEMP：在仓库里重定向会先建出未跟踪文件，触发 release-check 的脏工作区判定
       - name: 从 CHANGELOG 取 Release 正文
         run: |
-          bun scripts/release-check.ts --tag "$GITHUB_REF_NAME" --notes > notes.md
-          printf '\n> npm 包已由 CI 暂存，需维护者在 npm 侧 2FA 批准后才可安装。\n' >> notes.md
+          bun scripts/release-check.ts --tag "$GITHUB_REF_NAME" --notes > "$RUNNER_TEMP/notes.md"
+          printf '\n> npm 包已由 CI 暂存，需维护者在 npm 侧 2FA 批准后才可安装。\n' >> "$RUNNER_TEMP/notes.md"
 
       - name: 创建 GitHub Release
         run: >-
           gh release create "$GITHUB_REF_NAME"
           --title "$GITHUB_REF_NAME"
-          --notes-file notes.md
+          --notes-file "$RUNNER_TEMP/notes.md"
           --verify-tag
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
