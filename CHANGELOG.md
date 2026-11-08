@@ -6,6 +6,7 @@
 
 ### Added
 
+- 启动时第一行日志输出插件版本号，便于确认实际运行的版本。
 - 准入判定（C6）：`groups` / `users` 改成 `access.allow` 与 `access.deny` 双列表
   （`QQ_ALLOW_GROUPS` / `QQ_ALLOW_USERS` / `QQ_DENY_GROUPS` / `QQ_DENY_USERS` /
   `QQ_ALLOW_ALL_WHEN_EMPTY`），判定顺序是 deny 命中拒绝 → allow 非空只放行名单 →

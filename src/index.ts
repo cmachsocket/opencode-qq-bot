@@ -39,6 +39,7 @@ import { createEmojiRunner, emojiCommand } from "./emoji/command"
 import { describeNotice, noticeMatches, noticeTarget } from "./events/notice"
 import { NoticeStore } from "./events/store"
 import { registerTuiCommands } from "./tui-commands"
+import { pluginVersion } from "./version"
 import { FavoriteStore } from "./emoji/favorites"
 import { FavoriteIndex } from "./emoji/favorite-index"
 import { EmojiLabeler } from "./emoji/label"
@@ -56,11 +57,13 @@ export default Plugin.define({
   async setup(ctx) {
     // 配置还没解析出来，先用一个只写控制台的日志器兜底，解析完再换成正式日志器。
     const bootstrap = createLogger("[qq-bot]", { file: false })
+    const version = pluginVersion()
     let config: QQBotConfig
     const warnings: string[] = []
     try {
       config = resolveConfig(ctx.options, process.env, (message) => warnings.push(message))
     } catch (error) {
+      bootstrap.info(`opencode-qq-bot v${version}`)
       for (const warning of warnings) bootstrap.warn(warning)
       bootstrap.error(error instanceof Error ? error.message : String(error))
       await closeLogger(bootstrap)
@@ -76,6 +79,7 @@ export default Plugin.define({
         (secret) => secret.length > 0,
       ),
     })
+    logger.info(`opencode-qq-bot v${version}`)
     for (const warning of warnings) logger.warn(warning)
     // 正式日志器已经接管，兜底日志器只写控制台，用完就关掉。
     await closeLogger(bootstrap)
