@@ -55,7 +55,7 @@ qq-bridge 把这些也自己做了一遍（39 个 MCP 工具 + token 台账）�
 | A3  | 群消息原文直入 prompt                                               | `src/model-view.ts` 净化后拼成 `[绝对时间] 名字(QQ号): 正文`                                                                                                                                        | `src/qq-model-view.js`：`sanitizeUntrustedText`（全角 `【】`、换行、零宽）+ `compactModelMessage`（先净化再去重 + 相对时间）              | **采纳**（已实现，见「A3 的落地方式」）                                                                 |
 | A4  | QQ 会话的工具面处置未定                                             | 已有 `src/tools/ask-guard.ts` 拦内置 question——**因为它会在 TUI 弹出选择框，没有 QQ 用户能应答，整轮会卡住**；这是避免阻塞，不是安全闸门。其余工具（bash/write/edit/webfetch/subagent）当前一律放开 | 注册期 `tools.restrict` + 执行期白名单（仅 MCP 白名单前缀 + `ask_user_question`/`todo_write`）                                            | **采纳**：拦 question 的理由成立、保留；待评审的是**其余工具要不要按 QQ 会话收敛**，见「A4 的平台落点」 |
 | A5  | SSRF 判定只做字符串匹配                                             | 已加固：`src/safe-fetch.ts` 把判定挪到连接层（DNS 解析后逐个 IP 校验 + 端口白名单 + 不跟随跳转），原来的 `isPrivateHost` 字符串判定已删除                                                           | `src/safe-fetch.js`：DNS 全量校验 → 连已校验 IP + 保留 Host/SNI → 逐跳重校验 → 端口白名单 `[80,443,8080,8443]`                            | **采纳**（已实现，见「A5 的落地方式」）                                                                 |
-| A6  | `qq_send_image` / `qq_send_record` 的 `file` 接受任意本地路径或 URL | 直接透传给 NapCat，无目录白名单                                                                                                                                                                     | 语音侧有库白名单 + `safeJoinLibrary` 路径穿越防护                                                                                         | **采纳**；等价于「任意文件 → 群」通道                                                                   |
+| A6  | `qq_send_image` / `qq_send_record` 的 `file` 接受任意本地路径或 URL | 直接透传给 NapCat，无目录白名单                                                                                                                                                                     | 语音侧有库白名单 + `safeJoinLibrary` 路径穿越防护                                                                                         | **采纳（已实现，见「A6 的落地方式」）**                                                                 |
 
 ### A1 的落地方式（已实现）
 
@@ -145,6 +145,36 @@ qq-bridge 把这些也自己做了一遍（39 个 MCP 工具 + token 台账）�
 
 与上游 qq-bridge 的差别：上游是自己写的 `safe-fetch.js`，思路相同；上游跟随跳转并逐跳重校验，
 本项目直接不跟随跳转（3xx 算失败），少一层攻击面；判定本身用现成的 request-filtering-agent，不重复造轮子。
+
+### A6 的落地方式（已实现）
+
+`qq_send_image` / `qq_send_record` 的 `file` 以前直接透传给 NapCat：插件进程能读到的文件，
+模型都能发进群。新增出站媒体把关（`src/media-path.ts`），本地路径只允许白名单目录，
+远端地址由插件自己下载（只允许公网地址）。
+
+| 手段       | 做法                                                                            | 挡住了什么                                     |
+| ---------- | ------------------------------------------------------------------------------- | ---------------------------------------------- |
+| 默认白名单 | 机器人工作目录 + 媒体目录，固化在代码里                                         | 工作区外的路径（`/etc`、`~/.ssh`、整个家目录） |
+| 额外白名单 | 配置项 `media.allowedDirs`（`QQ_MEDIA_ALLOWED_DIRS`），逗号分隔                 | 用户自己的图库 / 语音库                        |
+| 软链接判定 | 展开 `~`、相对路径按工作目录解析，再取真实路径判定；词法路径与真实路径都要命中  | 目录内的软链接指向目录外                       |
+| 目录边界   | 按目录边界比较前缀                                                              | `/data/qq-bot` 不会命中 `/data/qq-bot-secret`  |
+| 普通文件   | 必须是存在的普通文件                                                            | 目录、管道等特殊文件                           |
+| 远端地址   | 预检：协议、端口白名单，域名解析出的每个地址都必须是公网；通过后原样交给 NapCat | 让 NapCat 去拉内网地址                         |
+
+- 路径判定放在发送额度之前：路径不合法不占发送额度，模型可以换个文件立刻重发。
+- 远端地址由 NapCat 自己去拉，插件不碰文件：NapCat 与插件不必共享文件系统，容器、异机部署照常可用。
+- 公网判定用 `ipaddr.js`（`request-filtering-agent` 用的同一个库），规则一致：只有 `unicast` 段算公网，
+  回环、私网、CGNAT、链路本地、组播、IPv4-mapped、6to4 一律不算。
+- 已知局限：预检解析一次 DNS，NapCat 下载时会再解析一次，中间存在 DNS 重绑定窗口——
+  挡得住「地址本身就指向内网」，挡不住「先给公网 IP、后解析到内网」。
+- `base64://` 载荷不涉及路径与网络，不受影响。
+- 收藏表情用的是 NapCat 自己的地址，不走这条路径。
+- 媒体目录从 `/tmp/opencode-qq-bot-media` 迁到 `$XDG_STATE_HOME/opencode-qq-bot/media`
+  （未设置时 `~/.local/state/opencode-qq-bot/media`），和日志目录一致；旧目录里的文件自然过期。
+- 新增配置项 `media.allowedDirs`（`QQ_MEDIA_ALLOWED_DIRS`），默认为空：除了工作目录与媒体目录，
+  其它目录都要显式放开。
+
+落地位置：`src/media-path.ts`、`src/tools/qq.ts`、`src/config.ts`、`src/index.ts`
 
 ### B. 功能缺口类
 
@@ -409,7 +439,7 @@ NapLink 已经把事件按 `post_type` + `notice_type` 拆好并分发，但插�
 | A3  | 采纳（已实现）     | 群消息注入净化：结构净化 + 绝对时间标注                 |
 | A4  | 采纳               | 拦 question 保留（TUI 弹窗阻塞）；其余工具待评审        |
 | A5  | 采纳（已实现）     | SSRF 判定加固：连接级 IP 判定 + 端口白名单 + 不跟随跳转 |
-| A6  | 采纳               | 媒体路径白名单（待实现）                                |
+| A6  | 采纳（已实现）     | 媒体路径白名单：工作区 + 媒体目录 + 配置放开            |
 | B1  | 采纳（已实现）     | 一次性冷启动补历史，不做回看工具                        |
 | B2  | 采纳（方案待商讨） | 分对象记忆存储，优先级低                                |
 | B3  | 采纳               | QQ 侧管理命令（待实现）                                 |

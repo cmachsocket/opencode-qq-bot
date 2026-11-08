@@ -11,6 +11,7 @@
         "@opencode/schema": "2.2.5",
         "async-mutex": "^0.5.0",
         "flare-redact": "1.6.1",
+        "ipaddr.js": "2.5.0",
         "remove-markdown": "0.8.0",
         "request-filtering-agent": "3.2.1",
         "winston": "3.19.0",

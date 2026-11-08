@@ -9,6 +9,7 @@ import {
 } from "../emoji/favorites"
 import type { FavoriteIndex } from "../emoji/favorite-index"
 import type { Logger } from "../logger"
+import type { OutboundMedia } from "../media-path"
 import type { QQClient } from "../naplink/client"
 import { splitGraphemes, splitMessage, toPlainText } from "../outbound"
 import type { RateLimitVerdict, SendRateLimiter } from "../rate-limit"
@@ -33,6 +34,8 @@ export interface ToolDeps {
   limiter: SendRateLimiter
   /** 出站敏感信息检查，命中时整条消息不发送。 */
   sensitive: SensitiveChecker
+  /** 出站媒体的路径与地址把关。 */
+  outbound: OutboundMedia
 }
 
 interface SendMessageInput {
@@ -129,8 +132,18 @@ export async function sendPlainMessage(
  * 只暴露消息收发与只读查询，不提供封禁/踢人等破坏性操作。
  */
 export async function registerTools(deps: ToolDeps): Promise<{ dispose(): Promise<void> }> {
-  const { ctx, config, logger, manager, client, favorites, favoriteIndex, limiter, sensitive } =
-    deps
+  const {
+    ctx,
+    config,
+    logger,
+    manager,
+    client,
+    favorites,
+    favoriteIndex,
+    limiter,
+    sensitive,
+    outbound,
+  } = deps
 
   const requireTarget = (sessionID: string): ChatTarget | undefined => {
     const target = manager.targetForSession(sessionID)
@@ -289,7 +302,7 @@ export async function registerTools(deps: ToolDeps): Promise<{ dispose(): Promis
     editor.add({
       name: "send_image",
       description:
-        "向当前 QQ 群聊或私聊发送一张图片。file 可以是本地路径或 http(s) 图片地址；base64 传 base64:// 形式的数据。",
+        "向当前 QQ 群聊或私聊发送一张图片。file 可以是本地路径或 http(s) 图片地址；base64 传 base64:// 形式的数据。本地路径只能取自机器人工作目录、媒体目录和配置放开的目录；http(s) 地址只允许公网地址。",
       input: {
         type: "object",
         properties: {
@@ -306,9 +319,12 @@ export async function registerTools(deps: ToolDeps): Promise<{ dispose(): Promis
         const file = input.file ?? (input.base64 ? `base64://${input.base64}` : undefined)
         if (!file) return text("error: 缺少 file 或 base64")
         if (!isInlineData(file)) guardOutbound(target, file)
+        // 路径白名单在这里就判定：不过就不占发送额度。内联数据不涉及路径与网络。
+        const plan = isInlineData(file) ? undefined : await outbound.check(file)
         const verdict = await permit(target, nextOperation())
         if (!verdict.allowed) return refuse(context.sessionID, verdict)
-        const response = await sendSegments(target, [{ type: "image", data: { file } }])
+        const media = plan ? outbound.materialize(plan) : file
+        const response = await sendSegments(target, [{ type: "image", data: { file: media } }])
         const messageId = messageIdOf(response)
         if (messageId) manager.rememberOutgoing(target, messageId)
         manager.markMessageSent(context.sessionID)
@@ -376,7 +392,8 @@ export async function registerTools(deps: ToolDeps): Promise<{ dispose(): Promis
 
     editor.add({
       name: "send_record",
-      description: "向当前 QQ 群聊或私聊发送一条语音。file 可以是本地路径或 http(s) 音频地址。",
+      description:
+        "向当前 QQ 群聊或私聊发送一条语音。file 可以是本地路径或 http(s) 音频地址。本地路径只能取自机器人工作目录、媒体目录和配置放开的目录；http(s) 地址只允许公网地址。",
       input: {
         type: "object",
         properties: {
@@ -391,11 +408,11 @@ export async function registerTools(deps: ToolDeps): Promise<{ dispose(): Promis
         if (!target) return text("error: 当前会话没有绑定 QQ 群聊或私聊")
         if (!input.file) return text("error: 缺少 file")
         if (!isInlineData(input.file)) guardOutbound(target, input.file)
+        const plan = isInlineData(input.file) ? undefined : await outbound.check(input.file)
         const verdict = await permit(target, nextOperation())
         if (!verdict.allowed) return refuse(context.sessionID, verdict)
-        const response = await sendSegments(target, [
-          { type: "record", data: { file: input.file } },
-        ])
+        const media = plan ? outbound.materialize(plan) : input.file
+        const response = await sendSegments(target, [{ type: "record", data: { file: media } }])
         const messageId = messageIdOf(response)
         if (messageId) manager.rememberOutgoing(target, messageId)
         manager.markMessageSent(context.sessionID)

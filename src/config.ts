@@ -81,6 +81,12 @@ export interface LogConfig {
   maxFiles: number
 }
 
+/** 媒体配置。 */
+export interface MediaConfig {
+  /** 额外允许发送媒体的目录。 */
+  allowedDirs: string[]
+}
+
 export interface ModelRef {
   providerID: string
   id: string
@@ -116,6 +122,7 @@ export interface QQBotConfig {
   rateLimit: RateLimitConfig
   sensitive: SensitiveConfig
   log: LogConfig
+  media: MediaConfig
 }
 
 /** 除 NapCat 连接信息外的全部默认值。 */
@@ -138,6 +145,7 @@ export const DEFAULT_CONFIG: Omit<QQBotConfig, "napcat"> = {
   rateLimit: { maxPerMinute: 8, maxPerHour: 60, minGapMs: 1500 },
   sensitive: { enabled: true },
   log: { level: "info", dir: "", maxSize: "5m", maxFiles: 5 },
+  media: { allowedDirs: [] },
 }
 
 /** 配置告警回调。 */
@@ -360,6 +368,33 @@ function createConfigSchema(
       return parsed
     })
 
+  /** 允许发送媒体的目录：数组或逗号分隔字符串。 */
+  const mediaDirs = z
+    .unknown()
+    .optional()
+    .transform((value) => {
+      if (value === undefined || value === null) return [...defaults.media.allowedDirs]
+      const source = Array.isArray(value)
+        ? value
+        : typeof value === "string"
+          ? value.split(",")
+          : undefined
+      if (!source) {
+        if (present(value)) {
+          warn(`${label("media.allowedDirs")} 必须是字符串或字符串数组：${String(value)}`)
+        }
+        return [...defaults.media.allowedDirs]
+      }
+      const dirs: string[] = []
+      for (const entry of source) {
+        const raw = typeof entry === "string" ? entry.trim() : ""
+        if (!raw) continue
+        if (dirs.includes(raw)) continue
+        dirs.push(raw)
+      }
+      return dirs
+    })
+
   return z.object({
     napcat: z
       .object({
@@ -451,6 +486,12 @@ function createConfigSchema(
       })
       .prefault({})
       .catch(defaults.log),
+    media: z
+      .object({
+        allowedDirs: mediaDirs,
+      })
+      .prefault({})
+      .catch(defaults.media),
   })
 }
 
@@ -486,6 +527,7 @@ export const ENV_VARS = {
   "log.dir": "QQ_LOG_DIR",
   "log.maxSize": "QQ_LOG_MAX_SIZE",
   "log.maxFiles": "QQ_LOG_MAX_FILES",
+  "media.allowedDirs": "QQ_MEDIA_ALLOWED_DIRS",
 } as const
 
 const OPTION_KEYS = new Set([
@@ -507,6 +549,7 @@ const OPTION_KEYS = new Set([
   "rateLimit",
   "sensitive",
   "log",
+  "media",
 ])
 
 const NESTED_OPTION_KEYS: Record<string, ReadonlySet<string>> = {
@@ -524,6 +567,7 @@ const NESTED_OPTION_KEYS: Record<string, ReadonlySet<string>> = {
   rateLimit: new Set(["maxPerMinute", "maxPerHour", "minGapMs"]),
   sensitive: new Set(["enabled"]),
   log: new Set(["level", "dir", "maxSize", "maxFiles"]),
+  media: new Set(["allowedDirs"]),
 }
 
 /** 报告被 schema 静默剥离的未知配置项。 */
@@ -608,6 +652,7 @@ export function resolveConfig(
     rateLimit: { ...parsed.rateLimit },
     sensitive: { ...parsed.sensitive },
     log: { ...parsed.log },
+    media: { allowedDirs: [...parsed.media.allowedDirs] },
     napcat: { url, token: parsed.napcat.token },
   }
 }

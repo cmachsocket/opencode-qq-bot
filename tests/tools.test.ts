@@ -1,4 +1,7 @@
 import { describe, expect, it, vi } from "vitest"
+import { mkdtemp, writeFile } from "node:fs/promises"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import type { Plugin } from "@opencode/plugin"
 import { registerTools, TOOL_NAMESPACE } from "../src/tools/qq"
 import { DEFAULT_CONFIG, type QQBotConfig } from "../src/config"
@@ -6,6 +9,7 @@ import type { ChatTarget } from "../src/chat"
 import type { CustomFace } from "../src/emoji/favorites"
 import { FavoriteIndex, type IndexStorage } from "../src/emoji/favorite-index"
 import type { Logger } from "../src/logger"
+import { OutboundMedia } from "../src/media-path"
 import type { QQClient } from "../src/naplink/client"
 import { SendRateLimiter } from "../src/rate-limit"
 import { SensitiveChecker } from "../src/sensitive"
@@ -29,6 +33,8 @@ interface Harness {
     isKnownMessage: ReturnType<typeof vi.fn>
   }
   logger: Record<keyof Logger, ReturnType<typeof vi.fn>>
+  /** 临时工作目录，媒体文件都放在这里。 */
+  workspace: string
 }
 
 const group = (id: number): ChatTarget => ({ kind: "group", id })
@@ -115,6 +121,12 @@ async function createHarness(
     logger as unknown as Logger,
   )
 
+  const workspace = await mkdtemp(join(tmpdir(), "qq-bot-tools-"))
+  for (const name of ["a.png", "b.png", "a.amr"]) {
+    await writeFile(join(workspace, name), "media")
+  }
+  const outbound = new OutboundMedia({ workspace, allowedDirs: [workspace] })
+
   await registerTools({
     ctx,
     config,
@@ -125,9 +137,10 @@ async function createHarness(
     favoriteIndex,
     limiter: new SendRateLimiter(config.rateLimit),
     sensitive: new SensitiveChecker({ enabled: config.sensitive.enabled }),
+    outbound,
   })
 
-  return { tools, api, favorites, manager, logger }
+  return { tools, api, favorites, manager, logger, workspace }
 }
 
 const context = { sessionID: "session-1" }
@@ -278,13 +291,42 @@ describe("registerTools", () => {
 
   it("sends an image segment", async () => {
     const { tools, api } = await createHarness()
+    const url = "https://93.184.216.34/a.png"
+    const result = await tools.get(`${TOOL_NAMESPACE}_send_image`)?.execute({ file: url }, context)
+    expect(result?.content).toBe("你已成功发送图片，可以选择结束对话")
+    // 远端地址原样交给 NapCat，它自己去拉。
+    expect(api["sendGroupMessage"]).toHaveBeenCalledWith(100, [
+      { type: "image", data: { file: url } },
+    ])
+  })
+
+  it("refuses a remote address pointing at the intranet", async () => {
+    const { tools, api } = await createHarness()
+    await expect(
+      tools
+        .get(`${TOOL_NAMESPACE}_send_image`)
+        ?.execute({ file: "http://127.0.0.1:8080/a.png" }, context),
+    ).rejects.toThrow("指向内网")
+    expect(api["sendGroupMessage"]).not.toHaveBeenCalled()
+  })
+
+  it("sends inline base64 images unchanged", async () => {
+    const { tools, api } = await createHarness()
     const result = await tools
       .get(`${TOOL_NAMESPACE}_send_image`)
-      ?.execute({ file: "https://example.com/a.png" }, context)
+      ?.execute({ base64: "AAAA" }, context)
     expect(result?.content).toBe("你已成功发送图片，可以选择结束对话")
-    expect(api["sendGroupMessage"]).toHaveBeenCalledWith(100, [
-      { type: "image", data: { file: "https://example.com/a.png" } },
-    ])
+    const call = api["sendGroupMessage"]?.mock.calls[0]
+    const segments = (call?.[1] ?? []) as { data: { file: string } }[]
+    expect(segments[0]?.data.file).toBe("base64://AAAA")
+  })
+
+  it("refuses an image outside the allowed directories", async () => {
+    const { tools, api } = await createHarness()
+    await expect(
+      tools.get(`${TOOL_NAMESPACE}_send_image`)?.execute({ file: "/etc/passwd" }, context),
+    ).rejects.toThrow("不在允许的目录内")
+    expect(api["sendGroupMessage"]).not.toHaveBeenCalled()
   })
 
   it("rejects an image without a file", async () => {
@@ -371,9 +413,13 @@ describe("registerTools", () => {
   })
 
   it("marks media replies as sent", async () => {
-    const { tools, manager } = await createHarness()
-    await tools.get(`${TOOL_NAMESPACE}_send_image`)?.execute({ file: "a.png" }, context)
-    await tools.get(`${TOOL_NAMESPACE}_send_record`)?.execute({ file: "a.amr" }, context)
+    const { tools, manager, workspace } = await createHarness()
+    await tools
+      .get(`${TOOL_NAMESPACE}_send_image`)
+      ?.execute({ file: join(workspace, "a.png") }, context)
+    await tools
+      .get(`${TOOL_NAMESPACE}_send_record`)
+      ?.execute({ file: join(workspace, "a.amr") }, context)
     await tools.get(`${TOOL_NAMESPACE}_send_poke`)?.execute({ user_id: "200" }, context)
     expect(manager.markMessageSent).toHaveBeenCalledTimes(3)
   })
@@ -454,13 +500,15 @@ describe("registerTools", () => {
     })
 
     it("图片发送同样受限", async () => {
-      const { tools, api } = await createHarness(group(100), {
+      const { tools, api, workspace } = await createHarness(group(100), {
         rateLimit: { maxPerMinute: 1, maxPerHour: 0, minGapMs: 0 },
       })
-      await tools.get(`${TOOL_NAMESPACE}_send_image`)?.execute({ file: "a.png" }, context)
+      await tools
+        .get(`${TOOL_NAMESPACE}_send_image`)
+        ?.execute({ file: join(workspace, "a.png") }, context)
       const result = await tools
         .get(`${TOOL_NAMESPACE}_send_image`)
-        ?.execute({ file: "b.png" }, context)
+        ?.execute({ file: join(workspace, "b.png") }, context)
       expect(result?.content).toContain("发送频率超限")
       expect(api["sendGroupMessage"]).toHaveBeenCalledTimes(1)
     })
@@ -504,10 +552,11 @@ describe("registerTools", () => {
     })
 
     it("sends media to the private chat", async () => {
-      const { tools, api } = await createHarness(privateChat(200))
-      await tools.get(`${TOOL_NAMESPACE}_send_image`)?.execute({ file: "a.png" }, context)
+      const { tools, api, workspace } = await createHarness(privateChat(200))
+      const file = join(workspace, "a.png")
+      await tools.get(`${TOOL_NAMESPACE}_send_image`)?.execute({ file }, context)
       expect(api["sendPrivateMessage"]).toHaveBeenCalledWith(200, [
-        { type: "image", data: { file: "a.png" } },
+        { type: "image", data: { file } },
       ])
     })
 

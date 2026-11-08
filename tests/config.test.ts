@@ -313,4 +313,21 @@ describe("resolveConfig", () => {
     expect(resolveConfig({ sensitive: { enabled: false } }, ENV).sensitive.enabled).toBe(false)
     expect(resolveConfig({}, { ...ENV, QQ_SENSITIVE_ENABLED: "0" }).sensitive.enabled).toBe(false)
   })
+
+  it("reads the allowed media directories from the environment", () => {
+    const config = resolveConfig(
+      {},
+      { ...ENV, QQ_MEDIA_ALLOWED_DIRS: "/srv/library, ~/Pictures/qq-bot" },
+    )
+    expect(config.media.allowedDirs).toEqual(["/srv/library", "~/Pictures/qq-bot"])
+  })
+
+  it("reads the allowed media directories from plugin options", () => {
+    const config = resolveConfig({ media: { allowedDirs: ["/srv/library"] } }, ENV)
+    expect(config.media.allowedDirs).toEqual(["/srv/library"])
+  })
+
+  it("keeps every media directory closed by default", () => {
+    expect(resolveConfig({}, ENV).media.allowedDirs).toEqual([])
+  })
 })

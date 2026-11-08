@@ -13,7 +13,7 @@
 | @opencode/schema                    | MIT License，<https://github.com/anomalyco/opencode>                                      |
 | async-mutex                         | Copyright (c) 2016 Christian Speckner \<cnspeckn@googlemail.com\>                          |
 | flare-redact                        | Copyright (c) 2026 Umud Hasanli                                                            |
-| ipaddr.js                           | Copyright (C) 2011-2017 whitequark \<whitequark@whitequark.org\>（request-filtering-agent 的依赖） |
+| ipaddr.js                           | Copyright (C) 2011-2017 whitequark \<whitequark@whitequark.org\>                           |
 | remove-markdown                     | Copyright (c) 2015 Stian Grytøyr                                                            |
 | request-filtering-agent             | Copyright (c) 2019 azu                                                                       |
 | winston                             | Copyright (c) 2010 Charlie Robbins                                                          |

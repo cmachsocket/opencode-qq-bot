@@ -93,6 +93,7 @@ bun install
 | `log.dir`                           | `QQ_LOG_DIR`                    | XDG 日志目录  | 日志文件目录，不存在时自动创建                  |
 | `log.maxSize`                       | `QQ_LOG_MAX_SIZE`               | `5m`          | 单个日志文件的大小上限                          |
 | `log.maxFiles`                      | `QQ_LOG_MAX_FILES`              | `5`           | 保留多少个历史日志文件                          |
+| `media.allowedDirs`                 | `QQ_MEDIA_ALLOWED_DIRS`         | `[]`          | 额外允许发送图片、语音的目录                    |
 
 没配置 `groups` 和 `users` 时插件不会响应任何消息（默认全部关闭）。
 
@@ -104,6 +105,10 @@ bun install
 `~/.local/state/opencode-qq-bot/logs`），启动时自动创建。日志按天滚动成
 `qq-bot-YYYY-MM-DD.log`，每行一条 JSON，写盘前统一脱敏：识别到的凭证会变成
 `[REDACTED:<检测器>]`，普通聊天内容原样保留。
+
+`qq_send_image` / `qq_send_record` 只能发机器人工作目录、媒体目录
+（`$XDG_STATE_HOME/opencode-qq-bot/media`）和 `media.allowedDirs` 放开的目录里的文件；
+其它路径一律拒绝。http(s) 地址只允许公网地址，插件预检后仍由 NapCat 自己去下载。
 
 布尔环境变量接受 `true/false`、`1/0`、`yes/no`、`on/off`；数值直接写数字。
 写错的配置项会输出告警并回退到默认值，不会静默失效。

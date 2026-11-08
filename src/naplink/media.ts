@@ -1,9 +1,9 @@
 import { createHash } from "node:crypto"
 import { access, mkdir, readdir, stat, unlink, writeFile } from "node:fs/promises"
-import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { pathToFileURL } from "node:url"
 import type { Logger } from "../logger"
+import { defaultMediaDir } from "../media-path"
 import { type SafeFetcher, safeFetchBytes } from "../safe-fetch"
 
 /** 单张图片下载与落盘的字节上限。 */
@@ -239,7 +239,7 @@ export async function createMediaStore(
   logger: Logger,
   options: { root?: string; ttlMs?: number; fetcher?: SafeFetcher } = {},
 ): Promise<MediaStore> {
-  const root = options.root ?? join(tmpdir(), "opencode-qq-bot-media")
+  const root = options.root ?? defaultMediaDir()
   const store = new MediaStore(root, logger, options.ttlMs, options.fetcher)
   await store.cleanup()
   return store

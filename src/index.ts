@@ -8,6 +8,7 @@ import { resolveHome } from "./home"
 import { claimInstance } from "./instance"
 import { KeepAlive } from "./keepalive"
 import { createLogger, closeLogger, flushLogger } from "./logger"
+import { defaultMediaDir, OutboundMedia } from "./media-path"
 import { formatModelMessage } from "./model-view"
 import { QQClient } from "./naplink/client"
 import { createHistoryProvider } from "./naplink/history"
@@ -106,7 +107,13 @@ export default Plugin.define({
     await soul.load()
 
     const client = new QQClient(config.napcat, logger)
-    const media = await createMediaStore(logger)
+    const mediaDir = defaultMediaDir()
+    const media = await createMediaStore(logger, { root: mediaDir })
+    // 出站媒体把关：只允许工作目录、媒体目录和配置里放开的目录，远端地址只允许公网。
+    const outbound = new OutboundMedia({
+      workspace: home.directory,
+      allowedDirs: [home.directory, mediaDir, ...config.media.allowedDirs],
+    })
     const nameCache = new Map<string, { name: string; expires: number }>()
     const history = createHistoryProvider({ api: client.api, logger, media, names: nameCache })
     // 出站限流：模型驱动的发送与插件自己发的消息共用一个限流器。
@@ -145,6 +152,7 @@ export default Plugin.define({
       favoriteIndex,
       limiter,
       sensitive,
+      outbound,
     })
     const emojiCommandRegistration = await registerEmojiCommand({
       ctx,

@@ -12,7 +12,7 @@
   非正整数会被忽略并告警。
 - **模型**：`provider/model` 或 `provider/model/variant`。
   写错会回退到默认模型并输出告警。
-- **未知配置项**：顶层和 `napcat`、`proactive`、`reminder`、`keepAlive`、`history`、`rateLimit`、`sensitive`、`log` 下的未知键会输出告警，
+- **未知配置项**：顶层和 `napcat`、`proactive`、`reminder`、`keepAlive`、`history`、`rateLimit`、`sensitive`、`log`、`media` 下的未知键会输出告警，
   不会被静默忽略。
 
 ## 数值范围
@@ -133,6 +133,26 @@ NapCat 连接断开后机器人就不再响应。
 - 脱敏只打码不拦截：普通中文聊天、QQ 号、手机号、邮箱、URL、UUID 原样保留。
 - 插件卸载时会等文件流落盘，避免丢掉最后几行日志。
 
+## 出站媒体路径
+
+`qq_send_image` / `qq_send_record` 的 `file` 只接受白名单目录里的本地文件，
+或者插件能下载的公网地址。
+
+| 允许的目录     | 来源                                            | 说明                         |
+| -------------- | ----------------------------------------------- | ---------------------------- |
+| 机器人工作目录 | 固化（`home` 指向的目录）                       | 模型 `write` / `bash` 的产物 |
+| 媒体目录       | 固化（`$XDG_STATE_HOME/opencode-qq-bot/media`） | 入站图片缓存、下载的远端媒体 |
+| 额外目录       | `media.allowedDirs`（`QQ_MEDIA_ALLOWED_DIRS`）  | 用户自己的图库 / 语音库      |
+
+- 判定时会展开 `~`，相对路径按机器人工作目录解析，再取真实路径比较：
+  目录里的软链接指向目录外同样拒绝。
+- 按目录边界比较：`/data/qq-bot` 不会命中 `/data/qq-bot-secret`。
+- 必须是存在的普通文件；路径不合法时不占发送额度，模型可以换个文件重发。
+- http(s) 地址由插件预检：协议与端口要在白名单里，域名解析出的每个地址都必须是公网；
+  通过后地址原样交给 NapCat 去下载，插件不碰文件（NapCat 与插件不必共享文件系统）。
+- 预检只解析一次 DNS，NapCat 下载时会再解析一次，中间存在 DNS 重绑定窗口。
+- `media.allowedDirs` 默认为空：除工作目录与媒体目录外，其它目录都要显式放开。
+
 ## 角色设定
 
 `souls/` 目录里可以放多份角色设定，`soulName` 选生效的那份，`soulPath` 可以覆盖成任意文件或目录。
@@ -150,7 +170,8 @@ NapCat 连接断开后机器人就不再响应。
 
 ## 图片文件
 
-OpenCode 的附件只接受 `file:` 与 `data:`。远端图片会先下载到受控临时目录，
+OpenCode 的附件只接受 `file:` 与 `data:`。远端图片会先下载到受控临时目录
+（`$XDG_STATE_HOME/opencode-qq-bot/media`，未设置时 `~/.local/state/opencode-qq-bot/media`），
 再以 `file:` 引用交给会话，避免 base64 字符串进入插件缓存和每轮 prompt。
 
 | 限制             | 值   | 说明                                   |

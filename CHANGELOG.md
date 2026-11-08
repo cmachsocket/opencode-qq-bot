@@ -72,6 +72,18 @@
   插件卸载时等文件流落盘，避免丢掉最后几行。
   新增配置项 `log.level`（`QQ_LOG_LEVEL`）、`log.dir`（`QQ_LOG_DIR`）、
   `log.maxSize`（`QQ_LOG_MAX_SIZE`）、`log.maxFiles`（`QQ_LOG_MAX_FILES`）。
+- 出站媒体路径白名单（`src/media-path.ts`）：`qq_send_image` / `qq_send_record` 的 `file`
+  以前直接透传给 NapCat，插件进程能读到的文件模型都能发进群。现在本地路径只允许机器人工作目录、
+  媒体目录和 `media.allowedDirs`（`QQ_MEDIA_ALLOWED_DIRS`）放开的目录；判定时展开 `~`、
+  相对路径按工作目录解析、再取真实路径比较，目录内的软链接指向目录外同样拒绝，目录按边界比较
+  （`/data/qq-bot` 不会命中 `/data/qq-bot-secret`），必须是存在的普通文件。
+  http(s) 地址改为先预检再交给 NapCat：协议与端口要在白名单里，域名解析出的每个地址都必须是公网
+  （用 `ipaddr.js`，与 `request-filtering-agent` 同一套规则），通过后地址原样给 NapCat 自己去下载，
+  插件不碰文件，NapCat 与插件不必共享文件系统。已知局限是 DNS 重绑定窗口：预检解析一次，
+  NapCat 下载时再解析一次，挡得住地址本身指向内网，挡不住先给公网 IP 后解析到内网。
+  路径判定在发送额度之前，不合法的路径不占额度，模型可以立刻重发。
+  媒体目录同时从 `/tmp/opencode-qq-bot-media` 迁到 `$XDG_STATE_HOME/opencode-qq-bot/media`
+  （未设置时 `~/.local/state/opencode-qq-bot/media`），与日志目录一致。
 
 ### Changed
 
