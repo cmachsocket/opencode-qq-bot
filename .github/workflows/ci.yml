@@ -15,7 +15,7 @@ concurrency:
 
 jobs:
   check:
-    name: 类型 / 风格 / 测试
+    name: 门禁
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -37,37 +37,9 @@ jobs:
       - name: 格式检查
         run: bun run format:check
 
+      # 含 tests/notice.test.ts：LICENSE ↔ package.json、NOTICE 覆盖全部运行时依赖
       - name: 测试
         run: bun run test
 
-  audit:
-    name: 依赖漏洞扫描
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v5
-
-      - uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: "1.4.4"
-
-      - name: 安装依赖（冻结锁文件）
-        run: bun install --frozen-lockfile
-
-      - name: bun audit（只查运行时依赖，高危及以上）
+      - name: 依赖漏洞扫描（只查运行时依赖，高危及以上）
         run: bun audit --production --audit-level=high
-
-  license:
-    name: 许可证与 NOTICE 一致性
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v5
-
-      - uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: "1.4.4"
-
-      - name: 安装依赖（冻结锁文件）
-        run: bun install --frozen-lockfile
-
-      - name: 校验 LICENSE 与 NOTICE
-        run: bunx vitest run tests/notice.test.ts

@@ -8,10 +8,11 @@
 
 ### Added
 
-- CI（`.github/workflows/ci.yml`）：推 `main`、PR、手动触发三条入口，跑
-  冻结锁文件安装 → `tsc --noEmit` → `eslint .` → `vitest run` → `prettier --check .`；
-  另有两个独立 job 跑 `bun audit --production --audit-level=high` 与许可证 / NOTICE 一致性检查。
-  只跑 ubuntu，Windows 路径差异等真出问题再补。
+- CI（`.github/workflows/ci.yml`）：推 `main`、PR、手动触发三条入口，一个 job 里依次跑
+  冻结锁文件安装 → `tsc --noEmit` → `eslint .` → `prettier --check .` → `vitest run` →
+  `bun audit --production --audit-level=high`。许可证 / NOTICE 一致性由 `tests/notice.test.ts`
+  一起跑。只跑 ubuntu，Windows 路径差异等真出问题再补；合成一个 job 是为了避免多个 job
+  同时下载 bun 二进制被限流。
 - 发布流程（`.github/workflows/release.yml` + `scripts/release-check.ts` + `docs/release.md`）：
   推 `vX.Y.Z` tag 后先做同样的门禁，通过才 `npm publish --provenance --access public` 并按
   CHANGELOG 对应段创建 GitHub Release。`bun run release:check` 可在本地先跑一遍：
