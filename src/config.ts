@@ -99,6 +99,12 @@ export interface QQBotConfig {
   groups: number[]
   /** 参与 AI 对话的私聊 QQ 号。 */
   users: number[]
+  /** 机器人所有者 QQ 号：可用管理命令，并拥有全部工具权限。 */
+  ownerQQ?: number
+  /** 管理员 QQ 号：拥有全部工具权限。 */
+  admins: number[]
+  /** 工具配置文件路径，空表示当前工作目录下的 `tool-profiles.json`。 */
+  toolProfilesPath?: string
   /** 角色设定文件路径，默认使用插件包内的 souls 目录。 */
   soulPath?: string
   /** souls 目录里的角色设定文件名，默认 default.txt。 */
@@ -129,6 +135,8 @@ export interface QQBotConfig {
 export const DEFAULT_CONFIG: Omit<QQBotConfig, "napcat"> = {
   groups: [],
   users: [],
+  admins: [],
+  toolProfilesPath: "",
   sendDelayMs: 1000,
   warnLength: 500,
   reuseSession: false,
@@ -355,6 +363,32 @@ function createConfigSchema(
       return parsed
     })
 
+  const admins = z
+    .unknown()
+    .optional()
+    .transform((value) => {
+      if (value === undefined || value === null) return [...defaults.admins]
+      const parsed = toIds(value, warn, label("admins"), "QQ 号")
+      if (!parsed) {
+        if (present(value)) warn(`${label("admins")} 解析不出 QQ 号：${String(value)}`)
+        return [...defaults.admins]
+      }
+      return parsed
+    })
+
+  const ownerQQ = z
+    .unknown()
+    .optional()
+    .transform((value) => {
+      if (!present(value)) return defaults.ownerQQ
+      const parsed = Number(typeof value === "string" ? value.trim() : value)
+      if (!Number.isInteger(parsed) || parsed <= 0) {
+        warn(`${label("ownerQQ")} 不是合法的 QQ 号：${String(value)}`)
+        return defaults.ownerQQ
+      }
+      return parsed
+    })
+
   const model = z
     .unknown()
     .optional()
@@ -405,6 +439,9 @@ function createConfigSchema(
       .catch({ url: napcat.url, token: napcat.token }),
     groups,
     users,
+    admins,
+    ownerQQ,
+    toolProfilesPath: text("toolProfilesPath", defaults.toolProfilesPath),
     soulPath: text("soulPath", defaults.soulPath),
     soulName: text("soulName", defaults.soulName),
     home: text("home", defaults.home),
@@ -501,6 +538,9 @@ export const ENV_VARS = {
   "napcat.token": "NAPCAT_WS_TOKEN",
   groups: "QQ_TARGET_GROUPS",
   users: "QQ_TARGET_USERS",
+  ownerQQ: "QQ_OWNER_QQ",
+  admins: "QQ_ADMINS",
+  toolProfilesPath: "QQ_TOOL_PROFILES",
   soulPath: "QQ_BOT_SOUL_PATH",
   soulName: "QQ_BOT_SOUL_NAME",
   home: "QQ_BOT_HOME",
@@ -534,6 +574,9 @@ const OPTION_KEYS = new Set([
   "napcat",
   "groups",
   "users",
+  "ownerQQ",
+  "admins",
+  "toolProfilesPath",
   "soulPath",
   "soulName",
   "home",
@@ -641,10 +684,15 @@ export function resolveConfig(
     )
   }
 
+  // owner 必须能私聊到机器人，否则管理命令无处触发；没写进 users 时自动补上。
+  const users = [...parsed.users]
+  if (parsed.ownerQQ !== undefined && !users.includes(parsed.ownerQQ)) users.push(parsed.ownerQQ)
+
   return {
     ...parsed,
     groups: [...parsed.groups],
-    users: [...parsed.users],
+    users,
+    admins: [...parsed.admins],
     proactive: { ...parsed.proactive },
     reminder: { ...parsed.reminder },
     keepAlive: { ...parsed.keepAlive },

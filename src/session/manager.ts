@@ -8,6 +8,7 @@ import type { BotHome } from "../home"
 import type { Logger } from "../logger"
 import type { HistoryPosition, HistoryProvider } from "../naplink/history"
 import { limitFiles, type PromptFile } from "../naplink/render"
+import type { Role } from "../tools/policy"
 
 /** 插件存储里保存会话与目标绑定的键。 */
 const BINDINGS_KEY = "bindings"
@@ -73,6 +74,8 @@ export interface Turn {
   proactive?: boolean
   /** 本轮最后一条 QQ 消息的位置，用来记录已经投递到哪里。 */
   source?: HistoryPosition
+  /** 发送者角色；决定这一轮能用哪些工具，缺省按普通成员处理。 */
+  role?: Role
 }
 
 interface ChatState {
@@ -118,6 +121,13 @@ export function mergeTurns(turns: readonly Turn[]): Turn {
     (latest, turn) => turn.source ?? latest,
     undefined,
   )
+  // 一批消息可能来自不同的人：按最低权限执行，避免普通成员的话借到管理员的工具。
+  const roles = unique.map((turn) => turn.role ?? "member")
+  const role: Role = roles.includes("member")
+    ? "member"
+    : roles.includes("admin")
+      ? "admin"
+      : "owner"
   return {
     // 合并后的批次沿用第一条消息的幂等键，重试时保持一致。
     ...(unique[0]?.id ? { id: unique[0].id } : {}),
@@ -127,6 +137,7 @@ export function mergeTurns(turns: readonly Turn[]): Turn {
       .join("\n"),
     files: limitFiles(unique.flatMap((turn) => turn.files)),
     atMe: unique.some((turn) => turn.atMe),
+    role,
     ...(unique.some((turn) => turn.proactive) ? { proactive: true } : {}),
     ...(source ? { source } : {}),
   }
@@ -348,6 +359,79 @@ export class SessionManager {
   /** 当前轮次的消息。 */
   currentTurn(sessionID: string): Turn | undefined {
     return this.sessions.get(sessionID)?.current
+  }
+
+  /** 当前轮次发送者的角色；没有轮次时按普通成员处理。 */
+  currentRole(sessionID: string): Role {
+    return this.sessions.get(sessionID)?.current?.role ?? "member"
+  }
+
+  /**
+   * 正在执行的 QQ 轮次：目标、轮次本身与发送者角色。
+   *
+   * 没有轮次（TUI 里人工驱动）或会话没有绑定 QQ 目标时返回 undefined。
+   */
+  activeTurn(sessionID: string): { target: ChatTarget; turn: Turn; role: Role } | undefined {
+    const state = this.sessions.get(sessionID)
+    if (!state?.current) return undefined
+    return { target: state.target, turn: state.current, role: state.current.role ?? "member" }
+  }
+
+  /**
+   * 重置一个聊天：先打断正在执行的回合，再解绑并删除会话。
+   *
+   * 下一条消息会新建会话并正常补历史；返回是否真的打断过。
+   */
+  async resetTarget(target: ChatTarget): Promise<{ sessionID?: string; interrupted: boolean }> {
+    const state = this.state(target)
+    const sessionID = state.sessionID
+    let interrupted = false
+    if (sessionID && (await this.sessionRunning(sessionID))) {
+      try {
+        await this.ctx.session.interrupt({ sessionID })
+        interrupted = true
+      } catch (error) {
+        this.logger.warn(`${targetLabel(target)} 打断会话 ${sessionID} 失败`, error)
+      }
+    }
+    if (sessionID) {
+      this.sessions.delete(sessionID)
+      this.verifiedSessions.delete(sessionID)
+      await this.ctx.session.remove({ sessionID }).catch((error: unknown) => {
+        this.logger.warn(`${targetLabel(target)} 删除会话 ${sessionID} 失败`, error)
+      })
+      state.sessionID = undefined
+    }
+    state.buffer = []
+    state.pending = undefined
+    state.pendingAttempts = 0
+    state.current = undefined
+    state.awaitingSend = false
+    state.reminders = 0
+    state.historyDone = false
+    state.sessionCreated = false
+    state.idleAt = Date.now()
+    this.scheduleSave()
+    return { sessionID, interrupted }
+  }
+
+  /** 各聊天当前状态的快照，供管理命令展示。 */
+  snapshot(): Array<{
+    target: ChatTarget
+    sessionID?: string
+    busy: boolean
+    buffered: number
+    pending: boolean
+  }> {
+    return [...this.states.values()]
+      .map((state) => ({
+        target: state.target,
+        ...(state.sessionID ? { sessionID: state.sessionID } : {}),
+        busy: state.current !== undefined,
+        buffered: state.buffer.length,
+        pending: state.pending !== undefined,
+      }))
+      .sort((left, right) => targetKey(left.target).localeCompare(targetKey(right.target)))
   }
 
   /** 当前是否有 QQ 消息轮次正在执行，用于阻止手动 prompt 调用 QQ 工具。 */

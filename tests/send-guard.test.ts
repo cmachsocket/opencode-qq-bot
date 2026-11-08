@@ -22,6 +22,7 @@ interface Harness {
   registration: { dispose(): Promise<void> }
   disposers: ReturnType<typeof vi.fn>[]
   manager: {
+    activeTurn: ReturnType<typeof vi.fn>
     hasActiveTurn: ReturnType<typeof vi.fn>
     currentTurn: ReturnType<typeof vi.fn>
   }
@@ -41,6 +42,9 @@ async function createHarness(): Promise<Harness> {
   let active = true
   let turn: Turn | undefined = newTurn()
   const manager = {
+    activeTurn: vi.fn(() =>
+      active ? { target: { kind: "group", id: 100 }, turn, role: "member" } : undefined,
+    ),
     hasActiveTurn: vi.fn(() => active),
     currentTurn: vi.fn(() => turn),
   }

@@ -34,8 +34,9 @@ export async function registerSendGuard(
   const last = new Map<string, LastCall>()
 
   const before = await ctx.tool.hook("execute.before", async (event) => {
-    if (!manager.hasActiveTurn(event.sessionID)) return
-    const turn = manager.currentTurn(event.sessionID)
+    const active = manager.activeTurn(event.sessionID)
+    if (!active) return
+    const turn = active.turn
     const previous = last.get(event.sessionID)
     const send = SEND_TOOL.test(event.tool)
     if (previous !== undefined && previous.turn === turn && previous.send && send) {

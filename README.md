@@ -10,6 +10,7 @@
 - 新建会话或重启恢复时，把最近的历史消息拼进首轮提示，模型不至于对之前聊过什么一无所知
 - 收藏表情（表情包）可以用 `/emoji-label` 生成中文标签，模型按收藏表情编号把表情发回聊天
 - 模型失败或中断时往聊天里补一条固定提示（同一目标 5 分钟内最多一条），不会只剩日志里的一行错误
+- 工具按角色与聊天分配：owner / 管理员全开，普通成员默认只有联网搜索、网页抓取与发消息工具
 - 角色设定放在 `souls/` 目录，可放多份，按文件名切换，改动后下一轮立即生效
 
 ## 环境要求
@@ -62,39 +63,42 @@ bun install
 插件不会读取项目 `.env`。如果选择用环境变量配置，必须把变量注入 OpenCode 服务进程本身，
 可参考 `.env.example`；`cp .env.example .env` 不会生效。
 
-| 选项                                | 环境变量                        | 默认值        | 说明                                            |
-| ----------------------------------- | ------------------------------- | ------------- | ----------------------------------------------- |
-| `napcat.url`                        | `NAPCAT_WS_URL`                 | 无（必填）    | NapCat 正向 WebSocket 地址                      |
-| `napcat.token`                      | `NAPCAT_WS_TOKEN`               | 无            | NapCat 访问令牌                                 |
-| `groups`                            | `QQ_TARGET_GROUPS`              | `[]`          | 参与对话的群号，逗号分隔                        |
-| `users`                             | `QQ_TARGET_USERS`               | `[]`          | 参与对话的私聊 QQ 号，逗号分隔                  |
-| `soulPath`                          | `QQ_BOT_SOUL_PATH`              | 包内 `souls/` | 角色设定文件或目录路径                          |
-| `soulName`                          | `QQ_BOT_SOUL_NAME`              | `default.txt` | `souls` 目录里的角色设定文件名                  |
-| `home`                              | `QQ_BOT_HOME`                   | XDG 工作区    | 机器人会话的工作目录，必须是绝对路径或 `~/`     |
-| `agent`                             | `QQ_BOT_AGENT`                  | OpenCode 默认 | 会话使用的 agent                                |
-| `model`                             | `QQ_BOT_MODEL`                  | OpenCode 默认 | 会话使用的模型，格式 `provider/model[/variant]` |
-| `sendDelayMs`                       | `QQ_SEND_DELAY_MS`              | `1000`        | 超长消息分段发送时每段之间的间隔                |
-| `warnLength`                        | `QQ_WARN_LENGTH`                | `500`         | 单次发送的内容长度超过该值时告警                |
-| `reuseSession`                      | `QQ_REUSE_SESSION`              | `false`       | 没有保存的绑定时，按会话标记找回上一次的会话    |
-| `proactive.enabled`                 | `QQ_PROACTIVE_ENABLED`          | `true`        | 是否启用主动说话                                |
-| `proactive.silenceThresholdSeconds` | `QQ_PROACTIVE_SILENCE_SECONDS`  | `10800`       | 沉默多久后才开始计算主动说话概率                |
-| `proactive.startProbability`        | `QQ_PROACTIVE_P_START`          | `0.01`        | 刚跨过阈值时的概率                              |
-| `proactive.probabilityPerHour`      | `QQ_PROACTIVE_P_SLOPE_PER_HOUR` | `0.05`        | 每多沉默一小时概率的增量                        |
-| `proactive.tickSeconds`             | `QQ_PROACTIVE_TICK_SECONDS`     | `3600`        | 心跳间隔，必须大于 0                            |
-| `reminder.enabled`                  | `QQ_REMINDER_ENABLED`           | `true`        | 模型一轮没调用发送工具时是否提醒                |
-| `reminder.max`                      | `QQ_REMINDER_MAX`               | `2`           | 连续提醒次数上限                                |
-| `keepAlive.enabled`                 | `QQ_KEEP_ALIVE_ENABLED`         | `true`        | 是否启用保活心跳                                |
-| `keepAlive.seconds`                 | `QQ_KEEP_ALIVE_SECONDS`         | `1200`        | 保活心跳间隔（秒），必须大于 0                  |
-| `history.count`                     | `QQ_HISTORY_COUNT`              | `20`          | 新建或恢复会话时补多少条历史，`0` 表示关闭      |
-| `rateLimit.maxPerMinute`            | `QQ_RATE_MAX_PER_MINUTE`        | `8`           | 每分钟最多发多少条消息，`0` 表示不限制          |
-| `rateLimit.maxPerHour`              | `QQ_RATE_MAX_PER_HOUR`          | `60`          | 每小时最多发多少条消息，`0` 表示不限制          |
-| `rateLimit.minGapMs`                | `QQ_RATE_MIN_GAP_MS`            | `1500`        | 相邻两次发送之间的最小间隔（毫秒）              |
-| `sensitive.enabled`                 | `QQ_SENSITIVE_ENABLED`          | `true`        | 拦截含凭证、令牌、私钥的出站消息                |
-| `log.level`                         | `QQ_LOG_LEVEL`                  | `info`        | 日志级别：`debug` / `info` / `warn` / `error`   |
-| `log.dir`                           | `QQ_LOG_DIR`                    | XDG 日志目录  | 日志文件目录，不存在时自动创建                  |
-| `log.maxSize`                       | `QQ_LOG_MAX_SIZE`               | `5m`          | 单个日志文件的大小上限                          |
-| `log.maxFiles`                      | `QQ_LOG_MAX_FILES`              | `5`           | 保留多少个历史日志文件                          |
-| `media.allowedDirs`                 | `QQ_MEDIA_ALLOWED_DIRS`         | `[]`          | 额外允许发送图片、语音的目录                    |
+| 选项                                | 环境变量                        | 默认值               | 说明                                                  |
+| ----------------------------------- | ------------------------------- | -------------------- | ----------------------------------------------------- |
+| `napcat.url`                        | `NAPCAT_WS_URL`                 | 无（必填）           | NapCat 正向 WebSocket 地址                            |
+| `napcat.token`                      | `NAPCAT_WS_TOKEN`               | 无                   | NapCat 访问令牌                                       |
+| `groups`                            | `QQ_TARGET_GROUPS`              | `[]`                 | 参与对话的群号，逗号分隔                              |
+| `users`                             | `QQ_TARGET_USERS`               | `[]`                 | 参与对话的私聊 QQ 号，逗号分隔                        |
+| `ownerQQ`                           | `QQ_OWNER_QQ`                   | 无                   | 所有者 QQ：管理命令只在它的私聊生效，自动加入 `users` |
+| `admins`                            | `QQ_ADMINS`                     | `[]`                 | 管理员 QQ 号，逗号分隔：拥有全部工具权限              |
+| `toolProfilesPath`                  | `QQ_TOOL_PROFILES`              | `tool-profiles.json` | 工具配置文件路径（相对当前工作目录）                  |
+| `soulPath`                          | `QQ_BOT_SOUL_PATH`              | 包内 `souls/`        | 角色设定文件或目录路径                                |
+| `soulName`                          | `QQ_BOT_SOUL_NAME`              | `default.txt`        | `souls` 目录里的角色设定文件名                        |
+| `home`                              | `QQ_BOT_HOME`                   | XDG 工作区           | 机器人会话的工作目录，必须是绝对路径或 `~/`           |
+| `agent`                             | `QQ_BOT_AGENT`                  | OpenCode 默认        | 会话使用的 agent                                      |
+| `model`                             | `QQ_BOT_MODEL`                  | OpenCode 默认        | 会话使用的模型，格式 `provider/model[/variant]`       |
+| `sendDelayMs`                       | `QQ_SEND_DELAY_MS`              | `1000`               | 超长消息分段发送时每段之间的间隔                      |
+| `warnLength`                        | `QQ_WARN_LENGTH`                | `500`                | 单次发送的内容长度超过该值时告警                      |
+| `reuseSession`                      | `QQ_REUSE_SESSION`              | `false`              | 没有保存的绑定时，按会话标记找回上一次的会话          |
+| `proactive.enabled`                 | `QQ_PROACTIVE_ENABLED`          | `true`               | 是否启用主动说话                                      |
+| `proactive.silenceThresholdSeconds` | `QQ_PROACTIVE_SILENCE_SECONDS`  | `10800`              | 沉默多久后才开始计算主动说话概率                      |
+| `proactive.startProbability`        | `QQ_PROACTIVE_P_START`          | `0.01`               | 刚跨过阈值时的概率                                    |
+| `proactive.probabilityPerHour`      | `QQ_PROACTIVE_P_SLOPE_PER_HOUR` | `0.05`               | 每多沉默一小时概率的增量                              |
+| `proactive.tickSeconds`             | `QQ_PROACTIVE_TICK_SECONDS`     | `3600`               | 心跳间隔，必须大于 0                                  |
+| `reminder.enabled`                  | `QQ_REMINDER_ENABLED`           | `true`               | 模型一轮没调用发送工具时是否提醒                      |
+| `reminder.max`                      | `QQ_REMINDER_MAX`               | `2`                  | 连续提醒次数上限                                      |
+| `keepAlive.enabled`                 | `QQ_KEEP_ALIVE_ENABLED`         | `true`               | 是否启用保活心跳                                      |
+| `keepAlive.seconds`                 | `QQ_KEEP_ALIVE_SECONDS`         | `1200`               | 保活心跳间隔（秒），必须大于 0                        |
+| `history.count`                     | `QQ_HISTORY_COUNT`              | `20`                 | 新建或恢复会话时补多少条历史，`0` 表示关闭            |
+| `rateLimit.maxPerMinute`            | `QQ_RATE_MAX_PER_MINUTE`        | `8`                  | 每分钟最多发多少条消息，`0` 表示不限制                |
+| `rateLimit.maxPerHour`              | `QQ_RATE_MAX_PER_HOUR`          | `60`                 | 每小时最多发多少条消息，`0` 表示不限制                |
+| `rateLimit.minGapMs`                | `QQ_RATE_MIN_GAP_MS`            | `1500`               | 相邻两次发送之间的最小间隔（毫秒）                    |
+| `sensitive.enabled`                 | `QQ_SENSITIVE_ENABLED`          | `true`               | 拦截含凭证、令牌、私钥的出站消息                      |
+| `log.level`                         | `QQ_LOG_LEVEL`                  | `info`               | 日志级别：`debug` / `info` / `warn` / `error`         |
+| `log.dir`                           | `QQ_LOG_DIR`                    | XDG 日志目录         | 日志文件目录，不存在时自动创建                        |
+| `log.maxSize`                       | `QQ_LOG_MAX_SIZE`               | `5m`                 | 单个日志文件的大小上限                                |
+| `log.maxFiles`                      | `QQ_LOG_MAX_FILES`              | `5`                  | 保留多少个历史日志文件                                |
+| `media.allowedDirs`                 | `QQ_MEDIA_ALLOWED_DIRS`         | `[]`                 | 额外允许发送图片、语音的目录                          |
 
 没配置 `groups` 和 `users` 时插件不会响应任何消息（默认全部关闭）。
 
@@ -185,6 +189,34 @@ souls/
 发送类工具（消息、图片、语音、收藏表情、转发、戳一戳）成功后都算本轮已回复，不会再触发补发提醒。
 连续调用发送类工具会被拒绝，避免把同一条消息发两遍；中间调用任意其它工具后即可再次发送。
 工具只在当前聊天配置仍启用、且会话正处理 QQ 消息轮次时可用。
+
+### 工具权限与配置档
+
+工具按「发送者角色 + 聊天」分配，配置写在当前工作目录的 `tool-profiles.json`
+（`toolProfilesPath` 可改路径，模板见 `tool-profiles.example.json`）：
+
+| 角色               | 使用的配置档                                   |
+| ------------------ | ---------------------------------------------- |
+| owner（`ownerQQ`） | `admin`                                        |
+| 管理员（`admins`） | `admin`                                        |
+| 其他人             | 该群 / 私聊指定的档，未指定用 `defaultProfile` |
+
+```json
+{
+  "defaultProfile": "chat",
+  "profiles": {
+    "chat": { "allow": ["websearch", "webfetch", "qq_*"], "deny": [] },
+    "readonly": { "allow": ["read", "glob", "grep", "qq_*"], "deny": [] },
+    "admin": { "allow": ["*"], "deny": [] }
+  },
+  "chats": { "group:100": "readonly" }
+}
+```
+
+- `allow` 就是白名单：没列出的工具一律不可用；支持 `*` 与 `qq_*` 这类通配，`deny` 优先于 `allow`。
+- 文件缺失时用内置默认值；改完下一轮生效；写到一半或解析失败会沿用上一份并告警。
+- 普通成员的默认档只放行 `websearch`、`webfetch` 与 `qq_*`（发消息），`shell` / `write` / `read` / 子代理等本地工具全部拒绝；子代理被挡是因为它会开新会话，绕过按聊天过滤。
+- 限制分两层：上下文里删掉不允许的工具，执行前再挡一次，Code Mode 与并发调用也绕不过去。
 
 ### 出站限流
 

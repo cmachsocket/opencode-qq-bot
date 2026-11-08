@@ -1,0 +1,21 @@
+{
+  "defaultProfile": "chat",
+  "profiles": {
+    "chat": {
+      "allow": ["websearch", "webfetch", "qq_*"],
+      "deny": []
+    },
+    "readonly": {
+      "allow": ["read", "glob", "grep", "qq_*"],
+      "deny": []
+    },
+    "admin": {
+      "allow": ["*"],
+      "deny": []
+    }
+  },
+  "chats": {
+    "group:100": "readonly",
+    "private:200": "chat"
+  }
+}
