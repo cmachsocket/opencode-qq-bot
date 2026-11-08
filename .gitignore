@@ -14,3 +14,6 @@ opencode.json
 
 # 本地工具权限配置：含真实群号/QQ 号，只保留模板
 tool-profiles.json
+
+# 本地会话行为覆盖：含真实群号/QQ 号，只保留模板
+chat-overrides.json

@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest"
+import { mkdtemp, writeFile } from "node:fs/promises"
 import { join } from "node:path"
 import { tmpdir } from "node:os"
 import {
@@ -18,6 +19,7 @@ import { registerTuiCommands, tuiCommandName } from "../src/tui-commands"
 import type { Plugin } from "@opencode/plugin"
 import type { SendRateLimiter } from "../src/rate-limit"
 import { accessConfig } from "./fixtures"
+import { ChatOverrides } from "../src/overrides"
 
 const logger: Logger = {
   debug: () => {},
@@ -55,13 +57,16 @@ function createDeps() {
     resetTarget,
   } as unknown as SessionManager
   const policy = new ToolPolicy(join(tmpdir(), "qq-policy-commands", "none.json"), logger)
+  const overrides = new ChatOverrides(join(tmpdir(), "qq-overrides-commands", "none.json"), logger)
   return {
     sent,
     resetTarget,
+    overrides,
     deps: {
       config,
       manager,
       policy,
+      overrides,
       target: { kind: "private" as const, id: 200 },
       send: async (target: ChatTarget, text: string) => {
         sent.push({ target, text })
@@ -167,6 +172,17 @@ describe("handleCommand", () => {
     expect(sent[0]?.text).toContain("缓存 2 条")
   })
 
+  it("shows the wake mode of every chat in /status", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "qq-overrides-status-"))
+    const path = join(dir, "chat-overrides.json")
+    await writeFile(path, JSON.stringify({ chats: { "group:100": { wake: "all" } } }), "utf8")
+    const { deps, sent } = createDeps()
+    deps.overrides = new ChatOverrides(path, logger)
+    expect(await handleCommand("/status", deps)).toBe(true)
+    expect(sent[0]?.text).toContain("唤醒 all")
+    expect(sent[0]?.text).toContain("唤醒 mention（默认）")
+  })
+
   it("lists every chat when /reset has no argument", async () => {
     const { deps, sent, resetTarget } = createDeps()
     expect(await handleCommand("/reset", deps)).toBe(true)
@@ -268,6 +284,7 @@ describe("registerTuiCommands", () => {
       logger,
       manager,
       policy: new ToolPolicy(join(tmpdir(), "qq-policy-commands", "none.json"), logger),
+      overrides: new ChatOverrides(join(tmpdir(), "qq-overrides-commands", "none.json"), logger),
       client,
       limiter,
       commands: COMMANDS,

@@ -1,6 +1,7 @@
 import { allowedTargets, commandTarget } from "./access"
 import { type ChatTarget, parseTargetKey, targetLabel } from "./chat"
 import type { QQBotConfig } from "./config"
+import { type ChatOverrides, describeOverride } from "./overrides"
 import type { SessionManager } from "./session/manager"
 import { roleOf, type Role, type ToolPolicy } from "./tools/policy"
 
@@ -63,6 +64,8 @@ export interface CommandContext {
   config: QQBotConfig
   manager: SessionManager
   policy: ToolPolicy
+  /** 会话行为覆盖，用来展示各聊天的唤醒方式。 */
+  overrides: ChatOverrides
   /** 命令所属的聊天：QQ 命令是发送者私聊，TUI 命令是会话绑定的聊天。 */
   target: ChatTarget
   /** 当前注册的全部工具名。 */
@@ -130,12 +133,14 @@ function helpText(commands: readonly CommandDefinition[]): string {
 }
 
 async function runStatus(context: CommandContext): Promise<string> {
-  const { config, manager } = context
+  const { config, manager, overrides } = context
   const targets = allowedTargets(config.access, config.ownerQQ)
-  const lines =
-    targets.length > 0
-      ? targets.map((target) => sessionLine(manager, target))
-      : ["没有配置任何群聊或私聊"]
+  if (targets.length === 0) return ["QQ 机器人状态", "没有配置任何群聊或私聊"].join("\n")
+  const lines: string[] = []
+  for (const target of targets) {
+    const override = await overrides.for(target)
+    lines.push(`${sessionLine(manager, target)}，${describeOverride(override)}`)
+  }
   return ["QQ 机器人状态", ...lines].join("\n")
 }
 

@@ -1094,6 +1094,15 @@ describe("B1 冷启动补历史", () => {
     ).toBe("admin")
   })
 
+  it("合并批次时保留必回原因", () => {
+    const merged = mergeTurns([
+      { text: "a", files: [], atMe: false },
+      { text: "b", files: [], atMe: true, wake: "prefix" },
+    ])
+    expect(merged.atMe).toBe(true)
+    expect(merged.wake).toBe("prefix")
+  })
+
   it("合并批次时保留最后一条消息的位置", () => {
     const merged = mergeTurns([
       { text: "a", files: [], atMe: false, source: { id: "1", time: 1 } },

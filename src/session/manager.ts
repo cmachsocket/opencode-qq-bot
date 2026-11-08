@@ -9,6 +9,7 @@ import type { BotHome } from "../home"
 import type { Logger } from "../logger"
 import type { HistoryPosition, HistoryProvider } from "../naplink/history"
 import { limitFiles, type PromptFile } from "../naplink/render"
+import type { WakeReason } from "../overrides"
 import type { Role } from "../tools/policy"
 
 /** 插件存储里保存会话与目标绑定的键。 */
@@ -69,8 +70,10 @@ export interface Turn {
   text: string
   /** 图片附件。 */
   files: PromptFile[]
-  /** 本轮是否 @ 了机器人。 */
+  /** 本轮是否必须回复：私聊、被 @ 或命中唤醒条件时为 true。 */
   atMe: boolean
+  /** 触发必回的原因，缺省按被 @ 处理。 */
+  wake?: WakeReason
   /** 是否由主动说话心跳发起。 */
   proactive?: boolean
   /** 本轮最后一条 QQ 消息的位置，用来记录已经投递到哪里。 */
@@ -117,6 +120,8 @@ export function mergeTurns(turns: readonly Turn[]): Turn {
     seen.add(turn.source.id)
     return true
   })
+  // 必回原因跟着真正要求回复的那条消息走。
+  const wake = unique.find((turn) => turn.atMe && turn.wake)?.wake
   // 批次的位置取最后一条带位置的消息。
   const source = unique.reduce<HistoryPosition | undefined>(
     (latest, turn) => turn.source ?? latest,
@@ -138,6 +143,7 @@ export function mergeTurns(turns: readonly Turn[]): Turn {
       .join("\n"),
     files: limitFiles(unique.flatMap((turn) => turn.files)),
     atMe: unique.some((turn) => turn.atMe),
+    ...(wake ? { wake } : {}),
     role,
     ...(unique.some((turn) => turn.proactive) ? { proactive: true } : {}),
     ...(source ? { source } : {}),

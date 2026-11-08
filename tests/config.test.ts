@@ -106,6 +106,11 @@ describe("resolveConfig", () => {
     expect(config.access.allow.users).toEqual(options.access.allow.users)
   })
 
+  it("reads the chat overrides path from the environment", () => {
+    const config = resolveConfig({}, { ...ENV, QQ_CHAT_OVERRIDES: "/tmp/chat-overrides.json" })
+    expect(config.chatOverridesPath).toBe("/tmp/chat-overrides.json")
+  })
+
   it("reads allowed groups from the environment as a comma separated list", () => {
     const config = resolveConfig({}, { ...ENV, QQ_ALLOW_GROUPS: "123, 456 ,abc,789" })
     expect(config.access.allow.groups).toEqual([123, 456, 789])

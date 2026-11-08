@@ -9,6 +9,7 @@ import {
   selectFacesToLabel,
 } from "../src/emoji/command"
 import { commandTargetFor, splitArgs } from "../src/commands"
+import { ChatOverrides } from "../src/overrides"
 import { ToolPolicy } from "../src/tools/policy"
 import { tuiCommandName } from "../src/tui-commands"
 import { tmpdir } from "node:os"
@@ -562,12 +563,17 @@ async function createCommandHarness(
     join(tmpdir(), "qq-policy-emoji", "none.json"),
     logger as unknown as Logger,
   )
+  const overrides = new ChatOverrides(
+    join(tmpdir(), "qq-overrides-emoji", "none.json"),
+    logger as unknown as Logger,
+  )
   const runOn = async (target: ChatTarget, text: string): Promise<void> => {
     await command.run(
       {
         config,
         manager: manager as unknown as SessionManager,
         policy,
+        overrides,
         target,
         toolNames: async () => ["read"],
         commands: [command],

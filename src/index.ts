@@ -22,6 +22,14 @@ import { currentTimeText, PROACTIVE_HINT } from "./session/prompt"
 import { proactiveTickProbability } from "./session/proactive"
 import { packageDirectory, SoulStore } from "./session/soul"
 import { COMMANDS, handleCommand, isCommandChat } from "./commands"
+import {
+  chatMuted,
+  ChatOverrides,
+  defaultChatOverridesPath,
+  proactiveAllowed,
+  wakeDecision,
+  type WakeReason,
+} from "./overrides"
 import { registerAskGuard } from "./tools/ask-guard"
 import { defaultToolProfilesPath, roleOf, ToolPolicy } from "./tools/policy"
 import { registerToolPolicy } from "./tools/policy-guard"
@@ -150,6 +158,11 @@ export default Plugin.define({
     const noticeStore = new NoticeStore()
     // 工具配置：按聊天与角色决定模型能看到、能调用哪些工具。
     const policy = new ToolPolicy(config.toolProfilesPath || defaultToolProfilesPath(), logger)
+    // 会话行为覆盖：按聊天决定怎么唤醒、要不要主动说话。
+    const overrides = new ChatOverrides(
+      config.chatOverridesPath || defaultChatOverridesPath(),
+      logger,
+    )
     const manager = new SessionManager(ctx, config, logger, home, history, async (target, text) => {
       // 失败兜底只发插件自己的固定文案，走上游异常原文永远不进聊天。
       await sendPlainMessage(client, target, text, { limiter })
@@ -210,6 +223,7 @@ export default Plugin.define({
       logger,
       manager,
       policy,
+      overrides,
       client,
       limiter,
       commands,
@@ -234,11 +248,7 @@ export default Plugin.define({
         type: "text",
         text: turn?.proactive
           ? `这是一次主动发起话题，必须调用 qq_send_message 把话题发到${destination}。`
-          : turn?.atMe
-            ? target.kind === "private"
-              ? "这是一条私聊消息，必须回复。"
-              : "你被 @ 了，必须回复。"
-            : "你没有被 @，可以选择不回复。",
+          : wakeHint(turn?.atMe ? turn.wake : undefined),
       })
       // 待注入的通知：作为附带信息出现，不要求模型回复。
       const notices = noticeStore.take(target)
@@ -310,6 +320,22 @@ export default Plugin.define({
         .map((segment) => String((segment.data as { text?: unknown }).text ?? ""))
         .join(" ")
 
+    /** 必回原因对应给模型的一句话。 */
+    const wakeHint = (reason: WakeReason | undefined): string => {
+      switch (reason) {
+        case "private":
+          return "这是一条私聊消息，必须回复。"
+        case "all":
+          return "这个群要求每条消息都回复，必须回复。"
+        case "mention":
+          return "你被 @ 了，必须回复。"
+        case "prefix":
+          return "这条消息命中了唤醒前缀，必须回复。"
+        default:
+          return "这条消息没有要求你回复，可以选择不回复。"
+      }
+    }
+
     const eventTarget = (event: MessageEvent): ChatTarget =>
       isGroupEvent(event)
         ? { kind: "group", id: event.group_id }
@@ -318,6 +344,9 @@ export default Plugin.define({
     const handleMessage = async (event: MessageEvent, target: ChatTarget, selfId: string) => {
       try {
         if (!isTargetAllowed(config.access, target, config.ownerQQ)) return
+        const override = await overrides.for(target)
+        // wake=none 的群完全不理：不投递，也不回复。
+        if (chatMuted(override, target)) return
         // 管理命令只在 owner / 管理员自己的私聊里生效；群聊、别人的私聊、未知命令都交给模型。
         if (isCommandChat(config, target, String(event.user_id))) {
           const handled = await handleCommand(
@@ -326,6 +355,7 @@ export default Plugin.define({
               config,
               manager,
               policy,
+              overrides,
               target,
               send: replyTo,
               toolNames: async () => (await ctx.tool.list()).map((tool) => tool.id),
@@ -348,8 +378,13 @@ export default Plugin.define({
 
         const senderRole = roleOf(config, String(event.user_id))
         const userName = await resolveUserName(renderCtx, String(event.user_id))
-        // 私聊消息默认都是对机器人说的，群聊只有被 @ 时才必须回复。
-        const atMe = target.kind === "private" || mentionsUser(event.message, selfId)
+        // 私聊消息默认都是对机器人说的；群里按会话覆盖决定什么时候必须回复。
+        const decision = wakeDecision(
+          override,
+          target,
+          mentionsUser(event.message, selfId),
+          messageText(event),
+        )
 
         await manager.enqueue(target, {
           text: formatModelMessage({
@@ -359,7 +394,8 @@ export default Plugin.define({
             time: event.time,
           }),
           files: rendered.files,
-          atMe,
+          atMe: decision.required,
+          ...(decision.reason ? { wake: decision.reason } : {}),
           role: senderRole,
           source: { id: String(event.message_id), time: event.time },
         })
@@ -500,6 +536,8 @@ export default Plugin.define({
           for (const target of allowedTargets(config.access, config.ownerQQ)) {
             // 没有机器人连接就发不出去，不主动发起话题。
             if (!botLock) continue
+            // 被覆盖成不主动说话的聊天跳过。
+            if (!proactiveAllowed(await overrides.for(target), target)) continue
             const probability = proactiveTickProbability(
               config.proactive,
               manager.silenceSeconds(target),

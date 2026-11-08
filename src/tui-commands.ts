@@ -2,6 +2,7 @@ import type { Plugin } from "@opencode/plugin"
 import { type CommandDefinition, commandTargetFor, splitArgs, tuiCommandName } from "./commands"
 import type { QQBotConfig } from "./config"
 import type { Logger } from "./logger"
+import type { ChatOverrides } from "./overrides"
 import type { QQClient } from "./naplink/client"
 import type { SendRateLimiter } from "./rate-limit"
 import type { SessionManager } from "./session/manager"
@@ -16,6 +17,8 @@ export interface TuiCommandDeps {
   logger: Logger
   manager: SessionManager
   policy: ToolPolicy
+  /** 会话行为覆盖，命令要展示各聊天的唤醒方式。 */
+  overrides: ChatOverrides
   client: QQClient
   /** 命令结果同样走限流。 */
   limiter: SendRateLimiter
@@ -31,7 +34,7 @@ export interface TuiCommandDeps {
 export async function registerTuiCommands(
   deps: TuiCommandDeps,
 ): Promise<{ dispose(): Promise<void> }> {
-  const { ctx, config, logger, manager, policy, client, limiter, commands } = deps
+  const { ctx, config, logger, manager, policy, overrides, client, limiter, commands } = deps
 
   const toolNames = async () => (await ctx.tool.list()).map((tool) => tool.id)
 
@@ -56,7 +59,7 @@ export async function registerTuiCommands(
           }
           const args = splitArgs(input.prompt.text ?? "", name)
           const body = await command.run(
-            { config, manager, policy, target, toolNames, commands },
+            { config, manager, policy, overrides, target, toolNames, commands },
             args,
           )
           if (body !== undefined) await send(target, body)

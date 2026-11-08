@@ -116,6 +116,8 @@ export interface QQBotConfig {
   admins: number[]
   /** 工具配置文件路径，空表示当前工作目录下的 `tool-profiles.json`。 */
   toolProfilesPath?: string
+  /** 会话行为覆盖文件路径，空表示当前工作目录下的 `chat-overrides.json`。 */
+  chatOverridesPath?: string
   /** 角色设定文件路径，默认使用插件包内的 souls 目录。 */
   soulPath?: string
   /** souls 目录里的角色设定文件名，默认 default.txt。 */
@@ -152,6 +154,7 @@ export const DEFAULT_CONFIG: Omit<QQBotConfig, "napcat"> = {
   },
   admins: [],
   toolProfilesPath: "",
+  chatOverridesPath: "",
   sendDelayMs: 1000,
   warnLength: 500,
   reuseSession: false,
@@ -502,6 +505,7 @@ function createConfigSchema(
     admins,
     ownerQQ,
     toolProfilesPath: text("toolProfilesPath", defaults.toolProfilesPath),
+    chatOverridesPath: text("chatOverridesPath", defaults.chatOverridesPath),
     soulPath: text("soulPath", defaults.soulPath),
     soulName: text("soulName", defaults.soulName),
     home: text("home", defaults.home),
@@ -615,6 +619,7 @@ export const ENV_VARS = {
   ownerQQ: "QQ_OWNER_QQ",
   admins: "QQ_ADMINS",
   toolProfilesPath: "QQ_TOOL_PROFILES",
+  chatOverridesPath: "QQ_CHAT_OVERRIDES",
   soulPath: "QQ_BOT_SOUL_PATH",
   soulName: "QQ_BOT_SOUL_NAME",
   home: "QQ_BOT_HOME",
@@ -653,6 +658,7 @@ const OPTION_KEYS = new Set([
   "ownerQQ",
   "admins",
   "toolProfilesPath",
+  "chatOverridesPath",
   "soulPath",
   "soulName",
   "home",
