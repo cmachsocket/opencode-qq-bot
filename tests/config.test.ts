@@ -38,6 +38,46 @@ describe("resolveConfig", () => {
     expect(config.admins).toEqual([300])
   })
 
+  it("默认只订阅消息类事件", () => {
+    const config = resolveConfig({}, ENV)
+    expect(config.events.subscribe).toEqual(["message"])
+    expect(config.events.notices).toEqual([])
+    expect(config.events.inject).toBe(true)
+  })
+
+  it("从环境变量读取事件订阅", () => {
+    const config = resolveConfig(
+      {},
+      {
+        ...ENV,
+        QQ_EVENT_SUBSCRIBE: "message,notice",
+        QQ_EVENT_NOTICES: "group_recall,notify.poke",
+      },
+    )
+    expect(config.events.subscribe).toEqual(["message", "notice"])
+    expect(config.events.notices).toEqual(["group_recall", "notify.poke"])
+  })
+
+  it("忽略未知的事件类别并告警", () => {
+    const warnings: string[] = []
+    const config = resolveConfig(
+      {},
+      { ...ENV, QQ_EVENT_SUBSCRIBE: "message,heartbeat" },
+      (message) => warnings.push(message),
+    )
+    expect(config.events.subscribe).toEqual(["message"])
+    expect(warnings.join("\n")).toContain("heartbeat")
+  })
+
+  it("从插件选项读取事件订阅", () => {
+    const config = resolveConfig(
+      { events: { subscribe: ["notice"], notices: [], inject: false } },
+      ENV,
+    )
+    expect(config.events.subscribe).toEqual(["notice"])
+    expect(config.events.inject).toBe(false)
+  })
+
   it("takes the token from the environment", () => {
     const config = resolveConfig({}, { ...ENV, NAPCAT_WS_TOKEN: "from-env" })
     expect(config.napcat.token).toBe("from-env")

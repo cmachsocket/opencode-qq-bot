@@ -94,6 +94,9 @@ bun install
 | `rateLimit.maxPerHour`              | `QQ_RATE_MAX_PER_HOUR`          | `60`                 | 每小时最多发多少条消息，`0` 表示不限制                |
 | `rateLimit.minGapMs`                | `QQ_RATE_MIN_GAP_MS`            | `1500`               | 相邻两次发送之间的最小间隔（毫秒）                    |
 | `sensitive.enabled`                 | `QQ_SENSITIVE_ENABLED`          | `true`               | 拦截含凭证、令牌、私钥的出站消息                      |
+| `events.subscribe`                  | `QQ_EVENT_SUBSCRIBE`            | `message`            | 订阅的事件类别：`message` / `notice`                  |
+| `events.notices`                    | `QQ_EVENT_NOTICES`              | `[]`                 | `notice` 里关心哪些通知，留空表示全收                 |
+| `events.inject`                     | `QQ_EVENT_INJECT`               | `true`               | 通知是否注入会话上下文                                |
 | `log.level`                         | `QQ_LOG_LEVEL`                  | `info`               | 日志级别：`debug` / `info` / `warn` / `error`         |
 | `log.dir`                           | `QQ_LOG_DIR`                    | XDG 日志目录         | 日志文件目录，不存在时自动创建                        |
 | `log.maxSize`                       | `QQ_LOG_MAX_SIZE`               | `5m`                 | 单个日志文件的大小上限                                |

@@ -1,5 +1,5 @@
 import { Plugin } from "@opencode/plugin"
-import type { GroupMessageEvent, MessageEvent } from "@naplink/naplink"
+import type { GroupMessageEvent, MessageEvent, NoticeEvent } from "@naplink/naplink"
 import { Mutex } from "async-mutex"
 import { acquireBotLock, type BotLock, botLockPath } from "./bot-lock"
 import { type ChatTarget, configuredTargets, isTargetEnabled, targetKey, targetLabel } from "./chat"
@@ -27,6 +27,8 @@ import { registerToolPolicy } from "./tools/policy-guard"
 import { registerSendGuard } from "./tools/send-guard"
 import { createPlainSender, registerTools, sendPlainMessage } from "./tools/qq"
 import { createEmojiRunner, emojiCommand } from "./emoji/command"
+import { describeNotice, noticeMatches, noticeTarget } from "./events/notice"
+import { NoticeStore } from "./events/store"
 import { registerTuiCommands } from "./tui-commands"
 import { FavoriteStore } from "./emoji/favorites"
 import { FavoriteIndex } from "./emoji/favorite-index"
@@ -139,6 +141,8 @@ export default Plugin.define({
         (secret) => secret.length > 0,
       ),
     })
+    // 通知缓存：通知不自己起一轮，只在下一次该聊天的上下文里附带出现。
+    const noticeStore = new NoticeStore()
     // 工具配置：按聊天与角色决定模型能看到、能调用哪些工具。
     const policy = new ToolPolicy(config.toolProfilesPath || defaultToolProfilesPath(), logger)
     const manager = new SessionManager(ctx, config, logger, home, history, async (target, text) => {
@@ -231,6 +235,14 @@ export default Plugin.define({
               : "你被 @ 了，必须回复。"
             : "你没有被 @，可以选择不回复。",
       })
+      // 待注入的通知：作为附带信息出现，不要求模型回复。
+      const notices = noticeStore.take(target)
+      if (notices.length > 0) {
+        event.system.push({
+          type: "text",
+          text: `聊天里发生过的通知（不需要回复）：\n${notices.map((item) => `- ${item}`).join("\n")}`,
+        })
+      }
       // 本轮发送者的角色决定工具档：owner / admin 全开，其他按聊天配置。
       if (active) {
         const allowed = await policy.allow(active.role, targetKey(target), Object.keys(event.tools))
@@ -380,6 +392,31 @@ export default Plugin.define({
         .catch((error: unknown) => logger.error(`处理 ${targetLabel(target)} 消息失败`, error))
     }
 
+    /**
+     * 处理通知类事件。
+     *
+     * 通知只记日志并缓存起来，不自己触发一轮；下一轮该聊天的上下文里会带上摘要。
+     */
+    const scheduleNotice = (event: NoticeEvent) => {
+      if (!botLock) return
+      if (!noticeMatches(event, config.events.notices)) return
+      const target = noticeTarget(event)
+      if (!target || !isTargetEnabled(config, target)) return
+      void (async () => {
+        try {
+          const renderCtx = { api: client.api, target, logger, media, names: nameCache }
+          const text = await describeNotice(event, {
+            nameOf: async (userId) => await resolveUserName(renderCtx, String(userId)),
+          })
+          if (!text) return
+          logger.info(`${targetLabel(target)} 收到通知：${text}`)
+          if (config.events.inject) noticeStore.push(target, text)
+        } catch (error) {
+          logger.error(`处理 ${targetLabel(target)} 通知失败`, error)
+        }
+      })()
+    }
+
     let subscribed = false
     const startConsuming = async () => {
       // 先注册监听再连接：NapCat 连接期间推送的消息也会被收到。
@@ -387,6 +424,10 @@ export default Plugin.define({
         subscribed = true
         client.onGroupMessage(scheduleMessage)
         client.onPrivateMessage(scheduleMessage)
+        // 通知类事件默认不订阅，避免升级后行为突变。
+        if (config.events.subscribe.includes("notice")) {
+          client.onNotice(scheduleNotice)
+        }
       }
       await client.connectSafe()
     }

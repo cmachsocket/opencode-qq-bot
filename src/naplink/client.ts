@@ -2,6 +2,7 @@ import {
   NapLink,
   type GroupMessageEvent,
   type MessageSegment,
+  type NoticeEvent,
   type OneBotApi,
   type PrivateMessageEvent,
 } from "@naplink/naplink"
@@ -177,6 +178,11 @@ export class QQClient {
   /** 订阅私聊消息事件（好友、临时会话等）。 */
   onPrivateMessage(handler: (event: PrivateMessageEvent) => void): void {
     this.link.on("message.private", handler)
+  }
+
+  /** 订阅通知类事件（撤回、进退群、戳一戳等）。 */
+  onNotice(handler: (event: NoticeEvent) => void): void {
+    this.link.on("notice", handler)
   }
 
   /** 机器人自己的 QQ 号，未连接时返回 undefined。 */

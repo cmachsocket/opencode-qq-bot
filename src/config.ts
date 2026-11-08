@@ -15,6 +15,8 @@ const TRUTHY = new Set(["1", "true", "yes", "on"])
 const BOOLEAN_SPELLINGS = ["1", "0", "true", "false", "yes", "no", "on", "off"] as const
 /** 合法的日志级别。 */
 const LOG_LEVELS: readonly string[] = ["debug", "info", "warn", "error"]
+/** 可订阅的事件类别。 */
+export const EVENT_CATEGORIES: readonly string[] = ["message", "notice"]
 
 export interface NapcatConfig {
   /** NapCat 正向 WebSocket 地址，必填。 */
@@ -81,6 +83,16 @@ export interface LogConfig {
   maxFiles: number
 }
 
+/** 事件订阅配置。 */
+export interface EventsConfig {
+  /** 订阅哪些事件类别：`message` / `notice`。 */
+  subscribe: string[]
+  /** notice 类别里具体关心哪些通知；留空表示全收。 */
+  notices: string[]
+  /** 通知是否注入会话上下文。 */
+  inject: boolean
+}
+
 /** 媒体配置。 */
 export interface MediaConfig {
   /** 额外允许发送媒体的目录。 */
@@ -127,6 +139,7 @@ export interface QQBotConfig {
   history: HistoryConfig
   rateLimit: RateLimitConfig
   sensitive: SensitiveConfig
+  events: EventsConfig
   log: LogConfig
   media: MediaConfig
 }
@@ -152,6 +165,7 @@ export const DEFAULT_CONFIG: Omit<QQBotConfig, "napcat"> = {
   history: { count: 20 },
   rateLimit: { maxPerMinute: 8, maxPerHour: 60, minGapMs: 1500 },
   sensitive: { enabled: true },
+  events: { subscribe: ["message"], notices: [], inject: true },
   log: { level: "info", dir: "", maxSize: "5m", maxFiles: 5 },
   media: { allowedDirs: [] },
 }
@@ -402,6 +416,34 @@ function createConfigSchema(
       return parsed
     })
 
+  /** 事件订阅列表：数组或逗号分隔字符串。 */
+  const eventList = (path: string, fallback: readonly string[]) =>
+    z
+      .unknown()
+      .optional()
+      .transform((value) => {
+        if (value === undefined || value === null) return [...fallback]
+        const source = Array.isArray(value)
+          ? value
+          : typeof value === "string"
+            ? value.split(",")
+            : undefined
+        if (!source) {
+          if (present(value)) {
+            warn(`${label(path)} 必须是字符串或字符串数组：${String(value)}`)
+          }
+          return [...fallback]
+        }
+        const items: string[] = []
+        for (const entry of source) {
+          const raw = typeof entry === "string" ? entry.trim() : ""
+          if (!raw) continue
+          if (items.includes(raw)) continue
+          items.push(raw)
+        }
+        return items
+      })
+
   /** 允许发送媒体的目录：数组或逗号分隔字符串。 */
   const mediaDirs = z
     .unknown()
@@ -503,6 +545,17 @@ function createConfigSchema(
       })
       .prefault({})
       .catch(defaults.sensitive),
+    events: z
+      .object({
+        subscribe: eventList("events.subscribe", defaults.events.subscribe),
+        notices: eventList("events.notices", defaults.events.notices),
+        inject: boolean("events.inject", defaults.events.inject),
+      })
+      .prefault({
+        subscribe: [...defaults.events.subscribe],
+        notices: [...defaults.events.notices],
+      })
+      .catch(defaults.events),
     log: z
       .object({
         level: logLevel("log.level", defaults.log.level),
@@ -563,6 +616,9 @@ export const ENV_VARS = {
   "rateLimit.maxPerHour": "QQ_RATE_MAX_PER_HOUR",
   "rateLimit.minGapMs": "QQ_RATE_MIN_GAP_MS",
   "sensitive.enabled": "QQ_SENSITIVE_ENABLED",
+  "events.subscribe": "QQ_EVENT_SUBSCRIBE",
+  "events.notices": "QQ_EVENT_NOTICES",
+  "events.inject": "QQ_EVENT_INJECT",
   "log.level": "QQ_LOG_LEVEL",
   "log.dir": "QQ_LOG_DIR",
   "log.maxSize": "QQ_LOG_MAX_SIZE",
@@ -591,6 +647,7 @@ const OPTION_KEYS = new Set([
   "history",
   "rateLimit",
   "sensitive",
+  "events",
   "log",
   "media",
 ])
@@ -609,6 +666,7 @@ const NESTED_OPTION_KEYS: Record<string, ReadonlySet<string>> = {
   history: new Set(["count"]),
   rateLimit: new Set(["maxPerMinute", "maxPerHour", "minGapMs"]),
   sensitive: new Set(["enabled"]),
+  events: new Set(["subscribe", "notices", "inject"]),
   log: new Set(["level", "dir", "maxSize", "maxFiles"]),
   media: new Set(["allowedDirs"]),
 }
@@ -674,6 +732,16 @@ export function resolveConfig(
   const optionsSchema = createConfigSchema(base, base.napcat, (path) => `插件选项 ${path}`, warn)
   const parsed: RawConfig = optionsSchema.parse(options)
 
+  // 只保留认识的事件类别：写错的类别直接告警，不静默失效。
+  const subscribe: string[] = []
+  for (const category of parsed.events.subscribe) {
+    if (!EVENT_CATEGORIES.includes(category)) {
+      warn(`events.subscribe 忽略未知类别：${category}`)
+      continue
+    }
+    if (!subscribe.includes(category)) subscribe.push(category)
+  }
+
   // 先输出告警，避免 URL 缺失时把已经发现的问题一起吞掉。
   for (const warning of warnings) onWarning(warning)
 
@@ -699,6 +767,11 @@ export function resolveConfig(
     history: { ...parsed.history },
     rateLimit: { ...parsed.rateLimit },
     sensitive: { ...parsed.sensitive },
+    events: {
+      subscribe,
+      notices: [...parsed.events.notices],
+      inject: parsed.events.inject,
+    },
     log: { ...parsed.log },
     media: { allowedDirs: [...parsed.media.allowedDirs] },
     napcat: { url, token: parsed.napcat.token },
