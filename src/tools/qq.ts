@@ -127,6 +127,36 @@ export async function sendPlainMessage(
   return sent
 }
 
+/** 命令结果发送通道的配置。 */
+export interface PlainSenderOptions {
+  delayMs?: number
+  limiter: SendRateLimiter
+  logger: Logger
+  /** 发送失败时写进日志的说明。 */
+  failure: (target: ChatTarget) => string
+}
+
+/**
+ * 创建命令结果的发送通道。
+ *
+ * 发送失败只记日志，不往上抛：命令已经执行完，不该因为回执失败再报错。
+ */
+export function createPlainSender(
+  client: QQClient,
+  options: PlainSenderOptions,
+): (target: ChatTarget, content: string) => Promise<void> {
+  return async (target, content) => {
+    try {
+      await sendPlainMessage(client, target, content, {
+        delayMs: options.delayMs,
+        limiter: options.limiter,
+      })
+    } catch (error) {
+      options.logger.error(options.failure(target), error)
+    }
+  }
+}
+
 /**
  * 注册 QQ 命名空间下的工具。
  *

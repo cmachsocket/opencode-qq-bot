@@ -23,6 +23,15 @@ export function isTargetEnabled(config: TargetConfig, target: ChatTarget): boole
     : config.users.includes(target.id)
 }
 
+/** 命令结果的投递目标：优先会话绑定的目标，没有就用第一个配置目标。 */
+export function commandTarget(
+  config: TargetConfig,
+  bound: ChatTarget | undefined,
+): ChatTarget | undefined {
+  if (bound && isTargetEnabled(config, bound)) return bound
+  return configuredTargets(config)[0]
+}
+
 /** 配置里声明的全部目标。 */
 export function configuredTargets(config: TargetConfig): ChatTarget[] {
   return [
