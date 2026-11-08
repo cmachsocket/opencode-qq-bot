@@ -1,5 +1,6 @@
 import { Model } from "@opencode/schema"
 import { z } from "zod"
+import type { AccessConfig } from "./access"
 import type { LogLevel } from "./logger"
 
 /**
@@ -107,10 +108,8 @@ export interface ModelRef {
 
 export interface QQBotConfig {
   napcat: NapcatConfig
-  /** 参与 AI 对话的群号。 */
-  groups: number[]
-  /** 参与 AI 对话的私聊 QQ 号。 */
-  users: number[]
+  /** 准入配置：放行名单、拒绝名单与名单为空时的行为。 */
+  access: AccessConfig
   /** 机器人所有者 QQ 号：可用管理命令，并拥有全部工具权限。 */
   ownerQQ?: number
   /** 管理员 QQ 号：拥有全部工具权限。 */
@@ -146,8 +145,11 @@ export interface QQBotConfig {
 
 /** 除 NapCat 连接信息外的全部默认值。 */
 export const DEFAULT_CONFIG: Omit<QQBotConfig, "napcat"> = {
-  groups: [],
-  users: [],
+  access: {
+    allow: { groups: [], users: [] },
+    deny: { groups: [], users: [] },
+    allowAllWhenEmpty: false,
+  },
   admins: [],
   toolProfilesPath: "",
   sendDelayMs: 1000,
@@ -168,6 +170,12 @@ export const DEFAULT_CONFIG: Omit<QQBotConfig, "napcat"> = {
   events: { subscribe: ["message"], notices: [], inject: true },
   log: { level: "info", dir: "", maxSize: "5m", maxFiles: 5 },
   media: { allowedDirs: [] },
+}
+
+/** 移除的环境变量与替代项。 */
+const RENAMED_ENV_VARS: Record<string, string> = {
+  QQ_TARGET_GROUPS: "QQ_ALLOW_GROUPS",
+  QQ_TARGET_USERS: "QQ_ALLOW_USERS",
 }
 
 /** 配置告警回调。 */
@@ -351,44 +359,22 @@ function createConfigSchema(
         return raw as LogLevel
       })
 
-  const groups = z
-    .unknown()
-    .optional()
-    .transform((value) => {
-      if (value === undefined || value === null) return [...defaults.groups]
-      const parsed = toIds(value, warn, label("groups"), "群号")
-      if (!parsed) {
-        if (present(value)) warn(`${label("groups")} 解析不出群号：${String(value)}`)
-        return [...defaults.groups]
-      }
-      return parsed
-    })
+  /** 编号名单：数组或逗号分隔字符串。 */
+  const idList = (path: string, fallback: readonly number[], noun: string) =>
+    z
+      .unknown()
+      .optional()
+      .transform((value) => {
+        if (value === undefined || value === null) return [...fallback]
+        const parsed = toIds(value, warn, label(path), noun)
+        if (!parsed) {
+          if (present(value)) warn(`${label(path)} 解析不出${noun}：${String(value)}`)
+          return [...fallback]
+        }
+        return parsed
+      })
 
-  const users = z
-    .unknown()
-    .optional()
-    .transform((value) => {
-      if (value === undefined || value === null) return [...defaults.users]
-      const parsed = toIds(value, warn, label("users"), "QQ 号")
-      if (!parsed) {
-        if (present(value)) warn(`${label("users")} 解析不出 QQ 号：${String(value)}`)
-        return [...defaults.users]
-      }
-      return parsed
-    })
-
-  const admins = z
-    .unknown()
-    .optional()
-    .transform((value) => {
-      if (value === undefined || value === null) return [...defaults.admins]
-      const parsed = toIds(value, warn, label("admins"), "QQ 号")
-      if (!parsed) {
-        if (present(value)) warn(`${label("admins")} 解析不出 QQ 号：${String(value)}`)
-        return [...defaults.admins]
-      }
-      return parsed
-    })
+  const admins = idList("admins", defaults.admins, "QQ 号")
 
   const ownerQQ = z
     .unknown()
@@ -479,8 +465,40 @@ function createConfigSchema(
       })
       .prefault({})
       .catch({ url: napcat.url, token: napcat.token }),
-    groups,
-    users,
+    access: z
+      .object({
+        allow: z
+          .object({
+            groups: idList("access.allow.groups", defaults.access.allow.groups, "群号").default([
+              ...defaults.access.allow.groups,
+            ]),
+            users: idList("access.allow.users", defaults.access.allow.users, "QQ 号").default([
+              ...defaults.access.allow.users,
+            ]),
+          })
+          .prefault({})
+          .catch({
+            groups: [...defaults.access.allow.groups],
+            users: [...defaults.access.allow.users],
+          }),
+        deny: z
+          .object({
+            groups: idList("access.deny.groups", defaults.access.deny.groups, "群号").default([
+              ...defaults.access.deny.groups,
+            ]),
+            users: idList("access.deny.users", defaults.access.deny.users, "QQ 号").default([
+              ...defaults.access.deny.users,
+            ]),
+          })
+          .prefault({})
+          .catch({
+            groups: [...defaults.access.deny.groups],
+            users: [...defaults.access.deny.users],
+          }),
+        allowAllWhenEmpty: boolean("access.allowAllWhenEmpty", defaults.access.allowAllWhenEmpty),
+      })
+      .prefault({})
+      .catch(defaults.access),
     admins,
     ownerQQ,
     toolProfilesPath: text("toolProfilesPath", defaults.toolProfilesPath),
@@ -589,8 +607,11 @@ function createConfigSchema(
 export const ENV_VARS = {
   "napcat.url": "NAPCAT_WS_URL",
   "napcat.token": "NAPCAT_WS_TOKEN",
-  groups: "QQ_TARGET_GROUPS",
-  users: "QQ_TARGET_USERS",
+  "access.allow.groups": "QQ_ALLOW_GROUPS",
+  "access.allow.users": "QQ_ALLOW_USERS",
+  "access.deny.groups": "QQ_DENY_GROUPS",
+  "access.deny.users": "QQ_DENY_USERS",
+  "access.allowAllWhenEmpty": "QQ_ALLOW_ALL_WHEN_EMPTY",
   ownerQQ: "QQ_OWNER_QQ",
   admins: "QQ_ADMINS",
   toolProfilesPath: "QQ_TOOL_PROFILES",
@@ -628,8 +649,7 @@ export const ENV_VARS = {
 
 const OPTION_KEYS = new Set([
   "napcat",
-  "groups",
-  "users",
+  "access",
   "ownerQQ",
   "admins",
   "toolProfilesPath",
@@ -654,6 +674,9 @@ const OPTION_KEYS = new Set([
 
 const NESTED_OPTION_KEYS: Record<string, ReadonlySet<string>> = {
   napcat: new Set(["url", "token"]),
+  access: new Set(["allow", "deny", "allowAllWhenEmpty"]),
+  "access.allow": new Set(["groups", "users"]),
+  "access.deny": new Set(["groups", "users"]),
   proactive: new Set([
     "enabled",
     "silenceThresholdSeconds",
@@ -671,20 +694,37 @@ const NESTED_OPTION_KEYS: Record<string, ReadonlySet<string>> = {
   media: new Set(["allowedDirs"]),
 }
 
-/** 报告被 schema 静默剥离的未知配置项。 */
+/** 改过名的配置项：给出迁移提示而不是笼统的“未知配置项”。 */
+const RENAMED_OPTIONS: Record<string, string> = {
+  groups: "access.allow.groups",
+  users: "access.allow.users",
+}
+
+/**
+ * 报告被 schema 静默剥离的未知配置项。
+ *
+ * 按层级逐层检查：`access.allow.groups` 这类嵌套路径也能报出来。
+ */
 function warnUnknownKeys(options: Record<string, unknown>, warn: ConfigWarning): void {
-  for (const key of Object.keys(options)) {
-    if (!OPTION_KEYS.has(key)) {
-      warn(`插件选项 未知配置项：${key}`)
-      continue
-    }
-    const allowed = NESTED_OPTION_KEYS[key]
-    const value = options[key]
-    if (!allowed || !value || typeof value !== "object" || Array.isArray(value)) continue
-    for (const nested of Object.keys(value)) {
-      if (!allowed.has(nested)) warn(`插件选项 ${key}.${nested} 未知配置项`)
+  const walk = (value: Record<string, unknown>, path: string): void => {
+    const allowed = path === "" ? OPTION_KEYS : NESTED_OPTION_KEYS[path]
+    for (const key of Object.keys(value)) {
+      const childPath = path ? `${path}.${key}` : key
+      if (allowed && !allowed.has(key)) {
+        const renamed = RENAMED_OPTIONS[childPath]
+        warn(
+          renamed
+            ? `插件选项 ${childPath} 已移除，请改用 ${renamed}`
+            : `插件选项 未知配置项：${childPath}`,
+        )
+        continue
+      }
+      const child = value[key]
+      if (!child || typeof child !== "object" || Array.isArray(child)) continue
+      walk(child as Record<string, unknown>, childPath)
     }
   }
+  walk(options, "")
 }
 
 function envLabel(path: string): string {
@@ -742,6 +782,20 @@ export function resolveConfig(
     if (!subscribe.includes(category)) subscribe.push(category)
   }
 
+  // 旧的名单环境变量已经移除：给出迁移提示，避免升级后机器人不再回消息。
+  for (const [name, replacement] of Object.entries(RENAMED_ENV_VARS)) {
+    if (env[name] !== undefined) {
+      warn(`环境变量 ${name} 已移除，请改用 ${replacement}`)
+    }
+  }
+
+  // owner 必须能私聊到机器人，否则管理命令无处触发：拒绝名单里的 owner 豁免。
+  const denyUsers = [...parsed.access.deny.users]
+  if (parsed.ownerQQ !== undefined && denyUsers.includes(parsed.ownerQQ)) {
+    warn(`ownerQQ ${parsed.ownerQQ} 在 access.deny.users 里，已豁免：owner 的私聊必须可用`)
+    denyUsers.splice(denyUsers.indexOf(parsed.ownerQQ), 1)
+  }
+
   // 先输出告警，避免 URL 缺失时把已经发现的问题一起吞掉。
   for (const warning of warnings) onWarning(warning)
 
@@ -752,14 +806,19 @@ export function resolveConfig(
     )
   }
 
-  // owner 必须能私聊到机器人，否则管理命令无处触发；没写进 users 时自动补上。
-  const users = [...parsed.users]
-  if (parsed.ownerQQ !== undefined && !users.includes(parsed.ownerQQ)) users.push(parsed.ownerQQ)
-
   return {
     ...parsed,
-    groups: [...parsed.groups],
-    users,
+    access: {
+      allow: {
+        groups: [...parsed.access.allow.groups],
+        users: [...parsed.access.allow.users],
+      },
+      deny: {
+        groups: [...parsed.access.deny.groups],
+        users: denyUsers,
+      },
+      allowAllWhenEmpty: parsed.access.allowAllWhenEmpty,
+    },
     admins: [...parsed.admins],
     proactive: { ...parsed.proactive },
     reminder: { ...parsed.reminder },

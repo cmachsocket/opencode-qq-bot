@@ -1,10 +1,5 @@
-import {
-  type ChatTarget,
-  commandTarget,
-  configuredTargets,
-  parseTargetKey,
-  targetLabel,
-} from "./chat"
+import { allowedTargets, commandTarget } from "./access"
+import { type ChatTarget, parseTargetKey, targetLabel } from "./chat"
 import type { QQBotConfig } from "./config"
 import type { SessionManager } from "./session/manager"
 import { roleOf, type Role, type ToolPolicy } from "./tools/policy"
@@ -116,7 +111,10 @@ function roleForChat(config: QQBotConfig, target: ChatTarget): Role {
 /** 列出配置里的目标与已建状态的聊天，去重后按 `kind:id` 排序。 */
 function allTargets(config: QQBotConfig, manager: SessionManager): ChatTarget[] {
   const seen = new Set<string>()
-  return [...configuredTargets(config), ...manager.snapshot().map((item) => item.target)]
+  return [
+    ...allowedTargets(config.access, config.ownerQQ),
+    ...manager.snapshot().map((item) => item.target),
+  ]
     .filter((target) => {
       const key = `${target.kind}:${target.id}`
       if (seen.has(key)) return false
@@ -133,7 +131,7 @@ function helpText(commands: readonly CommandDefinition[]): string {
 
 async function runStatus(context: CommandContext): Promise<string> {
   const { config, manager } = context
-  const targets = configuredTargets(config)
+  const targets = allowedTargets(config.access, config.ownerQQ)
   const lines =
     targets.length > 0
       ? targets.map((target) => sessionLine(manager, target))
@@ -186,7 +184,7 @@ async function runTools(context: CommandContext, args: string[]): Promise<string
   }
   const names = await toolNames()
   const lines = [`默认配置档：${(await policy.current()).defaultProfile}`]
-  for (const target of configuredTargets(config)) {
+  for (const target of allowedTargets(config.access, config.ownerQQ)) {
     const role = roleForChat(config, target)
     const key = `${target.kind}:${target.id}`
     const profile = await policy.profileOf(role, key)
@@ -256,5 +254,5 @@ export function commandTargetFor(
   manager: SessionManager,
   sessionID: string,
 ): ChatTarget | undefined {
-  return commandTarget(config, manager.targetForSession(sessionID))
+  return commandTarget(config.access, config.ownerQQ, manager.targetForSession(sessionID))
 }

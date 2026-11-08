@@ -13,8 +13,11 @@ describe("resolveConfig", () => {
     const config = resolveConfig({}, ENV)
     expect(config.napcat.url).toBe(ENV.NAPCAT_WS_URL)
     expect(config.napcat.token).toBeUndefined()
-    expect(config.groups).toEqual([])
-    expect(config.users).toEqual([])
+    expect(config.access.allow.groups).toEqual([])
+    expect(config.access.allow.users).toEqual([])
+    expect(config.access.deny.groups).toEqual([])
+    expect(config.access.deny.users).toEqual([])
+    expect(config.access.allowAllWhenEmpty).toBe(false)
     expect(config.sendDelayMs).toBe(DEFAULT_CONFIG.sendDelayMs)
     expect(config.reminder.max).toBe(DEFAULT_CONFIG.reminder.max)
   })
@@ -24,17 +27,17 @@ describe("resolveConfig", () => {
     expect(resolveConfig({}, ENV).warnLength).toBe(500)
   })
 
-  it("把 owner 自动加进可对话私聊，并解析管理员列表", () => {
+  it("解析 owner 与管理员列表，owner 不再自动进放行名单", () => {
     const config = resolveConfig({}, { ...ENV, QQ_OWNER_QQ: "200", QQ_ADMINS: "300,301" })
     expect(config.ownerQQ).toBe(200)
     expect(config.admins).toEqual([300, 301])
-    expect(config.users).toContain(200)
+    expect(config.access.allow.users).toEqual([])
   })
 
   it("不回退被写坏的 owner 或管理员配置", () => {
     const config = resolveConfig({}, { ...ENV, QQ_OWNER_QQ: "abc", QQ_ADMINS: "300" })
     expect(config.ownerQQ).toBeUndefined()
-    expect(config.users).toEqual([])
+    expect(config.access.allow.users).toEqual([])
     expect(config.admins).toEqual([300])
   })
 
@@ -99,41 +102,58 @@ describe("resolveConfig", () => {
     )
     const options = raw.plugins.find((entry: { package: string }) => entry.package === "./").options
     const config = resolveConfig(options, ENV)
-    expect(config.groups).toEqual(options.groups)
-    expect(config.users).toEqual(options.users)
+    expect(config.access.allow.groups).toEqual(options.access.allow.groups)
+    expect(config.access.allow.users).toEqual(options.access.allow.users)
   })
 
-  it("reads groups from the environment as a comma separated list", () => {
-    const config = resolveConfig({}, { ...ENV, QQ_TARGET_GROUPS: "123, 456 ,abc,789" })
-    expect(config.groups).toEqual([123, 456, 789])
+  it("reads allowed groups from the environment as a comma separated list", () => {
+    const config = resolveConfig({}, { ...ENV, QQ_ALLOW_GROUPS: "123, 456 ,abc,789" })
+    expect(config.access.allow.groups).toEqual([123, 456, 789])
   })
 
-  it("reads private chat users from the environment", () => {
-    const config = resolveConfig({}, { ...ENV, QQ_TARGET_USERS: "321, 654 ,abc,987" })
-    expect(config.users).toEqual([321, 654, 987])
+  it("reads allowed private chat users from the environment", () => {
+    const config = resolveConfig({}, { ...ENV, QQ_ALLOW_USERS: "321, 654 ,abc,987" })
+    expect(config.access.allow.users).toEqual([321, 654, 987])
   })
 
-  it("reads groups from plugin options as an array", () => {
-    const config = resolveConfig({ groups: [1, 2] }, { ...ENV, QQ_TARGET_GROUPS: "999" })
-    expect(config.groups).toEqual([1, 2])
+  it("reads denied groups and users from the environment", () => {
+    const config = resolveConfig({}, { ...ENV, QQ_DENY_GROUPS: "111", QQ_DENY_USERS: "222" })
+    expect(config.access.deny.groups).toEqual([111])
+    expect(config.access.deny.users).toEqual([222])
   })
 
-  it("reads private chat users from plugin options as an array", () => {
-    const config = resolveConfig({ users: [3, 4] }, { ...ENV, QQ_TARGET_USERS: "999" })
-    expect(config.users).toEqual([3, 4])
+  it("reads the empty list fallback from the environment", () => {
+    const config = resolveConfig({}, { ...ENV, QQ_ALLOW_ALL_WHEN_EMPTY: "true" })
+    expect(config.access.allowAllWhenEmpty).toBe(true)
   })
 
-  it("keeps every target closed when the option list is empty", () => {
+  it("reads allowed groups from plugin options as an array", () => {
     const config = resolveConfig(
-      { groups: [], users: [] },
+      { access: { allow: { groups: [1, 2] } } },
+      { ...ENV, QQ_ALLOW_GROUPS: "999" },
+    )
+    expect(config.access.allow.groups).toEqual([1, 2])
+  })
+
+  it("reads allowed private chat users from plugin options as an array", () => {
+    const config = resolveConfig(
+      { access: { allow: { users: [3, 4] } } },
+      { ...ENV, QQ_ALLOW_USERS: "999" },
+    )
+    expect(config.access.allow.users).toEqual([3, 4])
+  })
+
+  it("keeps every target closed when the allow lists are empty", () => {
+    const config = resolveConfig(
+      { access: { allow: { groups: [], users: [] } } },
       {
         ...ENV,
-        QQ_TARGET_GROUPS: "999",
-        QQ_TARGET_USERS: "999",
+        QQ_ALLOW_GROUPS: "999",
+        QQ_ALLOW_USERS: "999",
       },
     )
-    expect(config.groups).toEqual([])
-    expect(config.users).toEqual([])
+    expect(config.access.allow.groups).toEqual([])
+    expect(config.access.allow.users).toEqual([])
   })
 
   it("parses the model reference from the environment", () => {
@@ -303,20 +323,52 @@ describe("resolveConfig", () => {
     expect(warnings.join("\n")).toContain("rateLimit.minGapMs")
   })
 
-  it("deduplicates groups and warns about invalid entries", () => {
+  it("deduplicates allowed groups and warns about invalid entries", () => {
     const warnings: string[] = []
-    const config = resolveConfig({ groups: [1, 1, -2, 3] }, ENV, (message) =>
+    const config = resolveConfig({ access: { allow: { groups: [1, 1, -2, 3] } } }, ENV, (message) =>
       warnings.push(message),
     )
-    expect(config.groups).toEqual([1, 3])
+    expect(config.access.allow.groups).toEqual([1, 3])
     expect(warnings.join("\n")).toContain("非法群号")
   })
 
-  it("deduplicates users and warns about invalid entries", () => {
+  it("deduplicates allowed users and warns about invalid entries", () => {
     const warnings: string[] = []
-    const config = resolveConfig({ users: [1, 1, -2, 3] }, ENV, (message) => warnings.push(message))
-    expect(config.users).toEqual([1, 3])
+    const config = resolveConfig({ access: { allow: { users: [1, 1, -2, 3] } } }, ENV, (message) =>
+      warnings.push(message),
+    )
+    expect(config.access.allow.users).toEqual([1, 3])
     expect(warnings.join("\n")).toContain("非法QQ 号")
+  })
+
+  it("豁免拒绝名单里的 owner 并告警", () => {
+    const warnings: string[] = []
+    const config = resolveConfig(
+      {},
+      { ...ENV, QQ_OWNER_QQ: "200", QQ_DENY_USERS: "200,300" },
+      (message) => warnings.push(message),
+    )
+    expect(config.access.deny.users).toEqual([300])
+    expect(warnings.join("\n")).toContain("200")
+    expect(warnings.join("\n")).toContain("豁免")
+  })
+
+  it("给旧名单环境变量迁移提示", () => {
+    const warnings: string[] = []
+    resolveConfig({}, { ...ENV, QQ_TARGET_GROUPS: "123" }, (message) => warnings.push(message))
+    expect(warnings.join("\n")).toContain("QQ_TARGET_GROUPS")
+    expect(warnings.join("\n")).toContain("QQ_ALLOW_GROUPS")
+  })
+
+  it("给旧名单插件选项迁移提示", () => {
+    const warnings: string[] = []
+    const config = resolveConfig({ groups: [1], users: [2] }, ENV, (message) =>
+      warnings.push(message),
+    )
+    expect(config.access.allow.groups).toEqual([])
+    expect(config.access.allow.users).toEqual([])
+    expect(warnings.join("\n")).toContain("access.allow.groups")
+    expect(warnings.join("\n")).toContain("access.allow.users")
   })
 
   it("falls back for out of range numeric options", () => {

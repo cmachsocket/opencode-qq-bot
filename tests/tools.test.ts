@@ -14,6 +14,7 @@ import type { QQClient } from "../src/naplink/client"
 import { SendRateLimiter } from "../src/rate-limit"
 import { SensitiveChecker } from "../src/sensitive"
 import type { SessionManager } from "../src/session/manager"
+import { accessConfig } from "./fixtures"
 
 interface ToolDefinition {
   name: string
@@ -99,8 +100,7 @@ async function createHarness(
   const config: QQBotConfig = {
     ...DEFAULT_CONFIG,
     napcat: { url: "ws://127.0.0.1:3001" },
-    groups: [100],
-    users: [200],
+    access: accessConfig({ groups: [100], users: [200] }),
     sendDelayMs: 0,
     rateLimit: { maxPerMinute: 0, maxPerHour: 0, minGapMs: 0 },
     ...configOverrides,
@@ -448,7 +448,9 @@ describe("registerTools", () => {
   })
 
   it("rejects tools for groups removed from the config", async () => {
-    const { tools, api } = await createHarness(group(100), { groups: [200] })
+    const { tools, api } = await createHarness(group(100), {
+      access: accessConfig({ groups: [200] }),
+    })
     const result = await tools
       .get(`${TOOL_NAMESPACE}_send_message`)
       ?.execute({ content: "你好" }, context)
@@ -612,7 +614,9 @@ describe("registerTools", () => {
     })
 
     it("rejects private chats removed from the config", async () => {
-      const { tools, api } = await createHarness(privateChat(300), { users: [200] })
+      const { tools, api } = await createHarness(privateChat(300), {
+        access: accessConfig({ users: [200] }),
+      })
       const result = await tools
         .get(`${TOOL_NAMESPACE}_send_message`)
         ?.execute({ content: "你好" }, context)

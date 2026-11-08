@@ -2,7 +2,8 @@ import type { Plugin } from "@opencode/plugin"
 import type { Location } from "@opencode/schema"
 import { SessionMessage } from "@opencode/schema"
 import { Mutex } from "async-mutex"
-import { type ChatTarget, isTargetEnabled, parseTargetKey, targetKey, targetLabel } from "../chat"
+import { isTargetAllowed } from "../access"
+import { type ChatTarget, parseTargetKey, targetKey, targetLabel } from "../chat"
 import type { QQBotConfig } from "../config"
 import type { BotHome } from "../home"
 import type { Logger } from "../logger"
@@ -218,7 +219,7 @@ export class SessionManager {
         const target = parseTargetKey(key)
         if (!target || typeof value !== "string" || value.length === 0) continue
         // 配置里已经移除的目标不再恢复，避免旧绑定继续获得工具权限。
-        if (!isTargetEnabled(this.config, target)) continue
+        if (!isTargetAllowed(this.config.access, target, this.config.ownerQQ)) continue
         if (!this.bindSession(this.state(target), value)) continue
         restored += 1
       }
@@ -231,7 +232,7 @@ export class SessionManager {
         for (const [key, value] of Object.entries(activity)) {
           const target = parseTargetKey(key)
           if (!target || typeof value !== "number" || !Number.isFinite(value)) continue
-          if (!isTargetEnabled(this.config, target)) continue
+          if (!isTargetAllowed(this.config.access, target, this.config.ownerQQ)) continue
           this.activity[targetKey(target)] = value
           const state = this.states.get(targetKey(target))
           if (state) state.lastUserMessageAt = value
@@ -256,7 +257,7 @@ export class SessionManager {
     if (!stored || typeof stored !== "object" || Array.isArray(stored)) return
     for (const [key, value] of Object.entries(stored)) {
       const target = parseTargetKey(key)
-      if (!target || !isTargetEnabled(this.config, target)) continue
+      if (!target || !isTargetAllowed(this.config.access, target, this.config.ownerQQ)) continue
       const position = parsePosition(value)
       if (!position) continue
       this.positions.set(key, position)

@@ -17,6 +17,7 @@ import { roleOf, ToolPolicy } from "../src/tools/policy"
 import { registerTuiCommands, tuiCommandName } from "../src/tui-commands"
 import type { Plugin } from "@opencode/plugin"
 import type { SendRateLimiter } from "../src/rate-limit"
+import { accessConfig } from "./fixtures"
 
 const logger: Logger = {
   debug: () => {},
@@ -28,8 +29,7 @@ const logger: Logger = {
 const config: QQBotConfig = {
   ...DEFAULT_CONFIG,
   napcat: { url: "ws://127.0.0.1:3001" },
-  groups: [100],
-  users: [200],
+  access: accessConfig({ groups: [100], users: [200] }),
   ownerQQ: 200,
   admins: [300],
 }

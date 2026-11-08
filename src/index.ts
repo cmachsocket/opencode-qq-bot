@@ -2,7 +2,8 @@ import { Plugin } from "@opencode/plugin"
 import type { GroupMessageEvent, MessageEvent, NoticeEvent } from "@naplink/naplink"
 import { Mutex } from "async-mutex"
 import { acquireBotLock, type BotLock, botLockPath } from "./bot-lock"
-import { type ChatTarget, configuredTargets, isTargetEnabled, targetKey, targetLabel } from "./chat"
+import { type ChatTarget, targetKey, targetLabel } from "./chat"
+import { allowedTargets, isTargetAllowed } from "./access"
 import { resolveConfig, type QQBotConfig } from "./config"
 import { resolveHome } from "./home"
 import { claimInstance } from "./instance"
@@ -71,9 +72,13 @@ export default Plugin.define({
     // 正式日志器已经接管，兜底日志器只写控制台，用完就关掉。
     await closeLogger(bootstrap)
 
-    if (config.groups.length === 0 && config.users.length === 0) {
+    if (
+      config.access.allow.groups.length === 0 &&
+      config.access.allow.users.length === 0 &&
+      !config.access.allowAllWhenEmpty
+    ) {
       logger.warn(
-        "未配置目标群号或私聊 QQ 号，插件不会响应任何消息（请设置 groups/users 或 QQ_TARGET_GROUPS/QQ_TARGET_USERS）",
+        "未配置放行目标，插件不会响应任何消息（请设置 access.allow 或 QQ_ALLOW_GROUPS/QQ_ALLOW_USERS）",
       )
     }
 
@@ -312,7 +317,7 @@ export default Plugin.define({
 
     const handleMessage = async (event: MessageEvent, target: ChatTarget, selfId: string) => {
       try {
-        if (!isTargetEnabled(config, target)) return
+        if (!isTargetAllowed(config.access, target, config.ownerQQ)) return
         // 管理命令只在 owner / 管理员自己的私聊里生效；群聊、别人的私聊、未知命令都交给模型。
         if (isCommandChat(config, target, String(event.user_id))) {
           const handled = await handleCommand(
@@ -377,7 +382,7 @@ export default Plugin.define({
       // 没有占用机器人连接时不消费消息，避免和别的实例重复投递。
       if (!botLock) return
       const target = eventTarget(event)
-      if (!isTargetEnabled(config, target)) return
+      if (!isTargetAllowed(config.access, target, config.ownerQQ)) return
       const selfId = String(event.self_id ?? client.selfId ?? "")
       if (selfId && String(event.user_id) === selfId) return
 
@@ -401,7 +406,7 @@ export default Plugin.define({
       if (!botLock) return
       if (!noticeMatches(event, config.events.notices)) return
       const target = noticeTarget(event)
-      if (!target || !isTargetEnabled(config, target)) return
+      if (!target || !isTargetAllowed(config.access, target, config.ownerQQ)) return
       void (async () => {
         try {
           const renderCtx = { api: client.api, target, logger, media, names: nameCache }
@@ -492,7 +497,7 @@ export default Plugin.define({
       const tick = async () => {
         if (tickMutex.isLocked()) return
         await tickMutex.runExclusive(async () => {
-          for (const target of configuredTargets(config)) {
+          for (const target of allowedTargets(config.access, config.ownerQQ)) {
             // 没有机器人连接就发不出去，不主动发起话题。
             if (!botLock) continue
             const probability = proactiveTickProbability(
@@ -513,8 +518,8 @@ export default Plugin.define({
     }
 
     logger.info("插件已加载", {
-      groups: config.groups,
-      users: config.users,
+      allowGroups: config.access.allow.groups,
+      allowUsers: config.access.allow.users,
       napcat: config.napcat.url,
       agent: config.agent ?? "(默认)",
     })

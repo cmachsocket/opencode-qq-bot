@@ -16,6 +16,7 @@ import type { ChatTarget } from "../src/chat"
 import type { HistoryOptions, HistoryPosition, HistoryProvider } from "../src/naplink/history"
 import { MAX_PROMPT_IMAGES } from "../src/naplink/render"
 import type { Logger } from "../src/logger"
+import { accessConfig } from "./fixtures"
 
 const logger: Logger = {
   debug: () => {},
@@ -98,7 +99,7 @@ function createHarness(
   const config: QQBotConfig = {
     ...DEFAULT_CONFIG,
     napcat: { url: "ws://127.0.0.1:3001" },
-    groups: [100],
+    access: accessConfig({ groups: [100] }),
     ...overrides,
   }
 
@@ -163,7 +164,9 @@ describe("SessionManager", () => {
   })
 
   it("creates a private session with its own title and metadata", async () => {
-    const { manager, prompts, sessionCreate } = createHarness({ users: [200] })
+    const { manager, prompts, sessionCreate } = createHarness({
+      access: accessConfig({ users: [200] }),
+    })
     await manager.enqueue(privateChat(200), { text: "你好", files: [], atMe: false })
     expect(prompts).toHaveLength(1)
     expect(manager.targetForSession("session-1")).toEqual(privateChat(200))
@@ -177,7 +180,9 @@ describe("SessionManager", () => {
   })
 
   it("keeps a group and a private chat with the same id apart", async () => {
-    const { manager, prompts } = createHarness({ groups: [200], users: [200] })
+    const { manager, prompts } = createHarness({
+      access: accessConfig({ groups: [200], users: [200] }),
+    })
     await manager.enqueue(group(200), { text: "群消息", files: [], atMe: false })
     await manager.enqueue(privateChat(200), { text: "私聊消息", files: [], atMe: false })
     expect(prompts).toHaveLength(2)
@@ -513,7 +518,10 @@ describe("SessionManager", () => {
   })
 
   it("refuses to bind one session to two targets", async () => {
-    const { manager, prompts } = createHarness({ groups: [100, 200] }, () => "session-1")
+    const { manager, prompts } = createHarness(
+      { access: accessConfig({ groups: [100, 200] }) },
+      () => "session-1",
+    )
     await manager.enqueue(group(100), { text: "第一条", files: [], atMe: false })
     expect(prompts).toHaveLength(1)
 

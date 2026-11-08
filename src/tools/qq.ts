@@ -1,5 +1,6 @@
 import type { Plugin } from "@opencode/plugin"
-import { type ChatTarget, isTargetEnabled, targetLabel } from "../chat"
+import { isTargetAllowed } from "../access"
+import { type ChatTarget, targetLabel } from "../chat"
 import type { QQBotConfig } from "../config"
 import {
   CUSTOM_FACE_SUB_TYPE,
@@ -180,8 +181,8 @@ export async function registerTools(deps: ToolDeps): Promise<{ dispose(): Promis
   const requireTarget = (sessionID: string): ChatTarget | undefined => {
     const target = manager.targetForSession(sessionID)
     if (!target) return undefined
-    if (!isTargetEnabled(config, target)) {
-      logger.warn(`${targetLabel(target)} 已不在配置中，拒绝工具调用`)
+    if (!isTargetAllowed(config.access, target, config.ownerQQ)) {
+      logger.warn(`${targetLabel(target)} 已不在放行名单里，拒绝工具调用`)
       return undefined
     }
     if (!manager.hasActiveTurn(sessionID)) {

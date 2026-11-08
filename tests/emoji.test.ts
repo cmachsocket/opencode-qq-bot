@@ -24,6 +24,7 @@ import type { QQClient } from "../src/naplink/client"
 import type { MediaStore } from "../src/naplink/media"
 import { SendRateLimiter } from "../src/rate-limit"
 import type { SessionManager } from "../src/session/manager"
+import { accessConfig } from "./fixtures"
 
 const face = (desc: string, extra: Partial<CustomFace> = {}): CustomFace => {
   const resId = extra.resId ?? "res-1"
@@ -531,8 +532,7 @@ async function createCommandHarness(
   const config: QQBotConfig = {
     ...DEFAULT_CONFIG,
     napcat: { url: "ws://127.0.0.1:3001" },
-    groups: [100],
-    users: [200],
+    access: accessConfig({ groups: [100], users: [200] }),
     sendDelayMs: 0,
     rateLimit: { maxPerMinute: 0, maxPerHour: 0, minGapMs: 0 },
     ...options.config,
@@ -598,8 +598,7 @@ describe("commandTargetFor", () => {
     const config: QQBotConfig = {
       ...DEFAULT_CONFIG,
       napcat: { url: "ws://127.0.0.1:3001" },
-      groups: [100],
-      users: [200],
+      access: accessConfig({ groups: [100], users: [200] }),
     }
     const manager = { targetForSession: () => target } as unknown as SessionManager
     expect(commandTargetFor(config, manager, "session-1")).toEqual(target)
@@ -609,8 +608,7 @@ describe("commandTargetFor", () => {
     const config: QQBotConfig = {
       ...DEFAULT_CONFIG,
       napcat: { url: "ws://127.0.0.1:3001" },
-      groups: [100],
-      users: [200],
+      access: accessConfig({ groups: [100], users: [200] }),
     }
     const manager = { targetForSession: () => undefined } as unknown as SessionManager
     expect(commandTargetFor(config, manager, "session-1")).toEqual({
