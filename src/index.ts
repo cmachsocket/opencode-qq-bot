@@ -20,12 +20,14 @@ import { SessionManager } from "./session/manager"
 import { currentTimeText, PROACTIVE_HINT } from "./session/prompt"
 import { proactiveTickProbability } from "./session/proactive"
 import { packageDirectory, SoulStore } from "./session/soul"
+import { COMMANDS, handleCommand, isCommandChat } from "./commands"
 import { registerAskGuard } from "./tools/ask-guard"
 import { defaultToolProfilesPath, roleOf, ToolPolicy } from "./tools/policy"
 import { registerToolPolicy } from "./tools/policy-guard"
 import { registerSendGuard } from "./tools/send-guard"
-import { registerTools, sendPlainMessage } from "./tools/qq"
+import { createPlainSender, registerTools, sendPlainMessage } from "./tools/qq"
 import { registerEmojiCommand } from "./emoji/command"
+import { registerTuiCommands } from "./tui-commands"
 import { FavoriteStore } from "./emoji/favorites"
 import { FavoriteIndex } from "./emoji/favorite-index"
 import { EmojiLabeler } from "./emoji/label"
@@ -176,6 +178,24 @@ export default Plugin.define({
       labeler,
       limiter,
     })
+    const commands = COMMANDS
+    // 命令结果统一走限流；发送失败只记日志，不影响命令本身。
+    const replyTo = createPlainSender(client, {
+      delayMs: config.sendDelayMs,
+      limiter,
+      logger,
+      failure: (target) => `${targetLabel(target)} 发送命令结果失败`,
+    })
+    const tuiCommandRegistration = await registerTuiCommands({
+      ctx,
+      config,
+      logger,
+      manager,
+      policy,
+      client,
+      limiter,
+      commands,
+    })
     // QQ 会话里禁止模型调用内置 question 工具，改用 qq_send_message 询问用户。
     const askGuardRegistration = await registerAskGuard({ ctx, logger, manager })
     // 禁止连续调用发送工具，避免同一条消息被重复发送。
@@ -257,6 +277,13 @@ export default Plugin.define({
     const isGroupEvent = (event: MessageEvent): event is GroupMessageEvent =>
       event.message_type === "group"
 
+    /** 只取消息里的文本段，用于识别管理命令。 */
+    const messageText = (event: MessageEvent): string =>
+      (event.message ?? [])
+        .filter((segment) => segment.type === "text")
+        .map((segment) => String((segment.data as { text?: unknown }).text ?? ""))
+        .join(" ")
+
     const eventTarget = (event: MessageEvent): ChatTarget =>
       isGroupEvent(event)
         ? { kind: "group", id: event.group_id }
@@ -265,6 +292,22 @@ export default Plugin.define({
     const handleMessage = async (event: MessageEvent, target: ChatTarget, selfId: string) => {
       try {
         if (!isTargetEnabled(config, target)) return
+        // 管理命令只在 owner / 管理员自己的私聊里生效；群聊、别人的私聊、未知命令都交给模型。
+        if (isCommandChat(config, target, String(event.user_id))) {
+          const handled = await handleCommand(
+            messageText(event),
+            {
+              config,
+              manager,
+              policy,
+              target,
+              send: replyTo,
+              toolNames: async () => (await ctx.tool.list()).map((tool) => tool.id),
+            },
+            commands,
+          )
+          if (handled) return
+        }
         if (!shouldProcess(event.message, selfId)) return
 
         const renderCtx = {
@@ -439,6 +482,7 @@ export default Plugin.define({
       soul.dispose()
       await toolRegistration.dispose()
       await emojiCommandRegistration.dispose()
+      await tuiCommandRegistration.dispose()
       await labeler.dispose()
       await askGuardRegistration.dispose()
       await sendGuardRegistration.dispose()
