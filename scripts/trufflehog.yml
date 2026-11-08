@@ -1,0 +1,71 @@
+# TruffleHog 自定义检测器：只覆盖本项目自己的隐私规则。
+#
+# 用法（离线，只跑自定义检测器）：
+#   trufflehog filesystem . --config=scripts/trufflehog.yml \
+#     --include-detectors=CustomRegex --no-verification --no-update --fail
+#
+# 规则写法受 RE2 限制：没有前后瞻、没有语义判断。
+# 关键词必须出现在同一段文本里才会触发正则，命中后捕获组的内容会被上报。
+#
+# exclude_words 里的值一律不报：目前是占位符、测试里的假凭证，
+# 以及首个提交里那个已确认公开的历史群号。
+
+detectors:
+  # QQ 群号写进配置：`"groups": [123456789]`
+  - name: QQGroupNumber
+    keywords:
+      - groups
+    regex:
+      group: '"(?:groups|group)"\s*:\s*\[\s*"?([1-9][0-9]{5,11})"?'
+    exclude_words:
+      - "123456789"
+      - "1093424135"
+
+  # QQ 群号写进环境变量：`QQ_GROUPS=123456789`
+  - name: QQGroupNumberEnv
+    keywords:
+      - groups
+    regex:
+      group: '(?i)^\s*(?:export\s+)?QQ_GROUPS?\s*[=:]\s*"?([1-9][0-9]{5,11})'
+    exclude_words:
+      - "123456789"
+      - "1093424135"
+
+  # 测试断言里的群号：`expect(config.groups).toEqual([123456789])`
+  - name: QQGroupNumberAssertion
+    keywords:
+      - groups
+    regex:
+      group: 'groups?\)?\.(?:toEqual|toContain|toBe)\(\s*\[\s*([1-9][0-9]{5,11})'
+    exclude_words:
+      - "123456789"
+      - "1093424135"
+
+  # 凭证赋值：`token = "..."`、`password: "..."`
+  - name: CredentialAssignment
+    keywords:
+      - token
+      - secret
+      - password
+      - passwd
+      - apikey
+      - access_key
+    regex:
+      credential: '(?i)(?:token|secret|password|passwd|api[_-]?key|access[_-]?key)\s*[:=]\s*["'']?([A-Za-z0-9+/_\-]{16,})'
+    exclude_words:
+      - example
+      - changeme
+      - placeholder
+      - your-token
+      - your_token
+      - xxxxxxxx
+      # 测试里的假凭证，避免把 fixture 当泄漏。
+      - abcdefghijklmnop
+
+  # PEM 私钥
+  - name: PrivateKeyBlock
+    keywords:
+      - private
+      - key
+    regex:
+      key: "-----BEGIN (?:RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----"

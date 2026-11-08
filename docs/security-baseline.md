@@ -83,6 +83,8 @@ NapCat（OneBot 11，本机或远端）        ← 不可信边界
 4. **新增工具**：确认它在 QQ 会话里只做插件允许的事，没有隐式的本地执行能力。
 5. **新增配置项**：同步 `docs/configuration.md`、`.env.example`、README 表格与 `tests/docs.test.ts`。
 6. **新增依赖**：同步 `NOTICE` 的依赖表，`tests/notice.test.ts` 会检查覆盖情况。
-7. **改动以上任一不变量**：先更新本文档的表格，再改代码与测试。
+7. **新增真实标识或凭证**：不要写进仓库。CI 会用 `scripts/trufflehog.yml` 扫本次 push / PR
+   的提交，命中真实群号、凭证赋值或 PEM 私钥即失败；本地 `bun run privacy:scan` 会扫全部历史。
+8. **改动以上任一不变量**：先更新本文档的表格，再改代码与测试。
 
 发布前的自动门禁见 [release.md](./release.md)；漏洞上报方式见 [SECURITY.md](../SECURITY.md)。

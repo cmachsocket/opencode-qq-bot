@@ -193,7 +193,7 @@ qq-bridge 把这些也自己做了一遍（39 个 MCP 工具 + token 台账）�
 | #   | 条目                     | 本项目现状                                         | qq-bridge 对照                                                                                                | 结论                                              |
 | --- | ------------------------ | -------------------------------------------------- | ------------------------------------------------------------------------------------------------------------- | ------------------------------------------------- |
 | C1  | 无 CI                    | 无 `.github/`                                      | 3 job：syntax 全量 `node --check` + JSON.parse + 许可证一致性 / privacy-scan / windows 上 npm audit + 59 脚本 | **采纳（已实现，见「C1 / C3 / C4 的落地方式」）** |
-| C2  | 无隐私扫描               | 仅靠 `.gitignore` 挡 `.env`/`opencode.json`        | `privacy-scan.mjs` 扫工作树 + **全部 git 历史**（9-10 位 QQ/群号、凭证赋值、PEM、绝对路径）                   | **采纳**                                          |
+| C2  | 无隐私扫描               | 仅靠 `.gitignore` 挡 `.env`/`opencode.json`        | `privacy-scan.mjs` 扫工作树 + **全部 git 历史**（9-10 位 QQ/群号、凭证赋值、PEM、绝对路径）                   | **采纳（已实现，见「C2 的落地方式」）**           |
 | C3  | 无安全基线与漏洞报告文档 | docs/ 仅 3 篇                                      | `SECURITY_BASELINE.md`、`SECURITY.md`、`NOTICE.md`（数据流）                                                  | **采纳（已实现，见「C1 / C3 / C4 的落地方式」）** |
 | C4  | 无发布流程               | 无 publish 脚本、无 release workflow，版本手工维护 | 有 release 流程                                                                                               | **采纳（已实现，见「C1 / C3 / C4 的落地方式」）** |
 | C5  | 日志只有 stdout 且无脱敏 | `src/logger.ts` 仅 console                         | 带上限的日志文件 + 每行脱敏                                                                                   | **采纳（已实现，见「C5 的落地方式」）**           |
@@ -228,19 +228,48 @@ qq-bridge 把这些也自己做了一遍（39 个 MCP 工具 + token 台账）�
 
 三个基础设施项一起落地，共用一套门禁：本地 `bun run ci`、CI 里同样的命令、发布前再跑一遍。
 
-| #   | 落地                                                                                                                                                                       | 位置                                                                           |
-| --- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------ |
-| C1  | GitHub Actions 一个 job：冻结安装 → `tsc --noEmit` → `eslint .` → `prettier --check .` → `vitest run`（含 NOTICE 一致性用例）→ `bun audit --production --audit-level=high` | `.github/workflows/ci.yml`                                                     |
-| C3  | 根目录 `SECURITY.md`（私密上报、无 SLA、范围与部署硬要求）+ 安全基线（信任边界、数据流、不变量清单，每条带实现与测试落点）+ `NOTICE` 数据流小节                            | `SECURITY.md`、`docs/security-baseline.md`、`NOTICE`                           |
-| C4  | tag `v*` 触发：`verify` 跑完整门禁与 `release-check`，`publish` 把包 `npm stage publish` 到暂存区并按 CHANGELOG 段创建 GitHub Release；维护者 2FA 批准后才可安装           | `.github/workflows/release.yml`、`scripts/release-check.ts`、`docs/release.md` |
+| #   | 落地                                                                                                                                                                                  | 位置                                                                           |
+| --- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------ |
+| C1  | GitHub Actions 一个 job：隐私扫描 → 冻结安装 → `tsc --noEmit` → `eslint .` → `prettier --check .` → `vitest run`（含 NOTICE 一致性用例）→ `bun audit --production --audit-level=high` | `.github/workflows/ci.yml`                                                     |
+| C3  | 根目录 `SECURITY.md`（私密上报、无 SLA、范围与部署硬要求）+ 安全基线（信任边界、数据流、不变量清单，每条带实现与测试落点）+ `NOTICE` 数据流小节                                       | `SECURITY.md`、`docs/security-baseline.md`、`NOTICE`                           |
+| C4  | tag `v*` 触发：`verify` 跑完整门禁与 `release-check`，`publish` 把包 `npm stage publish` 到暂存区并按 CHANGELOG 段创建 GitHub Release；维护者 2FA 批准后才可安装                      | `.github/workflows/release.yml`、`scripts/release-check.ts`、`docs/release.md` |
 
 - 许可证 / NOTICE 一致性只写一次：`tests/notice.test.ts`，CI 跑全量测试时一并执行。
-- 不加 privacy-scan job：C2 还没落地，先加是空壳；C2 交付时再补第 4 个 job。
+- 隐私扫描是同一个 job 里的独立步骤，放在 `bun install` 之前：此时没有 `node_modules`，
+  不会把依赖里的字符串当泄漏；历史扫描需要完整克隆，checkout 用 `fetch-depth: 0`。
 - 只跑 ubuntu：Windows 路径差异留到真正出问题时再加，避免 CI 时间翻倍。
 - 版本号仍手工维护；`release-check` 只校验、不改写，也不自动提交。
 - `0.4.0` / `0.5.0` 从未发布到 npm，`0.5.1` 是 npm 上第一个带上它们内容的版本。
 - 发布凭据走 npm trusted publishing（GitHub OIDC），工作流把 npm 固定到 `11.15.0`，不需要长期 token；
   信任关系是 stage-only：CI 只能 `npm stage publish`，维护者用 2FA 执行 `npm stage approve` 后版本才上线。
+
+### C2 的落地方式（已实现）
+
+用 [TruffleHog](https://github.com/trufflesecurity/trufflehog) 的自定义检测器，不自己写扫描脚本：
+自定义正则足够覆盖「群号 / 凭证赋值 / PEM」这类文本规则，命中判定、去重、退出码都交给它。
+
+| 检测器                   | 抓什么                                                     | 关键词           |
+| ------------------------ | ---------------------------------------------------------- | ---------------- |
+| `QQGroupNumber`          | `"groups": [123456789]`（配置与 JSON 写法）                | `groups`         |
+| `QQGroupNumberEnv`       | `QQ_GROUPS=123456789`（环境变量写法）                      | `groups`         |
+| `QQGroupNumberAssertion` | `expect(config.groups).toEqual([123456789])`（测试断言）   | `groups`         |
+| `CredentialAssignment`   | `token` / `secret` / `password` / `api_key` 等赋了非占位值 | 同左             |
+| `PrivateKeyBlock`        | `-----BEGIN ... PRIVATE KEY-----`                          | `private`、`key` |
+
+- 规则在 `scripts/trufflehog.yml`，关键词和正则必须在同一段文本里同时命中才触发。
+- RE2 没有前后瞻，也没有语义判断：群号要按写法各写一条正则；实测 `toEqual([...])` 这种
+  写法不单独写规则就会漏。规则不能按路径限定，只能靠 `exclude_words` 和 `trufflehog:ignore`。
+- 离线跑：`--no-verification`，所有结果都是 unverified，所以不能加 `--results=verified`
+  （那会把自定义结果全部过滤掉）。
+- CI 固定 `v3.99.8` 并用官方 action 跑；`version` 输入也写死 `3.99.8`（它默认 `latest`，不写就会漂）。
+- CI 扫的是本次 push / PR 的提交范围；本地 `bun run privacy:scan` 扫全部历史，规则同一份。
+- `--include-detectors=CustomRegex` 只跑自定义检测器，不掺内置检测器的噪音；
+  `--fail` 由 action 自带，命中时退出码 183。
+- 已接受的例外写进 `exclude_words`：首个提交里那个已确认公开的历史群号（`README.md`、
+  `opencode.json`、`tests/config.test.ts`，之后已删除但仍在历史里），以及测试里的假凭证。
+  不重写历史。
+- 没做的两件事：绝对路径规则（这个仓库里意义不大）、`git ls-files` 白名单式检查
+  （TruffleHog 没有「文件是否被跟踪」的能力，自研脚本暂不做）。
 
 ### A4 的平台落点
 
@@ -466,7 +495,7 @@ NapLink 已经把事件按 `post_type` + `notice_type` 拆好并分发，但插�
 | B6  | 采纳               | 失败兜底文案（待实现）                                         |
 | B7  | 采纳               | 通知事件订阅做成可配置项                                       |
 | C1  | 采纳（已实现）     | CI：单个 job 跑类型 / Lint / 格式 / 测试 / audit，ubuntu-only  |
-| C2  | 采纳               | 隐私扫描（待实现）                                             |
+| C2  | 采纳（已实现）     | TruffleHog 自定义检测器扫全部历史，CI 拦截群号 / 凭证 / PEM    |
 | C3  | 采纳（已实现）     | SECURITY.md + 安全基线 + NOTICE 数据流                         |
 | C4  | 采纳（已实现）     | tag 触发：校验后 stage 到 npm + GitHub Release，2FA 批准后上线 |
 | C5  | 采纳（已实现）     | 日志脱敏：Winston 日志文件（带上限）+ 逐行脱敏                 |

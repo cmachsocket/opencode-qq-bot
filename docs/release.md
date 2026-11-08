@@ -36,6 +36,7 @@
    ```sh
    bun install --frozen-lockfile
    bun run ci
+   bun run privacy:scan   # 需要本地有 trufflehog；CI 一定会跑
    bun run release:check --tag v0.5.1
    ```
 

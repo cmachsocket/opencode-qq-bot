@@ -301,10 +301,12 @@ bun run test          # vitest run
 bun run format        # prettier --write .
 bun run format:check  # prettier --check .
 bun run ci            # 上面四道门禁一次跑完
+bun run privacy:scan  # 扫真实群号 / 凭证赋值 / PEM（需先装 trufflehog）
 ```
 
 CI 在 `.github/workflows/ci.yml`，推 `main` 与 PR 都会跑同一套门禁，另加依赖漏洞扫描
-（`bun audit --production --audit-level=high`）与许可证 / NOTICE 一致性检查。
+（`bun audit --production --audit-level=high`）、许可证 / NOTICE 一致性检查，
+以及离线隐私扫描（TruffleHog 自定义检测器，规则见 `scripts/trufflehog.yml`）。
 
 发布走 tag：推 `v<version>` 后由 `.github/workflows/release.yml` 校验并发布到 npm、创建
 GitHub Release。版本号策略、发布清单与回滚步骤见 [docs/release.md](docs/release.md)，

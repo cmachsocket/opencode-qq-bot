@@ -32,6 +32,7 @@
     "format:check": "prettier --check .",
     "test": "vitest run",
     "ci": "bun run typecheck && bun run lint && bun run test && bun run format:check",
+    "privacy:scan": "trufflehog git file://. --config=scripts/trufflehog.yml --include-detectors=CustomRegex --no-verification --no-update --fail",
     "release:check": "bun scripts/release-check.ts"
   },
   "keywords": [

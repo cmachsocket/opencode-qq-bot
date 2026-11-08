@@ -4,6 +4,14 @@
 
 ## [Unreleased]
 
+### Added
+
+- 隐私扫描（`scripts/trufflehog.yml` + CI 步骤）：用 TruffleHog 自定义检测器离线扫 push / PR 带的提交
+  范围，命中真实 QQ 群号、凭证赋值或 PEM 私钥即失败。CI 走官方 action 并固定 `v3.99.8`
+  （`version` 也写死 `3.99.8`，它默认是 `latest`），只跑自定义检测器（`--include-detectors=CustomRegex`），
+  不做联网验证。首个提交里那个已确认公开的历史群号、测试里的假凭证写进 `exclude_words`。
+  本地 `bun run privacy:scan` 扫全部历史，规则与 CI 共用同一份配置。
+
 ## [0.5.1] - 2026-11-08
 
 ### Added

@@ -19,6 +19,19 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+        with:
+          # action 要解析 base / head 的 commit，浅克隆不够
+          fetch-depth: 0
+
+      # 官方 action 内部用 docker 跑 CLI；version 必须显式固定，默认是 latest。
+      # base / head 显式给出，避免手动触发时两个参数为空、命令行解析出错。
+      - name: 隐私扫描（自定义检测器，离线）
+        uses: trufflesecurity/trufflehog@v3.99.8
+        with:
+          version: 3.99.8
+          base: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event_name == 'workflow_dispatch' && format('{0}~1', github.sha) || github.event.before }}
+          head: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          extra_args: --config=scripts/trufflehog.yml --include-detectors=CustomRegex --no-verification
 
       - uses: oven-sh/setup-bun@v2
         with:

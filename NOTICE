@@ -42,6 +42,12 @@
 许可边界：本项目自身以 [CC-BY-NC-SA-4.0](LICENSE) 发布，**不允许商业使用**；
 上表第三方组件仍按各自的 MIT 许可分发，不受本项目许可限制。
 
+## 只在 CI 里用的工具
+
+隐私扫描用 [TruffleHog](https://github.com/trufflesecurity/trufflehog)（AGPL-3.0）：
+CI 通过官方 GitHub Action 拉取固定版本的镜像并在仓库副本上运行，不修改、不链接、不再分发，
+也不随 npm 包发布。
+
 ## MIT License
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
