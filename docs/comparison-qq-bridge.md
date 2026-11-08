@@ -4,6 +4,7 @@
 > 评审过程：逐条讨论的部分见各条目的「结论」列；其余条目由维护者一次性批量采纳（未逐条展开）。
 > 已确认的缺陷单独列在「已确认缺陷」一节；不做的、框架侧的、不属于本项目职责的都不写在这里。
 > 尚未实现的条目 = 早期阶段的待办，不等于缺陷，优先级见「八、评审记录」。
+> 各条目**当前是否已实现**、落在哪个文件、配置面是什么，见 [`comparison-status.md`](./comparison-status.md)。
 
 ## 项目定位与职责边界
 
@@ -185,7 +186,7 @@ qq-bridge 把这些也自己做了一遍（39 个 MCP 工具 + token 台账）�
 | B3  | 无 QQ 侧管理命令    | 群里 `/xxx` 只会进 prompt；`/emoji-label` 是 TUI 命令不是 QQ 命令                               | `/role` `/silent` `/active` `/status` `/reset`，桥接直接执行不经模型     | **采纳**                                                                 |
 | B4  | 会话无法重置 / 退役 | 绑定后永久复用，上下文持续增长                                                                  | `retireSession()` 全套 + `/api/session/reset`                            | **采纳**                                                                 |
 | B5  | 出站文本质量        | 不做 markdown→纯文本（只在提示词里要求）；`splitMessage` 按码点切，字素簇会被切坏               | `src/md-to-plain.js` + `splitForQQ()` 代理对安全切分                     | **采纳**（已实现）：remove-markdown + Intl.Segmenter，不手写（见第六节） |
-| B6  | 失败无兜底文案      | 失败只写日志，群内表现为「不回话」                                                              | `reportTurnFailure()`：统一文案 + 节流，绝不把上游异常原文发到 QQ        | **采纳**                                                                 |
+| B6  | 失败无兜底文案      | 失败只写日志，群内表现为「不回话」                                                              | `reportTurnFailure()`：统一文案 + 节流，绝不把上游异常原文发到 QQ        | **采纳（已实现，见「B6 的落地方式」）**                                  |
 | B7  | 通知事件订阅        | 仅订阅 `message.group.normal` / `message.private`；`notice` / `request` / `meta_event` 一律不接 | 处理撤回通知、戳一戳、成员增减                                           | **采纳**：做成可配置项（见第七节）                                       |
 
 ### C. 基础设施类
@@ -223,6 +224,25 @@ qq-bridge 把这些也自己做了一遍（39 个 MCP 工具 + token 台账）�
 - 已知限制：`winston-daily-rotate-file` 清理旧文件前会检查文件是否已落盘，启动瞬间的连续写入可能多留几个文件。
 
 落地位置：`src/logger.ts`、`src/sensitive.ts`（`maskSecrets`）、`src/config.ts`、`src/index.ts`
+
+### B6 的落地方式（已实现）
+
+回合失败时不再只是写日志、群里一声不响：模型一句话都还没发出就失败，插件往聊天里补一条固定文案。
+
+| 情形                                          | 群里看到什么                            | 说明                                  |
+| --------------------------------------------- | --------------------------------------- | ------------------------------------- |
+| `session.execution.failed`                    | `⚠️ 暂时无法处理这条消息，请稍后再试。` | 上游异常原文只进日志（logger 会脱敏） |
+| `session.execution.interrupted`               | `⏹️ 已停止`                             | 中断同样可能意味着模型没来得及回话    |
+| 同一批消息重试到上限被丢弃                    | 同上第一条                              | 这批内容再也进不了会话，得有个交代    |
+| 模型已经调用过发送工具（`awaitingSend` 为假） | 不发                                    | 已经回过话，不再补一条噪音            |
+| 主动说话失败                                  | 不发                                    | 主动搭话失败不往群里道歉              |
+
+- 文案写死在 `src/session/manager.ts`（`FAILURE_NOTICE` / `INTERRUPTED_NOTICE`），不带任何上游错误、路径或凭证。
+- 节流：同一目标 5 分钟内最多一条（`FAILURE_NOTICE_INTERVAL_MS`），连续失败不会刷屏。
+- 提示本身走插件自己的发送通道（`sendPlainMessage` + 限流器），不占用模型发送额度。
+- 提示发送失败只写日志，不影响缓存消息的投递。
+
+落地位置：`src/session/manager.ts`（`notifyFailure`、`handleExecutionEnd`、投递上限分支）、`src/index.ts`（注入发送通道）。测试见 `tests/manager.test.ts`。
 
 ### C1 / C3 / C4 的落地方式（已实现）
 
@@ -492,7 +512,7 @@ NapLink 已经把事件按 `post_type` + `notice_type` 拆好并分发，但插�
 | B3  | 采纳               | QQ 侧管理命令（待实现）                                        |
 | B4  | 采纳               | 会话重置 / 退役（待实现）                                      |
 | B5  | 采纳（已实现）     | remove-markdown + Intl.Segmenter，不手写                       |
-| B6  | 采纳               | 失败兜底文案（待实现）                                         |
+| B6  | 采纳（已实现）     | 失败兜底文案：固定提示 + 5 分钟节流，上游异常原文只进日志      |
 | B7  | 采纳               | 通知事件订阅做成可配置项                                       |
 | C1  | 采纳（已实现）     | CI：单个 job 跑类型 / Lint / 格式 / 测试 / audit，ubuntu-only  |
 | C2  | 采纳（已实现）     | TruffleHog 自定义检测器扫全部历史，CI 拦截群号 / 凭证 / PEM    |
