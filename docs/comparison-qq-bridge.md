@@ -49,14 +49,14 @@ qq-bridge 把这些也自己做了一遍（39 个 MCP 工具 + token 台账）�
 
 ### A. 边界类（潜在风险）
 
-| #   | 条目                                                                | 本项目现状                                                                                                                                                                                          | qq-bridge 对照                                                                                                                            | 结论 / 备注                                                                                             |
-| --- | ------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------- |
-| A1  | 出站发送无速率限制                                                  | `src/tools/qq.ts` 无频次计数，仅 `sendDelayMs=1000` 拆段间隔；主动说话也无频率上限                                                                                                                  | `maxSendPerMinute=8` / `maxSendPerHour=60` / `burstMaxMessages=8` / `maxMessageChars=500` / `gapBaseMs+gapPerCharMs`                      | **采纳**（已实现，见「A1 的落地方式」）                                                                 |
-| A2  | 出站无敏感信息拦截                                                  | `src/sensitive.ts`：NFKC + 零宽归一化、base64 变体、已知凭证与 12 字符分片检测、凭证路径检测，发送前整条拦截                                                                                        | `src/sensitive.js`（NFKC+零宽归一化、base64 变体、路径/凭证赋值正则）+ `KNOWN_AGENT_TOKENS` + 12 字符分片检测 + `auditAndSend()` 整条拦截 | **采纳**（已实现，见「A2 的落地方式」）；OpenCode 的 agent token 常驻环境，注入后可外发                 |
-| A3  | 群消息原文直入 prompt                                               | `src/model-view.ts` 净化后拼成 `[绝对时间] 名字(QQ号): 正文`                                                                                                                                        | `src/qq-model-view.js`：`sanitizeUntrustedText`（全角 `【】`、换行、零宽）+ `compactModelMessage`（先净化再去重 + 相对时间）              | **采纳**（已实现，见「A3 的落地方式」）                                                                 |
-| A4  | QQ 会话的工具面处置未定                                             | 已有 `src/tools/ask-guard.ts` 拦内置 question——**因为它会在 TUI 弹出选择框，没有 QQ 用户能应答，整轮会卡住**；这是避免阻塞，不是安全闸门。其余工具（bash/write/edit/webfetch/subagent）当前一律放开 | 注册期 `tools.restrict` + 执行期白名单（仅 MCP 白名单前缀 + `ask_user_question`/`todo_write`）                                            | **采纳**：拦 question 的理由成立、保留；待评审的是**其余工具要不要按 QQ 会话收敛**，见「A4 的平台落点」 |
-| A5  | SSRF 判定只做字符串匹配                                             | 已加固：`src/safe-fetch.ts` 把判定挪到连接层（DNS 解析后逐个 IP 校验 + 端口白名单 + 不跟随跳转），原来的 `isPrivateHost` 字符串判定已删除                                                           | `src/safe-fetch.js`：DNS 全量校验 → 连已校验 IP + 保留 Host/SNI → 逐跳重校验 → 端口白名单 `[80,443,8080,8443]`                            | **采纳**（已实现，见「A5 的落地方式」）                                                                 |
-| A6  | `qq_send_image` / `qq_send_record` 的 `file` 接受任意本地路径或 URL | 直接透传给 NapCat，无目录白名单                                                                                                                                                                     | 语音侧有库白名单 + `safeJoinLibrary` 路径穿越防护                                                                                         | **采纳（已实现，见「A6 的落地方式」）**                                                                 |
+| #   | 条目                                                                | 本项目现状                                                                                                                                                                                          | qq-bridge 对照                                                                                                                            | 结论 / 备注                                                                                    |
+| --- | ------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------- |
+| A1  | 出站发送无速率限制                                                  | `src/tools/qq.ts` 无频次计数，仅 `sendDelayMs=1000` 拆段间隔；主动说话也无频率上限                                                                                                                  | `maxSendPerMinute=8` / `maxSendPerHour=60` / `burstMaxMessages=8` / `maxMessageChars=500` / `gapBaseMs+gapPerCharMs`                      | **采纳**（已实现，见「A1 的落地方式」）                                                        |
+| A2  | 出站无敏感信息拦截                                                  | `src/sensitive.ts`：NFKC + 零宽归一化、base64 变体、已知凭证与 12 字符分片检测、凭证路径检测，发送前整条拦截                                                                                        | `src/sensitive.js`（NFKC+零宽归一化、base64 变体、路径/凭证赋值正则）+ `KNOWN_AGENT_TOKENS` + 12 字符分片检测 + `auditAndSend()` 整条拦截 | **采纳**（已实现，见「A2 的落地方式」）；OpenCode 的 agent token 常驻环境，注入后可外发        |
+| A3  | 群消息原文直入 prompt                                               | `src/model-view.ts` 净化后拼成 `[绝对时间] 名字(角色)?: 正文`                                                                                                                                       | `src/qq-model-view.js`：`sanitizeUntrustedText`（全角 `【】`、换行、零宽）+ `compactModelMessage`（先净化再去重 + 相对时间）              | **采纳**（已实现，见「A3 的落地方式」）                                                        |
+| A4  | QQ 会话的工具面处置未定                                             | 已有 `src/tools/ask-guard.ts` 拦内置 question——**因为它会在 TUI 弹出选择框，没有 QQ 用户能应答，整轮会卡住**；这是避免阻塞，不是安全闸门。其余工具（bash/write/edit/webfetch/subagent）当前一律放开 | 注册期 `tools.restrict` + 执行期白名单（仅 MCP 白名单前缀 + `ask_user_question`/`todo_write`）                                            | **采纳（已实现，见「A4 / B3 / B4 的落地方式」）**：question 继续保留；其余工具按角色与聊天收敛 |
+| A5  | SSRF 判定只做字符串匹配                                             | 已加固：`src/safe-fetch.ts` 把判定挪到连接层（DNS 解析后逐个 IP 校验 + 端口白名单 + 不跟随跳转），原来的 `isPrivateHost` 字符串判定已删除                                                           | `src/safe-fetch.js`：DNS 全量校验 → 连已校验 IP + 保留 Host/SNI → 逐跳重校验 → 端口白名单 `[80,443,8080,8443]`                            | **采纳**（已实现，见「A5 的落地方式」）                                                        |
+| A6  | `qq_send_image` / `qq_send_record` 的 `file` 接受任意本地路径或 URL | 直接透传给 NapCat，无目录白名单                                                                                                                                                                     | 语音侧有库白名单 + `safeJoinLibrary` 路径穿越防护                                                                                         | **采纳（已实现，见「A6 的落地方式」）**                                                        |
 
 ### A1 的落地方式（已实现）
 
@@ -122,7 +122,7 @@ qq-bridge 把这些也自己做了一遍（39 个 MCP 工具 + token 台账）�
 所以整条消息渲染完成后还会整体净化一次；插件自己展开的引用块与转发块用私用区占位符保护，
 净化之后才还原成真正的结构标签。
 
-时间标注用**绝对时间**（维护者决定）：每条消息行是 `[YY-MM-DD HH:MM] 名字(QQ号): 正文`，方括号里是本地时区的绝对时间，名字后面的括号里是发送者 QQ 号，用来区分同名的人。与上游 qq-bridge 的差别是**不给相对时间**（上游给 `at` + `ago`），这里只给绝对时间，模型自己就能判断这条消息有多旧。
+时间标注用**绝对时间**（维护者决定）：每条消息行是 `[YY-MM-DD HH:MM] 名字(owner|admin)?: 正文`，方括号里是本地时区的绝对时间，名字后面只给 owner / 管理员标角色，普通成员没有标记，也不再显示 QQ 号。与上游 qq-bridge 的差别是**不给相对时间**（上游给 `at` + `ago`），这里只给绝对时间，模型自己就能判断这条消息有多旧。
 
 落地位置：`src/model-view.ts`（净化与时间标注）、`src/naplink/render.ts`（各消息段净化与整条消息的整体净化）、`src/naplink/history.ts`（历史消息同样标注）、`src/index.ts`（消息行拼装）、`src/session/prompt.ts`（系统提示说明新格式）。
 
@@ -183,8 +183,8 @@ qq-bridge 把这些也自己做了一遍（39 个 MCP 工具 + token 台账）�
 | --- | ------------------- | ----------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------ | ------------------------------------------------------------------------ |
 | B1  | 冷启动补历史        | 新建绑定时会话是空的，机器人刚进群 / 插件刚装 / 会话被删被重建时对之前一无所知                  | `qq_get_group_history`                                                   | **采纳**（已实现，见第四节）                                             |
 | B2  | 缺分对象的记忆存储  | 只有"一个群一个会话"的天然隔离；会话被 compact / 删除 / 重建后事实就只剩摘要                    | `qq_memory_append/query/remove/clear` + `slang-learner`（按 scope 隔离） | **采纳**（方案待商讨，见第五节，优先级低）                               |
-| B3  | 无 QQ 侧管理命令    | 群里 `/xxx` 只会进 prompt；`/emoji-label` 是 TUI 命令不是 QQ 命令                               | `/role` `/silent` `/active` `/status` `/reset`，桥接直接执行不经模型     | **采纳**                                                                 |
-| B4  | 会话无法重置 / 退役 | 绑定后永久复用，上下文持续增长                                                                  | `retireSession()` 全套 + `/api/session/reset`                            | **采纳**                                                                 |
+| B3  | 无 QQ 侧管理命令    | 群里 `/xxx` 只会进 prompt；插件命令此前只注册在 TUI 侧                                          | `/role` `/silent` `/active` `/status` `/reset`，桥接直接执行不经模型     | **采纳（已实现，见「A4 / B3 / B4 的落地方式」）**                        |
+| B4  | 会话无法重置 / 退役 | 绑定后永久复用，上下文持续增长                                                                  | `retireSession()` 全套 + `/api/session/reset`                            | **采纳（已实现，见「A4 / B3 / B4 的落地方式」）**                        |
 | B5  | 出站文本质量        | 不做 markdown→纯文本（只在提示词里要求）；`splitMessage` 按码点切，字素簇会被切坏               | `src/md-to-plain.js` + `splitForQQ()` 代理对安全切分                     | **采纳**（已实现）：remove-markdown + Intl.Segmenter，不手写（见第六节） |
 | B6  | 失败无兜底文案      | 失败只写日志，群内表现为「不回话」                                                              | `reportTurnFailure()`：统一文案 + 节流，绝不把上游异常原文发到 QQ        | **采纳（已实现，见「B6 的落地方式」）**                                  |
 | B7  | 通知事件订阅        | 仅订阅 `message.group.normal` / `message.private`；`notice` / `request` / `meta_event` 一律不接 | 处理撤回通知、戳一戳、成员增减                                           | **采纳**：做成可配置项（见第七节）                                       |
@@ -244,6 +244,45 @@ qq-bridge 把这些也自己做了一遍（39 个 MCP 工具 + token 台账）�
 
 落地位置：`src/session/manager.ts`（`notifyFailure`、`handleExecutionEnd`、投递上限分支）、`src/index.ts`（注入发送通道）。测试见 `tests/manager.test.ts`。
 
+### A4 / B3 / B4 的落地方式（已实现）
+
+三件一起落地：工具按「发送者角色 + 聊天」分配，管理命令只在 owner 与管理员自己的私聊里生效，会话可以随时重置。
+同一组命令也以 `qq-` 前缀注册为 TUI 命令（`/qq-help`、`/qq-reset` 等，见 `src/tui-commands.ts`），
+与 QQ 侧共用 `src/commands.ts` 的命令表，避免与 OpenCode 内置命令同名。
+
+| 角色           | 工具配置档                                     |
+| -------------- | ---------------------------------------------- |
+| owner / 管理员 | `admin`（全开）                                |
+| 其他人         | 该群 / 私聊指定的档，未指定用 `defaultProfile` |
+
+```json
+{
+  "defaultProfile": "chat",
+  "profiles": {
+    "chat": { "allow": ["websearch", "webfetch", "qq_*"], "deny": [] },
+    "admin": { "allow": ["*"], "deny": [] }
+  },
+  "chats": { "group:100": "chat" }
+}
+```
+
+- 配置在 `tool-profiles.json`（`toolProfilesPath` / `QQ_TOOL_PROFILES` 可改路径），
+  `allow` 就是白名单（没列出的一律不可用），支持 `*`、`qq_*` 通配，`deny` 优先；
+  文件缺失或半写时沿用内置默认 / 上一份配置并告警。
+- 普通成员默认只放行 `websearch`、`webfetch` 与 `qq_*`：`shell` / `write` / `read` 等本地工具全部拒绝；
+  子代理（`subagent` / `task`）也不在白名单里，因为它会开新会话、绕过按聊天过滤。
+- 两层执行：`context` 钩子删掉不允许的工具，`execute.before` 再挡一次，Code Mode 与并发调用也绕不过。
+- 管理命令只在 `ownerQQ` / `admins` 各自的私聊里生效（发送者必须是私聊主人）：`/help`、`/status`、`/tools [目标]`、
+  `/reset`（不带参数列出所有聊天）/ `/reset group:123`。群聊、其他人的私聊、未知 `/xxx` 都照常交给模型。
+- `/reset` 不带参数时只列出所有聊天及 `group:<id>` / `private:<id>` 写法，不执行重置；
+  带目标时才动手。若上游正在执行，先 `interrupt` 再删除会话；下一条消息新建会话并正常补历史。
+- 已知局限：子代理是独立会话，`targetForSession` 查不到绑定，只能靠普通成员档的白名单
+  挡在门外；admin 档放开子代理时，子代理里的工具不再按聊天收窄。
+
+落地位置：`src/tools/policy.ts`、`src/tools/policy-guard.ts`、`src/commands.ts`、
+`src/session/manager.ts`（`resetTarget`）、`src/index.ts`。测试见 `tests/policy.test.ts`、
+`tests/commands.test.ts`、`tests/manager.test.ts`。
+
 ### C1 / C3 / C4 的落地方式（已实现）
 
 三个基础设施项一起落地，共用一套门禁：本地 `bun run ci`、CI 里同样的命令、发布前再跑一遍。
@@ -295,10 +334,10 @@ qq-bridge 把这些也自己做了一遍（39 个 MCP 工具 + token 台账）�
 
 先分清两件事：
 
-| 事项              | 现状                                                     | 性质                 |
-| ----------------- | -------------------------------------------------------- | -------------------- |
-| 拦内置 `question` | 它会在 TUI 弹出选择框；QQ 侧没人能应答，会话会一直等下去 | **必要**，保留       |
-| 其余工具的处置    | bash / write / edit / webfetch / subagent 当前一律放开   | **待评审**，不是缺陷 |
+| 事项              | 现状                                                      | 性质           |
+| ----------------- | --------------------------------------------------------- | -------------- |
+| 拦内置 `question` | 它会在 TUI 弹出选择框；QQ 侧没人能应答，会话会一直等下去  | **必要**，保留 |
+| 其余工具的处置    | 按发送者角色与聊天收窄，普通成员默认只留联网工具与 `qq_*` | **已实现**     |
 
 qq-bridge 的两层闸门在 OpenCode V2 插件 API 里都有对应原语，不必手写整套工具名白名单：
 
@@ -307,15 +346,17 @@ qq-bridge 的两层闸门在 OpenCode V2 插件 API 里都有对应原语，不�
 | 注册期 `ctx.tools.restrict`（藏掉一批工具）    | `ctx.tool.transform((editor) => editor.remove(id))`                                                         | 全局   |
 | 执行期白名单（`SAFE_PREFIXES` / `SAFE_EXACT`） | `ctx.permission.hook("evaluate")`：事件带 `sessionID` + `action`，可设 `effect`（`allow` / `deny` / `ask`） | 按会话 |
 
-关键差别：**注册期移除是全局的**（会影响非 QQ 会话），所以按会话收敛只能走 `ctx.permission`。
-`ctx.tool.hook("execute.before")` 已经在用（`src/tools/ask-guard.ts`），它能拿到 `sessionID`，但语义是"调用时拒绝"，
-拿不到"这个动作该不该被允许"的统一判定——权限域才是对的位置。
+关键差别：**注册期移除是全局的**（会影响非 QQ 会话），所以没有走注册期，改为按会话判定。
 
-待评审的两个方向：
+最终采用两层：
 
-1. **维持现状**——QQ 会话里模型可以自由用本地工具。代价是群里一句话就能触发本地读写。
-2. **按 QQ 会话收敛**——用 `ctx.permission` 的执行期闸门，按 `sessionID` 判定放行哪些工具。
-   注意注册期 `ctx.tool.transform` 是全局的，不能用；能做的是"在 QQ 会话里额外 deny 一批工具"。
+1. **上下文层**：`ctx.session.hook("context")` 的 `event.tools` 是按会话可改的，
+   每轮按发送者角色与聊天过滤一次，模型看不到不允许的工具。
+2. **执行层**：`ctx.tool.hook("execute.before")` 对正在执行 QQ 轮次的会话再挡一次，
+   Code Mode、并发调用与直接指定工具名都绕不过去。
+
+没有用 `ctx.tool.transform`（全局，会波及非 QQ 会话）；也没有用 `ctx.permission`——
+当前插件 API 里那个钩子不承担工具白名单语义，执行前拦截才是确定生效的位置。
 
 ---
 
@@ -504,13 +545,13 @@ NapLink 已经把事件按 `post_type` + `notice_type` 拆好并分发，但插�
 | A1  | 采纳（已实现）     | 出站速率限制：每分钟 / 每小时硬上限 + 相邻发送最小间隔         |
 | A2  | 采纳（已实现）     | 出站敏感信息 / 令牌拦截：flare-redact + 已知凭证分片           |
 | A3  | 采纳（已实现）     | 群消息注入净化：结构净化 + 绝对时间标注                        |
-| A4  | 采纳               | 拦 question 保留（TUI 弹窗阻塞）；其余工具待评审               |
+| A4  | 采纳（已实现）     | 拦 question 保留；其余工具按角色 / 聊天收敛，执行前二次拦截    |
 | A5  | 采纳（已实现）     | SSRF 判定加固：连接级 IP 判定 + 端口白名单 + 不跟随跳转        |
 | A6  | 采纳（已实现）     | 媒体路径白名单：工作区 + 媒体目录 + 配置放开                   |
 | B1  | 采纳（已实现）     | 一次性冷启动补历史，不做回看工具                               |
 | B2  | 采纳（方案待商讨） | 分对象记忆存储，优先级低                                       |
-| B3  | 采纳               | QQ 侧管理命令（待实现）                                        |
-| B4  | 采纳               | 会话重置 / 退役（待实现）                                      |
+| B3  | 采纳（已实现）     | QQ 侧管理命令：仅 owner 私聊，/help /status /tools /reset      |
+| B4  | 采纳（已实现）     | /reset 先打断再删会话，下一条消息重开并补历史                  |
 | B5  | 采纳（已实现）     | remove-markdown + Intl.Segmenter，不手写                       |
 | B6  | 采纳（已实现）     | 失败兜底文案：固定提示 + 5 分钟节流，上游异常原文只进日志      |
 | B7  | 采纳               | 通知事件订阅做成可配置项                                       |
