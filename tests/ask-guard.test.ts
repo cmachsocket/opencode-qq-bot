@@ -16,8 +16,7 @@ interface Harness {
   registration: { dispose(): Promise<void> }
   release: ReturnType<typeof vi.fn>
   manager: {
-    targetForSession: ReturnType<typeof vi.fn>
-    hasActiveTurn: ReturnType<typeof vi.fn>
+    activeTurn: ReturnType<typeof vi.fn>
   }
   logger: Record<keyof Logger, ReturnType<typeof vi.fn>>
 }
@@ -26,8 +25,11 @@ const group = (id: number): ChatTarget => ({ kind: "group", id })
 
 async function createHarness(target: ChatTarget | undefined, activeTurn = true): Promise<Harness> {
   const manager = {
-    targetForSession: vi.fn(() => target),
-    hasActiveTurn: vi.fn(() => activeTurn),
+    activeTurn: vi.fn(() =>
+      activeTurn && target
+        ? { target, turn: { text: "hi", files: [], atMe: false }, role: "member" }
+        : undefined,
+    ),
   }
   const logger = {
     debug: vi.fn(),
@@ -68,8 +70,7 @@ describe("registerAskGuard", () => {
     await expect(harness.callback({ tool: QUESTION_TOOL, sessionID: "ses_1" })).rejects.toThrow(
       ASK_REFUSAL,
     )
-    expect(harness.manager.targetForSession).toHaveBeenCalledWith("ses_1")
-    expect(harness.manager.hasActiveTurn).toHaveBeenCalledWith("ses_1")
+    expect(harness.manager.activeTurn).toHaveBeenCalledWith("ses_1")
     expect(harness.logger.warn).toHaveBeenCalled()
   })
 

@@ -38,6 +38,8 @@ interface Harness {
   }
   sessionGet: ReturnType<typeof vi.fn>
   sessionCreate: ReturnType<typeof vi.fn>
+  sessionRemove: ReturnType<typeof vi.fn>
+  sessionInterrupt: ReturnType<typeof vi.fn>
   notices: Array<{ target: ChatTarget; text: string }>
 }
 
@@ -84,6 +86,7 @@ function createHarness(
       create: sessionCreate,
       get: sessionGet,
       remove: vi.fn(async () => {}),
+      interrupt: vi.fn(async () => {}),
       prompt,
       synthetic: vi.fn(async (input: { sessionID: string; text: string }) => {
         synthetics.push(input)
@@ -117,6 +120,8 @@ function createHarness(
     storage,
     sessionGet,
     sessionCreate,
+    sessionRemove: (ctx.session as unknown as { remove: ReturnType<typeof vi.fn> }).remove,
+    sessionInterrupt: (ctx.session as unknown as { interrupt: ReturnType<typeof vi.fn> }).interrupt,
   }
 }
 
@@ -1018,6 +1023,67 @@ describe("B1 冷启动补历史", () => {
     expect(storage.set).toHaveBeenCalledWith("positions", {
       "group:100": { id: "7", time: 200 },
     })
+  })
+
+  it("activeTurn 汇总目标、轮次与角色", async () => {
+    const harness = createHarness()
+    await harness.manager.enqueue(group(100), {
+      text: "你好",
+      files: [],
+      atMe: false,
+      role: "admin",
+    })
+
+    const active = harness.manager.activeTurn("session-1")
+    expect(active?.target).toEqual(group(100))
+    expect(active?.turn.text).toBe("你好")
+    expect(active?.role).toBe("admin")
+    expect(harness.manager.activeTurn("session-x")).toBeUndefined()
+  })
+
+  it("重置聊天时打断执行中的回合并解绑会话", async () => {
+    const harness = createHarness()
+    await harness.manager.enqueue(group(100), { text: "你好", files: [], atMe: false })
+    harness.sessionGet.mockResolvedValue({ id: "session-1", time: { busy: 2_000, idle: 0 } })
+
+    const result = await harness.manager.resetTarget(group(100))
+
+    expect(result).toEqual({ sessionID: "session-1", interrupted: true })
+    expect(harness.sessionInterrupt).toHaveBeenCalledWith({ sessionID: "session-1" })
+    expect(harness.sessionRemove).toHaveBeenCalledWith({ sessionID: "session-1" })
+    expect(harness.manager.targetForSession("session-1")).toBeUndefined()
+    expect(harness.manager.snapshot()[0]?.sessionID).toBeUndefined()
+
+    // 下一条消息重新建会话。
+    await harness.manager.enqueue(group(100), { text: "再来", files: [], atMe: false })
+    expect(harness.prompts.at(-1)?.sessionID).toBe("session-2")
+  })
+
+  it("重置空闲聊天时不动上游会话之外的状态", async () => {
+    const harness = createHarness()
+    await harness.manager.enqueue(group(100), { text: "你好", files: [], atMe: false })
+    harness.sessionGet.mockResolvedValue({ id: "session-1" })
+
+    const result = await harness.manager.resetTarget(group(100))
+
+    expect(result.interrupted).toBe(false)
+    expect(harness.sessionInterrupt).not.toHaveBeenCalled()
+    expect(harness.sessionRemove).toHaveBeenCalledWith({ sessionID: "session-1" })
+  })
+
+  it("合并批次时按最低权限保留角色", () => {
+    expect(
+      mergeTurns([
+        { text: "a", files: [], atMe: false, role: "owner" },
+        { text: "b", files: [], atMe: false, role: "member" },
+      ]).role,
+    ).toBe("member")
+    expect(
+      mergeTurns([
+        { text: "a", files: [], atMe: false, role: "admin" },
+        { text: "b", files: [], atMe: false, role: "owner" },
+      ]).role,
+    ).toBe("admin")
   })
 
   it("合并批次时保留最后一条消息的位置", () => {

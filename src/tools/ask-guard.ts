@@ -24,10 +24,9 @@ export async function registerAskGuard(deps: AskGuardDeps): Promise<{ dispose():
   const { ctx, logger, manager } = deps
   return await ctx.tool.hook("execute.before", async (event) => {
     if (event.tool !== QUESTION_TOOL) return
-    const target = manager.targetForSession(event.sessionID)
-    if (!target) return
-    if (!manager.hasActiveTurn(event.sessionID)) return
-    logger.warn(`${targetLabel(target)} 会话里模型尝试调用 ${QUESTION_TOOL} 工具，已拒绝`)
+    const active = manager.activeTurn(event.sessionID)
+    if (!active) return
+    logger.warn(`${targetLabel(active.target)} 会话里模型尝试调用 ${QUESTION_TOOL} 工具，已拒绝`)
     throw new Error(ASK_REFUSAL)
   })
 }

@@ -24,6 +24,20 @@ describe("resolveConfig", () => {
     expect(resolveConfig({}, ENV).warnLength).toBe(500)
   })
 
+  it("把 owner 自动加进可对话私聊，并解析管理员列表", () => {
+    const config = resolveConfig({}, { ...ENV, QQ_OWNER_QQ: "200", QQ_ADMINS: "300,301" })
+    expect(config.ownerQQ).toBe(200)
+    expect(config.admins).toEqual([300, 301])
+    expect(config.users).toContain(200)
+  })
+
+  it("不回退被写坏的 owner 或管理员配置", () => {
+    const config = resolveConfig({}, { ...ENV, QQ_OWNER_QQ: "abc", QQ_ADMINS: "300" })
+    expect(config.ownerQQ).toBeUndefined()
+    expect(config.users).toEqual([])
+    expect(config.admins).toEqual([300])
+  })
+
   it("takes the token from the environment", () => {
     const config = resolveConfig({}, { ...ENV, NAPCAT_WS_TOKEN: "from-env" })
     expect(config.napcat.token).toBe("from-env")

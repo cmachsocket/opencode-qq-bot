@@ -21,6 +21,8 @@ import { currentTimeText, PROACTIVE_HINT } from "./session/prompt"
 import { proactiveTickProbability } from "./session/proactive"
 import { packageDirectory, SoulStore } from "./session/soul"
 import { registerAskGuard } from "./tools/ask-guard"
+import { defaultToolProfilesPath, roleOf, ToolPolicy } from "./tools/policy"
+import { registerToolPolicy } from "./tools/policy-guard"
 import { registerSendGuard } from "./tools/send-guard"
 import { registerTools, sendPlainMessage } from "./tools/qq"
 import { registerEmojiCommand } from "./emoji/command"
@@ -129,6 +131,8 @@ export default Plugin.define({
         (secret) => secret.length > 0,
       ),
     })
+    // 工具配置：按聊天与角色决定模型能看到、能调用哪些工具。
+    const policy = new ToolPolicy(config.toolProfilesPath || defaultToolProfilesPath(), logger)
     const manager = new SessionManager(ctx, config, logger, home, history, async (target, text) => {
       // 失败兜底只发插件自己的固定文案，走上游异常原文永远不进聊天。
       await sendPlainMessage(client, target, text, { limiter })
@@ -176,14 +180,17 @@ export default Plugin.define({
     const askGuardRegistration = await registerAskGuard({ ctx, logger, manager })
     // 禁止连续调用发送工具，避免同一条消息被重复发送。
     const sendGuardRegistration = await registerSendGuard({ ctx, logger, manager })
+    // 按聊天与角色收窄工具：上下文里先删，执行前再挡一次。
+    const toolPolicyRegistration = await registerToolPolicy({ ctx, logger, manager, policy })
 
     // 系统提示：角色设定、当前时间、本轮是否必须回复。
-    const contextRegistration = await ctx.session.hook("context", (event) => {
+    const contextRegistration = await ctx.session.hook("context", async (event) => {
       const target = manager.targetForSession(event.sessionID)
       if (target === undefined) return
       event.system.push({ type: "text", text: soul.prompt })
       event.system.push({ type: "text", text: `当前时间：${currentTimeText()}` })
-      const turn = manager.currentTurn(event.sessionID)
+      const active = manager.activeTurn(event.sessionID)
+      const turn = active?.turn
       const destination = target.kind === "group" ? "群里" : "私聊里"
       event.system.push({
         type: "text",
@@ -195,6 +202,13 @@ export default Plugin.define({
               : "你被 @ 了，必须回复。"
             : "你没有被 @，可以选择不回复。",
       })
+      // 本轮发送者的角色决定工具档：owner / admin 全开，其他按聊天配置。
+      if (active) {
+        const allowed = await policy.allow(active.role, targetKey(target), Object.keys(event.tools))
+        for (const name of Object.keys(event.tools)) {
+          if (!allowed.has(name)) delete event.tools[name]
+        }
+      }
     })
 
     // 会话空闲：冲刷缓存消息，或提醒模型补一次发送。
@@ -263,6 +277,7 @@ export default Plugin.define({
         const rendered = await renderMessage(renderCtx, event)
         if (!rendered.text.trim()) return
 
+        const senderRole = roleOf(config, String(event.user_id))
         const userName = await resolveUserName(renderCtx, String(event.user_id))
         // 私聊消息默认都是对机器人说的，群聊只有被 @ 时才必须回复。
         const atMe = target.kind === "private" || mentionsUser(event.message, selfId)
@@ -276,6 +291,7 @@ export default Plugin.define({
           }),
           files: rendered.files,
           atMe,
+          role: senderRole,
           source: { id: String(event.message_id), time: event.time },
         })
       } catch (error) {
@@ -426,6 +442,7 @@ export default Plugin.define({
       await labeler.dispose()
       await askGuardRegistration.dispose()
       await sendGuardRegistration.dispose()
+      await toolPolicyRegistration.dispose()
       await contextRegistration.dispose()
       await idleRegistration.dispose()
       client.dispose()
