@@ -1,13 +1,18 @@
 import { describe, expect, it, vi } from "vitest"
 import type { Plugin } from "@opencode/plugin"
 import {
+  createEmojiRunner,
   EMOJI_LABEL_USAGE,
+  emojiCommand,
   formatFavoriteList,
   parseEmojiLabelArgs,
-  registerEmojiCommand,
-  resolveCommandTarget,
   selectFacesToLabel,
 } from "../src/emoji/command"
+import { commandTargetFor, splitArgs } from "../src/commands"
+import { ToolPolicy } from "../src/tools/policy"
+import { tuiCommandName } from "../src/tui-commands"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import { faceName, QQ_FACE_NAMES, renderFace } from "../src/emoji/faces"
 import { type CustomFace, faceTag, type FavoriteRow, FavoriteStore } from "../src/emoji/favorites"
 import { FavoriteIndex, favoriteKey, type IndexStorage } from "../src/emoji/favorite-index"
@@ -237,6 +242,8 @@ describe("parseEmojiLabelArgs", () => {
     expect(parseEmojiLabelArgs("/emoji-label all")).toBe("all")
     expect(parseEmojiLabelArgs("emoji-label: inc")).toBe("inc")
     expect(parseEmojiLabelArgs("/emoji-label list")).toBe("list")
+    expect(parseEmojiLabelArgs("/qq-emoji-label all")).toBe("all")
+    expect(parseEmojiLabelArgs("qq-emoji-label: inc")).toBe("inc")
   })
 
   it("ignores trailing words", () => {
@@ -468,6 +475,10 @@ describe("EmojiLabeler", () => {
 
 interface CommandHarness {
   execute: (text: string, sessionID?: string) => Promise<void>
+  /** 注册到 TUI 的命令名。 */
+  commandName: string
+  /** 与 TUI 共用的执行器，QQ 私聊直接调用它。 */
+  run: (target: ChatTarget, text: string) => Promise<void>
   api: {
     sendGroupMessage: SendMock
     sendPrivateMessage: SendMock
@@ -491,26 +502,6 @@ async function createCommandHarness(
     aborted?: boolean
   } = {},
 ): Promise<CommandHarness> {
-  let execute: (input: {
-    sessionID: string
-    prompt: { text?: string }
-  }) => Promise<void> = async () => {}
-  const ctx = {
-    command: {
-      transform: vi.fn(async (callback: (editor: unknown) => void) => {
-        callback({
-          add: (command: {
-            name: string
-            execute: (input: { sessionID: string; prompt: { text?: string } }) => Promise<void>
-          }) => {
-            execute = command.execute
-          },
-        })
-        return { dispose: async () => {} }
-      }),
-    },
-  } as unknown as Plugin.Context
-
   const api = {
     sendGroupMessage: createSendMock(),
     sendPrivateMessage: createSendMock(),
@@ -554,11 +545,9 @@ async function createCommandHarness(
     error: vi.fn(),
   }
 
-  await registerEmojiCommand({
-    ctx,
+  const runner = createEmojiRunner({
     config,
     logger: logger as unknown as Logger,
-    manager: manager as unknown as SessionManager,
     client: { api } as unknown as QQClient,
     favorites: favorites as never,
     favoriteIndex,
@@ -568,9 +557,34 @@ async function createCommandHarness(
     } as never,
     limiter: new SendRateLimiter(config.rateLimit),
   })
+  const command = emojiCommand(runner)
+  const policy = new ToolPolicy(
+    join(tmpdir(), "qq-policy-emoji", "none.json"),
+    logger as unknown as Logger,
+  )
+  const runOn = async (target: ChatTarget, text: string): Promise<void> => {
+    await command.run(
+      {
+        config,
+        manager: manager as unknown as SessionManager,
+        policy,
+        target,
+        toolNames: async () => ["read"],
+        commands: [command],
+      },
+      splitArgs(text, command.name),
+    )
+  }
 
   return {
-    execute: (text, sessionID = "session-1") => execute({ sessionID, prompt: { text } }),
+    // TUI 侧先按会话找目标（找不到时回退第一个配置目标），再走同一套命令。
+    execute: async (text) => {
+      const target = commandTargetFor(config, manager as unknown as SessionManager, "session-1")
+      if (!target) return
+      await runOn(target, text)
+    },
+    commandName: tuiCommandName(command.name),
+    run: runOn,
     api,
     labelFace,
     logger,
@@ -578,7 +592,7 @@ async function createCommandHarness(
   }
 }
 
-describe("resolveCommandTarget", () => {
+describe("commandTargetFor", () => {
   it("uses the bound target", () => {
     const target: ChatTarget = { kind: "group", id: 100 }
     const config: QQBotConfig = {
@@ -588,7 +602,7 @@ describe("resolveCommandTarget", () => {
       users: [200],
     }
     const manager = { targetForSession: () => target } as unknown as SessionManager
-    expect(resolveCommandTarget({ config, manager }, "session-1")).toEqual(target)
+    expect(commandTargetFor(config, manager, "session-1")).toEqual(target)
   })
 
   it("falls back to the first configured target", () => {
@@ -599,14 +613,25 @@ describe("resolveCommandTarget", () => {
       users: [200],
     }
     const manager = { targetForSession: () => undefined } as unknown as SessionManager
-    expect(resolveCommandTarget({ config, manager }, "session-1")).toEqual({
+    expect(commandTargetFor(config, manager, "session-1")).toEqual({
       kind: "group",
       id: 100,
     })
   })
 })
 
-describe("registerEmojiCommand", () => {
+describe("emojiCommand", () => {
+  it("registers the TUI command with the qq- prefix", async () => {
+    const harness = await createCommandHarness()
+    expect(harness.commandName).toBe("qq-emoji-label")
+  })
+
+  it("runs from a QQ private chat with the same runner", async () => {
+    const harness = await createCommandHarness()
+    await harness.run({ kind: "private", id: 200 }, "/emoji-label list")
+    expect(harness.api["sendPrivateMessage"]).toHaveBeenCalledWith(200, "没有读取到收藏表情。")
+  })
+
   it("sends the usage text over QQ", async () => {
     const harness = await createCommandHarness()
     await harness.execute("")

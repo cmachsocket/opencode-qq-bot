@@ -26,7 +26,7 @@ import { defaultToolProfilesPath, roleOf, ToolPolicy } from "./tools/policy"
 import { registerToolPolicy } from "./tools/policy-guard"
 import { registerSendGuard } from "./tools/send-guard"
 import { createPlainSender, registerTools, sendPlainMessage } from "./tools/qq"
-import { registerEmojiCommand } from "./emoji/command"
+import { createEmojiRunner, emojiCommand } from "./emoji/command"
 import { registerTuiCommands } from "./tui-commands"
 import { FavoriteStore } from "./emoji/favorites"
 import { FavoriteIndex } from "./emoji/favorite-index"
@@ -173,18 +173,21 @@ export default Plugin.define({
       sensitive,
       outbound,
     })
-    const emojiCommandRegistration = await registerEmojiCommand({
-      ctx,
-      config,
-      logger,
-      manager,
-      client,
-      favorites,
-      favoriteIndex,
-      labeler,
-      limiter,
-    })
-    const commands = COMMANDS
+    // 命令表：管理命令 + 表情标注，QQ 私聊与 TUI 共用同一套实现。
+    const commands = [
+      ...COMMANDS,
+      emojiCommand(
+        createEmojiRunner({
+          config,
+          logger,
+          client,
+          favorites,
+          favoriteIndex,
+          labeler,
+          limiter,
+        }),
+      ),
+    ]
     // 命令结果统一走限流；发送失败只记日志，不影响命令本身。
     const replyTo = createPlainSender(client, {
       delayMs: config.sendDelayMs,
@@ -487,7 +490,6 @@ export default Plugin.define({
       await manager.flush()
       soul.dispose()
       await toolRegistration.dispose()
-      await emojiCommandRegistration.dispose()
       await tuiCommandRegistration.dispose()
       await labeler.dispose()
       await askGuardRegistration.dispose()
