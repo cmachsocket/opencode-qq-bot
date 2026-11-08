@@ -74,8 +74,10 @@ interface MessageIdInput {
 /** QQ 单条消息的保守长度上限，超过时按段发送。 */
 export { MAX_MESSAGE_CHARS } from "../outbound"
 
-function text(value: string) {
-  return { content: value }
+function text(value: string, metadata?: Record<string, unknown>) {
+  // 工具返回 error 文本时状态仍是 completed；把失败标记带给发送守卫。
+  const marks = { ...(value.startsWith("error:") ? { failed: true } : {}), ...metadata }
+  return { content: value, ...(Object.keys(marks).length > 0 ? { metadata: marks } : {}) }
 }
 
 function delay(ms: number): Promise<void> {
@@ -179,7 +181,8 @@ export async function registerTools(deps: ToolDeps): Promise<{ dispose(): Promis
   const refuse = (sessionID: string, verdict: RateLimitVerdict, sent = 0, total = 0) => {
     manager.markMessageSent(sessionID)
     const progress = total > 0 ? `（已发送 ${sent}/${total} 段）` : ""
-    return text(`error: ${verdict.reason}${progress}`)
+    // 限流拒绝是“请停止发送”，不要因为它允许模型立刻重试。
+    return text(`error: ${verdict.reason}${progress}`, { retryable: false })
   }
 
   /**
@@ -291,7 +294,8 @@ export async function registerTools(deps: ToolDeps): Promise<{ dispose(): Promis
         } catch (error) {
           if (sent > 0) manager.markMessageSent(context.sessionID)
           logger.error(`${label} 发送消息失败，已发送 ${sent}/${chunks.length} 段`, error)
-          return text(`error: 消息只发送了 ${sent}/${chunks.length} 段`)
+          // 已经发出部分段落时不要允许整条重试，否则会重复发送。
+          return text(`error: 消息只发送了 ${sent}/${chunks.length} 段`, { retryable: sent === 0 })
         }
         manager.markMessageSent(context.sessionID)
         logger.info(`${label} 已发送 ${length} 字`)
@@ -461,10 +465,12 @@ export async function registerTools(deps: ToolDeps): Promise<{ dispose(): Promis
             return text(`error: 非法 user_id：${String(node.user_id)}`)
           }
           const body = toPlainText(node.content ?? "").trim()
-          guardOutbound(target, body)
+          const nickname = node.nickname?.trim() || "未知用户"
+          // 昵称同样发给对方，不能成为凭证外发的盲区。
+          guardOutbound(target, `${nickname}\n${body}`)
           nodes.push({
             user_id: userId,
-            nickname: node.nickname?.trim() || "未知用户",
+            nickname,
             content: [{ type: "text", data: { text: body } }],
           })
         }

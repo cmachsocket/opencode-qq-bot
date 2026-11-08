@@ -75,16 +75,6 @@ export async function hydrateSegment(
   }
 }
 
-/** 补全一条消息里所有媒体段的远程直链。 */
-export async function hydrateMedia(
-  api: OneBotApi,
-  message: MessageSegment[],
-  logger: Logger,
-): Promise<void> {
-  if (!Array.isArray(message)) return
-  await Promise.all(message.map((segment) => hydrateSegment(api, segment, logger)))
-}
-
 /** NapCat 的连接与 API 门面，屏蔽 SDK 细节。 */
 export class QQClient {
   private readonly link: NapLink

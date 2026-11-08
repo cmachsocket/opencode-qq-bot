@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { collectEnvSecrets, SensitiveChecker } from "../src/sensitive"
+import { collectEnvSecrets, maskSecrets, SensitiveChecker } from "../src/sensitive"
 
 const known = "sk-super-secret-token-value-1234567890"
 
@@ -61,6 +61,17 @@ describe("SensitiveChecker", () => {
   it("does nothing when disabled", () => {
     const checker = new SensitiveChecker({ enabled: false })
     expect(checker.check("ghp_abcdefghijklmnopqrstuvwxyz0123456789").allowed).toBe(true)
+  })
+})
+
+describe("maskSecrets", () => {
+  it("归一化后命中的混淆凭证整行丢弃", () => {
+    expect(maskSecrets("key=ＡＫＩＡＡＢＣＤＥＦＧＨＩＪＫＬＭＮＯＰ")).toBe("[REDACTED]")
+    expect(maskSecrets("key=ghp_abcd\u200Befghijklmnopqrstuvwxyz0123456789")).toBe("[REDACTED]")
+  })
+
+  it("普通文本保持原样", () => {
+    expect(maskSecrets("大家好，今天天气不错")).toBe("大家好，今天天气不错")
   })
 })
 

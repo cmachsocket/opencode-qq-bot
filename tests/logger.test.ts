@@ -99,6 +99,22 @@ describe("日志器", () => {
     expect(capture.text()).toContain("count: 2")
   })
 
+  it("只关闭指定的日志器", async () => {
+    const dirA = tempDir()
+    const dirB = tempDir()
+    const a = createLogger("[a]", { dir: dirA })
+    const b = createLogger("[b]", { dir: dirB })
+    a.info("a1")
+    b.info("b1")
+    await closeLogger(a)
+    b.info("b2")
+    await closeLogger(b)
+    expect(readLogs(dirA)).toContain("a1")
+    expect(readLogs(dirA)).not.toContain("b1")
+    expect(readLogs(dirB)).toContain("b1")
+    expect(readLogs(dirB)).toContain("b2")
+  })
+
   it("日志文件一行一条 JSON", async () => {
     const dir = tempDir()
     const logger = createLogger("[test]", { dir })
@@ -190,6 +206,8 @@ describe("日志器", () => {
     try {
       process.env.XDG_STATE_HOME = "/tmp/xdg-state"
       expect(defaultLogDir()).toBe(join("/tmp/xdg-state", "opencode-qq-bot", "logs"))
+      process.env.XDG_STATE_HOME = "relative/state"
+      expect(defaultLogDir()).toContain(join(".local", "state", "opencode-qq-bot", "logs"))
       delete process.env.XDG_STATE_HOME
       expect(defaultLogDir()).toContain(join(".local", "state", "opencode-qq-bot", "logs"))
     } finally {

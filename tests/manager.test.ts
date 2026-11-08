@@ -896,6 +896,25 @@ describe("B1 冷启动补历史", () => {
     expect(history.fetch).toHaveBeenCalledTimes(1)
   })
 
+  it("补历史失败后下一轮继续补", async () => {
+    const history = {
+      fetch: vi
+        .fn()
+        .mockRejectedValueOnce(new Error("timeout"))
+        .mockResolvedValueOnce({ text: "<history>\n补上了\n</history>", files: [] }),
+    }
+    const { manager, prompts } = createHarness({}, undefined, undefined, history)
+    await manager.enqueue(group(100), { text: "第一条", files: [], atMe: false })
+    expect(prompts[0]?.text).toBe("第一条")
+
+    await manager.enqueue(group(100), { text: "第二条", files: [], atMe: false })
+    await manager.handleIdle("session-1")
+    await manager.flushBuffered("session-1")
+
+    expect(history.fetch).toHaveBeenCalledTimes(2)
+    expect(prompts[1]?.text).toBe("<history>\n补上了\n</history>\n第二条")
+  })
+
   it("投递成功后把位置写进存储", async () => {
     const { manager, storage } = createHarness()
     await manager.enqueue(group(100), {

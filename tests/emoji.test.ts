@@ -310,6 +310,28 @@ describe("FavoriteStore", () => {
     await Promise.all([first, refreshed])
     expect(call).toHaveBeenCalledTimes(2)
   })
+
+  it("shares the request in flight with non-refresh callers", async () => {
+    let release: (() => void) | undefined
+    const call = vi.fn(async () => {
+      await new Promise<void>((resolve) => {
+        release = resolve
+      })
+      return [{ emoId: 1, desc: "猫猫" }]
+    })
+    const store = new FavoriteStore(call, {
+      debug: vi.fn(),
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
+    } as unknown as Logger)
+
+    const first = store.list()
+    const second = store.list()
+    release?.()
+    await Promise.all([first, second])
+    expect(call).toHaveBeenCalledTimes(1)
+  })
 })
 
 describe("EmojiLabeler", () => {
@@ -326,6 +348,9 @@ describe("EmojiLabeler", () => {
     labeler: EmojiLabeler
     setTag: ReturnType<typeof vi.fn>
     prompt: ReturnType<typeof vi.fn>
+    create: ReturnType<typeof vi.fn>
+    sessionGet: ReturnType<typeof vi.fn>
+    storageGet: ReturnType<typeof vi.fn>
     emit: (event: unknown) => void
   }
 
@@ -338,6 +363,9 @@ describe("EmojiLabeler", () => {
     }
     const prompt = vi.fn(async () => ({}))
     const setTag = vi.fn(async () => true)
+    const create = vi.fn(async () => ({ id: "label-session" }))
+    const sessionGet = vi.fn(async () => undefined)
+    const storageGet = vi.fn(async () => undefined)
     const ctx = {
       location: { directory: "/tmp" },
       event: {
@@ -356,13 +384,13 @@ describe("EmojiLabeler", () => {
         },
       },
       session: {
-        create: vi.fn(async () => ({ id: "label-session" })),
-        get: vi.fn(async () => undefined),
+        create,
+        get: sessionGet,
         list: vi.fn(async () => ({ data: [], cursor: {} })),
         prompt,
       },
       storage: {
-        get: vi.fn(async () => undefined),
+        get: storageGet,
         set: vi.fn(async () => {}),
       },
     } as unknown as Plugin.Context
@@ -370,6 +398,7 @@ describe("EmojiLabeler", () => {
     const labeler = new EmojiLabeler({
       ctx,
       config: { ...DEFAULT_CONFIG, napcat: { url: "ws://127.0.0.1:3001" } },
+      home: { directory: "/tmp/bot-home" },
       logger: {
         debug: vi.fn(),
         info: vi.fn(),
@@ -386,7 +415,7 @@ describe("EmojiLabeler", () => {
       favorites: { setTag } as unknown as FavoriteStore,
       timeoutMs: 1_000,
     })
-    return { labeler, setTag, prompt, emit }
+    return { labeler, setTag, prompt, create, sessionGet, storageGet, emit }
   }
 
   it("keeps the whole reply when the model answers in several parts", async () => {
@@ -402,6 +431,26 @@ describe("EmojiLabeler", () => {
     expect(harness.setTag).toHaveBeenCalledWith(
       expect.objectContaining({ resId: "res-1" }),
       "猫猫摊手",
+    )
+  })
+
+  it("ignores a stored label session outside the bot workspace", async () => {
+    const harness = createLabelerHarness()
+    harness.storageGet.mockResolvedValue("other-session")
+    harness.sessionGet.mockResolvedValue({
+      id: "other-session",
+      location: { directory: "/elsewhere" },
+    })
+
+    const pending = harness.labeler.labelFace(face("猫猫"))
+    await vi.waitFor(() => expect(harness.prompt).toHaveBeenCalled())
+    harness.emit(textEvent("label-session", "猫猫"))
+    harness.emit(succeededEvent("label-session"))
+
+    await expect(pending).resolves.toBe("猫猫")
+    expect(harness.prompt.mock.calls[0]?.[0]?.sessionID).toBe("label-session")
+    expect(harness.create).toHaveBeenCalledWith(
+      expect.objectContaining({ location: { directory: "/tmp/bot-home" } }),
     )
   })
 

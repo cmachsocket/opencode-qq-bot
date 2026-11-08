@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest"
 import type { MessageSegment, OneBotApi } from "@naplink/naplink"
-import { hydrateMedia, hydrateSegment, pickRemoteUrl } from "../src/naplink/client"
+import { hydrateSegment, pickRemoteUrl } from "../src/naplink/client"
 import type { Logger } from "../src/logger"
 
 const LOCAL_PATH = "/root/.config/QQ/nt_qq_abc/nt_data/Pic/2026-11/Ori/9a863feb.jpg"
@@ -108,21 +108,5 @@ describe("hydrateSegment", () => {
     const segment = { type: "text", data: { text: "hi" } } as MessageSegment
     await hydrateSegment(api, segment, makeLogger())
     expect(api.getFile).not.toHaveBeenCalled()
-  })
-})
-
-describe("hydrateMedia", () => {
-  it("hydrates every media segment in a message", async () => {
-    const api = makeApi({ getFile: vi.fn(async () => ({ file: LOCAL_PATH })) })
-    const message = [
-      { type: "text", data: { text: "hi" } } as MessageSegment,
-      imageSegment({ file: "a.jpg" }),
-      { type: "record", data: { file: "b.amr" } } as unknown as MessageSegment,
-    ]
-    await hydrateMedia(api, message, makeLogger())
-    expect(segmentData(message[1] as MessageSegment)).toMatchObject({ url: CDN_URL })
-    expect(segmentData(message[2] as MessageSegment)).toMatchObject({
-      url: "https://cdn.example.com/a.mp3",
-    })
   })
 })

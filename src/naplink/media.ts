@@ -178,14 +178,15 @@ export class MediaStore {
       return undefined
     }
 
+    // 声明类型只能当参考：服务器可能把 HTML 标成 image/png，或返回不支持的 svg。
     const declared = response.contentType?.split(";")[0]?.trim()
-    const mime =
-      declared?.startsWith("image/") === true
-        ? declared
-        : (mimeFromBytes(response.bytes) ?? undefined)
+    const mime = mimeFromBytes(response.bytes)
     if (!mime) {
-      this.logger.warn(`图片类型无法识别 url=${url}`)
+      this.logger.warn(`图片类型无法识别 url=${url} declared=${declared ?? "无"}`)
       return undefined
+    }
+    if (declared?.startsWith("image/") === true && declared !== mime) {
+      this.logger.warn(`图片类型与声明不一致 declared=${declared} actual=${mime} url=${url}`)
     }
     return { bytes: response.bytes, mime }
   }

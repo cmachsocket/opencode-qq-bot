@@ -181,13 +181,12 @@ describe("createHistoryProvider", () => {
     expect(api.getGroupMsgHistory).not.toHaveBeenCalled()
   })
 
-  it("接口抛错时返回空结果", async () => {
+  it("接口抛错时让调用方重试", async () => {
     const api = createApi(() => {
       throw new Error("消息不存在")
     })
     const history = createProvider(api)
-    const result = await history.fetch(group(100), { count: 20 })
-    expect(result).toEqual({ text: "", files: [] })
+    await expect(history.fetch(group(100), { count: 20 })).rejects.toThrow("消息不存在")
   })
 
   it("发送者名优先群名片，其次昵称，最后 QQ 号", async () => {

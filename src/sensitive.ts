@@ -284,12 +284,20 @@ export interface MaskOptions {
  */
 export function maskSecrets(text: string, options: MaskOptions = {}): string {
   if (text === "") return text
-  const known = knownSecretDetector(
-    (options.knownSecrets ?? []).filter((secret) => secret.length >= MIN_SECRET_LENGTH),
+  const knownSecrets = (options.knownSecrets ?? []).filter(
+    (secret) => secret.length >= MIN_SECRET_LENGTH,
   )
+  const known = knownSecretDetector(knownSecrets)
   const custom = known ? [known] : []
   const only = [...SECRET_DETECTORS, ...custom.map((detector) => detector.id)]
   try {
+    // 原文里匹配不到时，再检查归一化后的副本：全角 / 零宽混淆的凭证
+    // 出站拦截能识别，日志也不能原样写出去。无法安全回写位置，整行丢弃。
+    const normalized = normalizeText(text)
+    if (normalized !== text) {
+      const hits = scan(normalized, { only, custom })
+      if (hits.length > 0 || containsFragment(normalized, knownSecrets)) return "[REDACTED]"
+    }
     return redact(text, {
       only,
       custom,

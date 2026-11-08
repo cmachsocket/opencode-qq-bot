@@ -12,6 +12,7 @@ interface BeforeEvent {
 
 interface AfterEvent extends BeforeEvent {
   status: "completed" | "error"
+  result?: { content?: string; metadata?: Record<string, unknown> }
 }
 
 const newTurn = (): Turn => ({ text: "hi", files: [], atMe: false })
@@ -28,7 +29,12 @@ interface Harness {
   setActive(active: boolean): void
   setTurn(turn: Turn | undefined): void
   before(tool: string, id?: string): Promise<void>
-  after(tool: string, id: string, status?: "completed" | "error"): Promise<void>
+  after(
+    tool: string,
+    id: string,
+    status?: "completed" | "error",
+    result?: AfterEvent["result"],
+  ): Promise<void>
 }
 
 async function createHarness(): Promise<Harness> {
@@ -78,8 +84,14 @@ async function createHarness(): Promise<Harness> {
     async before(tool, id = `${tool}-${Math.random()}`) {
       await hooks.get("execute.before")?.({ tool, sessionID: "ses_1", id, status: "completed" })
     },
-    async after(tool, id, status = "completed") {
-      await hooks.get("execute.after")?.({ tool, sessionID: "ses_1", id, status })
+    async after(tool, id, status = "completed", result) {
+      await hooks.get("execute.after")?.({
+        tool,
+        sessionID: "ses_1",
+        id,
+        status,
+        ...(result ? { result } : {}),
+      })
     },
   }
 }
@@ -122,6 +134,26 @@ describe("registerSendGuard", () => {
     await harness.before("qq_send_message", "c1")
     await harness.after("qq_send_message", "c1", "error")
     await expect(harness.before("qq_send_message", "c2")).resolves.toBeUndefined()
+  })
+
+  it("返回 error 文本的发送失败也允许立即重试", async () => {
+    const harness = await createHarness()
+    await harness.before("qq_send_message", "c1")
+    await harness.after("qq_send_message", "c1", "completed", {
+      content: "error: 消息只发送了 0/1 段",
+      metadata: { failed: true },
+    })
+    await expect(harness.before("qq_send_message", "c2")).resolves.toBeUndefined()
+  })
+
+  it("限流拒绝不撤销发送标记", async () => {
+    const harness = await createHarness()
+    await harness.before("qq_send_message", "c1")
+    await harness.after("qq_send_message", "c1", "completed", {
+      content: "error: 发送频率超限",
+      metadata: { failed: true, retryable: false },
+    })
+    await expect(harness.before("qq_send_message", "c2")).rejects.toThrow(DUPLICATE_SEND_REFUSAL)
   })
 
   it("被拒绝的调用不会撤销上一条发送标记", async () => {

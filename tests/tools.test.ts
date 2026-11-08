@@ -235,6 +235,19 @@ describe("registerTools", () => {
     expect(api["sendGroupForwardMessage"]).not.toHaveBeenCalled()
   })
 
+  it("blocks forward nicknames that contain credentials", async () => {
+    const { tools, api } = await createHarness()
+    await expect(
+      tools.get(`${TOOL_NAMESPACE}_send_forward`)?.execute(
+        {
+          nodes: [{ nickname: "password = hunter2000", content: "你好" }],
+        },
+        context,
+      ),
+    ).rejects.toThrow("出站消息包含疑似敏感信息")
+    expect(api["sendGroupForwardMessage"]).not.toHaveBeenCalled()
+  })
+
   it("does not block when the sensitive check is disabled", async () => {
     const { tools, api } = await createHarness(group(100), {
       sensitive: { enabled: false },

@@ -51,6 +51,33 @@ describe("MediaStore.cleanup", () => {
   })
 })
 
+describe("MediaStore HTTP 图片", () => {
+  it("按魔数判定而不是信任声明类型", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "qq-media-http-"))
+    try {
+      const svg = await createMediaStore(logger, {
+        root: dir,
+        ttlMs: 0,
+        fetcher: async () => ({ status: 200, contentType: "image/svg+xml", bytes: PNG }),
+      })
+      expect((await svg.storeImage("https://example.com/a.svg"))?.ext).toBe("png")
+
+      const fake = await createMediaStore(logger, {
+        root: dir,
+        ttlMs: 0,
+        fetcher: async () => ({
+          status: 200,
+          contentType: "image/png",
+          bytes: Buffer.from("not an image"),
+        }),
+      })
+      expect(await fake.storeImage("https://example.com/b.png")).toBeUndefined()
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+})
+
 describe("MediaStore data URL", () => {
   it("trusts the magic bytes instead of the declared type", async () => {
     const dir = await mkdtemp(join(tmpdir(), "qq-media-data-"))

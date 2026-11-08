@@ -98,9 +98,13 @@ export class FavoriteStore {
       const cached = this.cache
       if (cached && cached.expires > Date.now()) return cached.faces
     }
-    // 刷新时先等在途请求结束，再重新拉取，避免刷新被在途请求吞掉。
+    // 先等在途请求结束，避免刷新被它吞掉；非刷新调用直接复用它的结果，
+    // 否则在途请求刚填好缓存又会多打一次接口。
     const inflight = this.inflight
-    if (inflight) await inflight.catch(() => {})
+    if (inflight) {
+      const faces = await inflight.catch(() => undefined)
+      if (!options.refresh && faces !== undefined) return faces
+    }
     this.inflight ??= this.fetch().finally(() => {
       this.inflight = undefined
     })

@@ -48,6 +48,7 @@ export default Plugin.define({
     } catch (error) {
       for (const warning of warnings) bootstrap.warn(warning)
       bootstrap.error(error instanceof Error ? error.message : String(error))
+      await closeLogger(bootstrap)
       return
     }
 
@@ -61,6 +62,8 @@ export default Plugin.define({
       ),
     })
     for (const warning of warnings) logger.warn(warning)
+    // 正式日志器已经接管，兜底日志器只写控制台，用完就关掉。
+    await closeLogger(bootstrap)
 
     if (config.groups.length === 0 && config.users.length === 0) {
       logger.warn(
@@ -79,6 +82,7 @@ export default Plugin.define({
     )
     if (occupied) {
       logger.warn("本机机器人已绑定到其它工作目录，本实例不会运行", `工作目录：${occupied}`)
+      await closeLogger(logger)
       return
     }
     if (previous?.dispose) {
@@ -141,7 +145,7 @@ export default Plugin.define({
     // 收藏表情：标签只存在 NapCat 侧，插件不保存副本；编号由插件自己维护。
     const favorites = new FavoriteStore((method, params) => client.callApi(method, params), logger)
     const favoriteIndex = new FavoriteIndex(ctx.storage, logger)
-    const labeler = new EmojiLabeler({ ctx, config, logger, media, favorites })
+    const labeler = new EmojiLabeler({ ctx, config, home, logger, media, favorites })
     const toolRegistration = await registerTools({
       ctx,
       config,
@@ -433,8 +437,8 @@ export default Plugin.define({
         "若是被 OpenCode 卸载（长时间没有会话活动），可在 opencode.json 里设置 experimental.location_idle_timeout: false",
       )
       // 关闭日志器，等文件传输把最后的日志写完，避免丢日志。
-      await flushLogger()
-      await closeLogger()
+      await flushLogger(logger)
+      await closeLogger(logger)
     }
     lease.setDispose(dispose)
     return dispose

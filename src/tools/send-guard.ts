@@ -48,7 +48,15 @@ export async function registerSendGuard(
 
   const after = await ctx.tool.hook("execute.after", async (event) => {
     // 发送失败不算“已经发过”，允许立刻重试；被拒绝的调用不会走到这里。
-    if (event.status !== "error") return
+    // 工具返回 error 文本时状态仍是 completed，需要看结果里的 failed 标记；
+    // 限流拒绝会带 retryable: false，保持“已发送”状态，避免模型反复重试。
+    const metadata =
+      event.status === "completed"
+        ? (event.result.metadata as { failed?: boolean; retryable?: boolean } | undefined)
+        : undefined
+    if (event.status !== "error" && !(metadata?.failed === true && metadata.retryable !== false)) {
+      return
+    }
     const entry = last.get(event.sessionID)
     if (entry?.callID !== event.id) return
     entry.send = false

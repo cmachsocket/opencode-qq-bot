@@ -139,8 +139,10 @@ async function fetchGap(
   const seen = new Set<string>()
   let cursor = "0"
   let reached = false
+  let pages = 0
 
   for (let page = 0; page < MAX_HISTORY_PAGES; page += 1) {
+    pages += 1
     const entries = await requestHistory(ctx, cursor, count, true)
     if (entries.length === 0) break
 
@@ -164,6 +166,9 @@ async function fetchGap(
     if (next === cursor) break
     cursor = next
   }
+  if (!reached && pages >= MAX_HISTORY_PAGES) {
+    ctx.logger.warn(`历史增量超过 ${MAX_HISTORY_PAGES} 页，只补最近 ${count} 条`)
+  }
 
   const sorted = sortByTime(collected)
   // 命中上次位置就按位置切；没命中（位置已被清理）就按时间切。
@@ -184,26 +189,22 @@ async function requestHistory(
   count: number,
   reverseOrder: boolean,
 ): Promise<RawMessage[]> {
-  try {
-    const response =
-      ctx.target.kind === "group"
-        ? await ctx.api.getGroupMsgHistory({
-            group_id: ctx.target.id,
-            message_seq: cursor,
-            count,
-            reverse_order: reverseOrder,
-          })
-        : await ctx.api.getFriendMsgHistory({
-            user_id: ctx.target.id,
-            message_seq: cursor,
-            count,
-            reverse_order: reverseOrder,
-          })
-    return normalize(response)
-  } catch (error) {
-    ctx.logger.warn("拉取历史消息失败", error)
-    return []
-  }
+  // 失败必须让调用方知道：把空数组当成“没有历史”会让 historyDone 被错误置位。
+  const response =
+    ctx.target.kind === "group"
+      ? await ctx.api.getGroupMsgHistory({
+          group_id: ctx.target.id,
+          message_seq: cursor,
+          count,
+          reverse_order: reverseOrder,
+        })
+      : await ctx.api.getFriendMsgHistory({
+          user_id: ctx.target.id,
+          message_seq: cursor,
+          count,
+          reverse_order: reverseOrder,
+        })
+  return normalize(response)
 }
 
 /** NapCat 返回 `{ messages: [...] }`，兼容裸数组。 */

@@ -1,5 +1,7 @@
 import type { Plugin } from "@opencode/plugin"
+import type { Location } from "@opencode/schema"
 import type { QQBotConfig } from "../config"
+import type { BotHome } from "../home"
 import type { Logger } from "../logger"
 import type { MediaStore } from "../naplink/media"
 import type { CustomFace, FavoriteStore } from "./favorites"
@@ -49,6 +51,8 @@ export function cleanTag(raw: string): string {
 export interface LabelerDeps {
   ctx: Plugin.Context
   config: QQBotConfig
+  /** 机器人固定服务的工作目录，标签会话也建在这里。 */
+  home: BotHome
   logger: Logger
   /** 图片下载与落盘。 */
   media: MediaStore
@@ -75,6 +79,11 @@ export class EmojiLabeler {
   private creating: Promise<string> | undefined
 
   constructor(private readonly deps: LabelerDeps) {}
+
+  /** 标签会话统一落在机器人工作目录，不跟随加载插件的项目目录。 */
+  private get location(): Location.PublicRef {
+    return { directory: this.deps.home.directory as Location.PublicRef["directory"] }
+  }
 
   /** 标注是否已中止；插件卸载后应停止一切标注动作。 */
   get signal(): AbortSignal {
@@ -202,6 +211,7 @@ export class EmojiLabeler {
     }
     const created = await this.deps.ctx.session.create({
       title: "收藏表情标签",
+      location: this.location,
       ...(this.deps.config.agent ? { agent: this.deps.config.agent } : {}),
       ...(this.deps.config.model ? { model: this.deps.config.model } : {}),
       metadata: { [LABEL_SESSION_MARKER]: true },
@@ -217,6 +227,10 @@ export class EmojiLabeler {
       const stored = await this.deps.ctx.storage.get(LABEL_SESSION_KEY)
       if (typeof stored !== "string" || stored.length === 0) return undefined
       const info = await this.deps.ctx.session.get({ sessionID: stored })
+      if (info?.location?.directory !== this.location.directory) {
+        this.deps.logger.debug(`存储里的标签会话 ${stored} 不在机器人工作目录，忽略`)
+        return undefined
+      }
       return info?.id ?? stored
     } catch (error) {
       this.deps.logger.debug("读取收藏表情标签会话失败，将新建会话", error)
@@ -238,7 +252,7 @@ export class EmojiLabeler {
     try {
       for (let page = 0; page < 5; page += 1) {
         const result = await this.deps.ctx.session.list({
-          directory: this.deps.ctx.location.directory,
+          directory: this.location.directory,
           limit: 100,
           order: "desc",
           ...(cursor ? { cursor } : {}),

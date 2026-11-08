@@ -1,6 +1,6 @@
 import { fsyncSync, mkdirSync } from "node:fs"
 import { homedir } from "node:os"
-import { join } from "node:path"
+import { isAbsolute, join } from "node:path"
 import { inspect } from "node:util"
 import winston from "winston"
 import DailyRotateFile from "winston-daily-rotate-file"
@@ -58,13 +58,13 @@ interface FileTransport {
   fd?: number
 }
 
-/** 已创建的日志器，插件卸载时统一关闭。 */
+/** 已创建的日志器，插件卸载时按实例关闭。 */
 interface LoggerHandle {
+  api: Logger
   logger: winston.Logger
   files: FileTransport[]
 }
 
-/** 所有还在用的日志器。 */
 const handles = new Set<LoggerHandle>()
 
 /**
@@ -75,7 +75,7 @@ const handles = new Set<LoggerHandle>()
  */
 export function defaultLogDir(): string {
   const stateHome = process.env.XDG_STATE_HOME?.trim()
-  const base = stateHome ? stateHome : join(homedir(), ".local", "state")
+  const base = stateHome && isAbsolute(stateHome) ? stateHome : join(homedir(), ".local", "state")
   return join(base, "opencode-qq-bot", "logs")
 }
 
@@ -216,8 +216,6 @@ export function createLogger(prefix: string, options: LoggerOptions | LogLevel =
     console.error(`[${prefix}] 日志写入失败：${maskSecrets(message, { knownSecrets })}`)
   })
 
-  handles.add({ logger, files })
-
   const write = (target: LogLevel, message: string, meta: unknown[]) => {
     const details = normalizeMeta(meta)
     logger.log({
@@ -228,12 +226,14 @@ export function createLogger(prefix: string, options: LoggerOptions | LogLevel =
     })
   }
 
-  return {
+  const api: Logger = {
     debug: (message, ...meta) => write("debug", message, meta),
     info: (message, ...meta) => write("info", message, meta),
     warn: (message, ...meta) => write("warn", message, meta),
     error: (message, ...meta) => write("error", message, meta),
   }
+  handles.add({ api, logger, files })
+  return api
 }
 
 /** 等传输发出 finish：这时文件流已经把数据交给了操作系统。 */
@@ -249,13 +249,13 @@ function waitFinish(transport: DailyRotateFile): Promise<void> {
 }
 
 /**
- * 关闭所有日志器，等文件传输把缓冲写完。
+ * 关闭指定日志器，等文件传输把缓冲写完；不传时关闭全部。
  *
- * 插件卸载时调用，避免丢掉最后的日志。
+ * 插件卸载时只关自己的日志器，避免接管实例时误关新实例。
  */
-export async function closeLogger(): Promise<void> {
-  const closing = [...handles]
-  handles.clear()
+export async function closeLogger(target?: Logger): Promise<void> {
+  const closing = target ? [...handles].filter((handle) => handle.api === target) : [...handles]
+  for (const handle of closing) handles.delete(handle)
   await Promise.all(
     closing.map(async (handle) => {
       const waits = handle.files.map((file) => waitFinish(file.transport))
@@ -266,12 +266,13 @@ export async function closeLogger(): Promise<void> {
 }
 
 /**
- * 把日志刷到磁盘。
+ * 把指定日志器刷到磁盘；不传时刷新全部。
  *
  * 文件写入是异步的：等一个事件循环，再把内核缓冲 fsync 一次。
  */
-export async function flushLogger(): Promise<void> {
-  for (const handle of handles) {
+export async function flushLogger(target?: Logger): Promise<void> {
+  const targets = target ? [...handles].filter((handle) => handle.api === target) : [...handles]
+  for (const handle of targets) {
     for (const file of handle.files) {
       await new Promise<void>((resolve) => setImmediate(resolve))
       if (file.fd === undefined) continue
