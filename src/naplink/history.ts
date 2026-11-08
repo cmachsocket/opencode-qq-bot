@@ -1,6 +1,7 @@
 import type { MessageEvent, MessageSegment, OneBotApi } from "@naplink/naplink"
 import type { ChatTarget } from "../chat"
 import type { Logger } from "../logger"
+import type { Role } from "../tools/policy"
 import { formatModelMessage, sanitizeSenderName } from "../model-view"
 import type { MediaStore } from "./media"
 import { createImageBudget, renderMessage, type PromptFile, type RenderContext } from "./render"
@@ -60,6 +61,8 @@ export function createHistoryProvider(deps: {
   logger: Logger
   media: MediaStore
   names?: Map<string, { name: string; expires: number }>
+  /** 发送者角色，用来给 owner 的历史消息加同样的标记。 */
+  roleOf?: (userId: string) => Role
 }): HistoryProvider {
   return {
     async fetch(target, options) {
@@ -80,12 +83,14 @@ export function createHistoryProvider(deps: {
         const rendered = await renderMessage(ctx, toEvent(entry), budget)
         const text = rendered.text.trim()
         if (!text && rendered.files.length === 0) continue
+        const userId = String(entry.sender?.user_id ?? entry.user_id ?? "")
         lines.push(
           formatModelMessage({
             sender: senderName(entry),
-            userId: String(entry.sender?.user_id ?? entry.user_id ?? ""),
+            userId,
             text: rendered.text,
             time: entry.time ?? 0,
+            ...(deps.roleOf ? { role: deps.roleOf(userId) } : {}),
           }),
         )
         for (const file of rendered.files) {
