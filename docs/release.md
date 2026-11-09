@@ -20,8 +20,8 @@
 
 ## 版本现状
 
-- npm 最新：`0.3.4`（`@cmach_socket/opencode-qq-bot`）。
-- 仓库当前：`0.5.1`。
+- npm 最新：`0.5.1`（`@cmach_socket/opencode-qq-bot`）。
+- 仓库当前：`0.6.0`。
 - `0.4.0` / `0.5.0` 只改了版本号与 CHANGELOG，**从未发布到 npm，也没打 tag**；
   它们的内容由 `0.5.1` 一并发布。
 
