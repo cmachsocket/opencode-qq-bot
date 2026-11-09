@@ -3,6 +3,34 @@ import removeMd from "remove-markdown"
 /** QQ 单条消息的保守长度上限，超过时按段发送。 */
 export const MAX_MESSAGE_CHARS = 4000
 
+/** 分段发送的节奏参数。 */
+export interface ReplyRhythm {
+  /** 固定间隔（毫秒），兼容旧的 `sendDelayMs`。 */
+  sendDelayMs: number
+  /** 随机间隔下限（毫秒）。 */
+  minDelayMs: number
+  /** 随机间隔上限（毫秒）。 */
+  maxDelayMs: number
+}
+
+/**
+ * 算出两段之间要等多久。
+ *
+ * 配了随机区间就在区间里等，看起来更像人在分条打字；
+ * 没配随机区间就沿用旧的固定间隔，不改变原有行为。
+ */
+export function segmentDelayMs(rhythm: ReplyRhythm, random: () => number = Math.random): number {
+  const min = Math.max(0, Math.floor(rhythm.minDelayMs))
+  const max = Math.max(0, Math.floor(rhythm.maxDelayMs))
+  if (max > 0) {
+    const low = Math.min(min, max)
+    if (max === low) return low
+    return low + Math.floor(random() * (max - low + 1))
+  }
+  if (min > 0) return min
+  return Math.max(0, Math.floor(rhythm.sendDelayMs))
+}
+
 /**
  * 剥离 markdown 的选项。
  *

@@ -12,7 +12,7 @@ import type { FavoriteIndex } from "../emoji/favorite-index"
 import type { Logger } from "../logger"
 import type { OutboundMedia } from "../media-path"
 import type { QQClient } from "../naplink/client"
-import { splitGraphemes, splitMessage, toPlainText } from "../outbound"
+import { splitGraphemes, splitMessage, segmentDelayMs, toPlainText } from "../outbound"
 import type { RateLimitVerdict, SendRateLimiter } from "../rate-limit"
 import { modelSendScope, pluginSendScope } from "../rate-limit"
 import type { SensitiveChecker } from "../sensitive"
@@ -77,6 +77,9 @@ interface MessageIdInput {
 
 /** QQ 单条消息的保守长度上限，超过时按段发送。 */
 export { MAX_MESSAGE_CHARS } from "../outbound"
+
+/** 合并转发里单个节点的字数上限，留出余量避免被 NapCat 截断。 */
+const FORWARD_NODE_CHARS = 3000
 
 function text(value: string, metadata?: Record<string, unknown>) {
   // 工具返回 error 文本时状态仍是 completed；把失败标记带给发送守卫。
@@ -278,6 +281,58 @@ export async function registerTools(deps: ToolDeps): Promise<{ dispose(): Promis
       ? client.api.sendGroupPoke(target.id, userId)
       : client.api.sendFriendPoke(userId)
 
+  // 合并转发时机器人自己的昵称，取一次就够。
+  let botName: string | undefined
+
+  /** 机器人在合并转发里的身份。 */
+  const botIdentity = async (): Promise<{ userId: number; nickname: string }> => {
+    if (!botName) {
+      const info = (await client.api.getLoginInfo().catch(() => undefined)) as
+        { nickname?: string } | undefined
+      botName = info?.nickname?.trim() || "机器人"
+    }
+    const userId = Number(client.selfId ?? 0)
+    return { userId: Number.isFinite(userId) ? userId : 0, nickname: botName }
+  }
+
+  /**
+   * 太长的回复改成合并转发发出去。
+   *
+   * 一口气刷十几条会把群刷爆，合并转发只占一条消息。
+   */
+  const sendAsForward = async (
+    sessionID: string,
+    target: ChatTarget,
+    plain: string,
+    operation: string,
+    length: number,
+  ) => {
+    const label = targetLabel(target)
+    const identity = await botIdentity()
+    const nodes = splitMessage(plain, FORWARD_NODE_CHARS).map((chunk) => ({
+      user_id: identity.userId,
+      nickname: identity.nickname,
+      content: [{ type: "text", data: { text: chunk } }],
+    }))
+    try {
+      const verdict = await permit(target, operation)
+      if (!verdict.allowed) return refuse(sessionID, verdict, 0, nodes.length)
+      const response = await sendForward(target, nodes)
+      const messageId = messageIdOf(response)
+      if (messageId) manager.rememberOutgoing(target, messageId)
+      manager.markMessageSent(sessionID)
+      logger.info(
+        `${label} 已发送 ${length} 字（合并转发 ${nodes.length} 个节点）`,
+        traceMeta(sessionID),
+      )
+      await traceSent(sessionID, target, { chars: length, mode: "forward", nodes: nodes.length })
+      return text("你已成功发送消息，可以选择结束对话")
+    } catch (error) {
+      logger.error(`${label} 发送合并转发失败`, error)
+      return text("error: 消息发送失败", { retryable: true })
+    }
+  }
+
   return await ctx.tool.transform((editor) => {
     editor.namespace({
       name: TOOL_NAMESPACE,
@@ -332,8 +387,21 @@ export async function registerTools(deps: ToolDeps): Promise<{ dispose(): Promis
           logger.warn(`send_message 内容长度 ${length} 超过 ${config.warnLength}`)
         }
 
-        const chunks = splitMessage(plain)
         const operation = nextOperation()
+        // 太长的回复改成合并转发，别一口气刷屏。
+        const forwardThreshold = config.reply.forwardThresholdChars
+        if (forwardThreshold > 0 && length > forwardThreshold) {
+          return await sendAsForward(context.sessionID, target, plain, operation, length)
+        }
+
+        // 单段超过配置的字数就拆成多段发。
+        const chunks = splitMessage(plain, config.reply.segmentChars)
+        // 段与段之间的间隔：配了随机区间就在区间里等。
+        const wait = segmentDelayMs({
+          sendDelayMs: config.sendDelayMs,
+          minDelayMs: config.reply.minDelayMs,
+          maxDelayMs: config.reply.maxDelayMs,
+        })
         let sent = 0
         try {
           for (const [index, chunk] of chunks.entries()) {
@@ -343,8 +411,8 @@ export async function registerTools(deps: ToolDeps): Promise<{ dispose(): Promis
             const messageId = messageIdOf(response)
             if (messageId) manager.rememberOutgoing(target, messageId)
             sent += 1
-            if (index < chunks.length - 1 && config.sendDelayMs > 0) {
-              await delay(config.sendDelayMs)
+            if (index < chunks.length - 1 && wait > 0) {
+              await delay(wait)
             }
           }
         } catch (error) {

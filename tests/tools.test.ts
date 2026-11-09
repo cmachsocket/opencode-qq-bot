@@ -142,7 +142,7 @@ async function createHarness(
     config,
     logger: logger as unknown as Logger,
     manager: manager as unknown as SessionManager,
-    client: { api } as unknown as QQClient,
+    client: { api, selfId: "123" } as unknown as QQClient,
     favorites: favorites as never,
     favoriteIndex,
     limiter: new SendRateLimiter(config.rateLimit),
@@ -563,8 +563,8 @@ describe("registerTools", () => {
       })
       const result = await tools
         .get(`${TOOL_NAMESPACE}_send_message`)
-        ?.execute({ content: "长".repeat(5000) }, context)
-      expect(result?.content).toContain("已发送 1/2 段")
+        ?.execute({ content: "长".repeat(400) }, context)
+      expect(result?.content).toContain("已发送 1/3 段")
       expect(api["sendGroupMessage"]).toHaveBeenCalledTimes(1)
     })
 
@@ -659,6 +659,90 @@ describe("registerTools", () => {
       expect(api["sendPrivateMessage"]).not.toHaveBeenCalled()
     })
   })
+
+  describe("分段回复节奏", () => {
+    it("超过单段字数就拆成多段发送", async () => {
+      const { tools, api } = await createHarness(group(100), {
+        reply: { minDelayMs: 0, maxDelayMs: 0, segmentChars: 10, forwardThresholdChars: 0 },
+      })
+      const result = await tools
+        .get(`${TOOL_NAMESPACE}_send_message`)
+        ?.execute({ content: "一二三四五六七八九十甲" }, context)
+      expect(result?.content).toContain("你已成功发送消息")
+      expect(api["sendGroupMessage"]).toHaveBeenCalledTimes(2)
+      expect(api["sendGroupMessage"]).toHaveBeenNthCalledWith(1, 100, "一二三四五六七八九十")
+      expect(api["sendGroupMessage"]).toHaveBeenNthCalledWith(2, 100, "甲")
+    })
+
+    it("段与段之间按随机区间等待", async () => {
+      const { tools, api } = await createHarness(group(100), {
+        reply: { minDelayMs: 1000, maxDelayMs: 3000, segmentChars: 10, forwardThresholdChars: 0 },
+        sendDelayMs: 0,
+      })
+      const before = Date.now()
+      await tools
+        .get(`${TOOL_NAMESPACE}_send_message`)
+        ?.execute({ content: "一二三四五六七八九十甲" }, context)
+      const elapsed = Date.now() - before
+      expect(api["sendGroupMessage"]).toHaveBeenCalledTimes(2)
+      expect(elapsed).toBeGreaterThanOrEqual(900)
+    })
+
+    it("没配随机区间时沿用固定的发送间隔", async () => {
+      const { tools, api } = await createHarness(group(100), {
+        reply: { minDelayMs: 0, maxDelayMs: 0, segmentChars: 10, forwardThresholdChars: 0 },
+        sendDelayMs: 0,
+      })
+      await tools
+        .get(`${TOOL_NAMESPACE}_send_message`)
+        ?.execute({ content: "一二三四五六七八九十甲" }, context)
+      expect(api["sendGroupMessage"]).toHaveBeenCalledTimes(2)
+    })
+
+    it("超过阈值的回复改用合并转发", async () => {
+      const { tools, api } = await createHarness(group(100), {
+        reply: { minDelayMs: 0, maxDelayMs: 0, segmentChars: 150, forwardThresholdChars: 100 },
+      })
+      const result = await tools
+        .get(`${TOOL_NAMESPACE}_send_message`)
+        ?.execute({ content: "长".repeat(200) }, context)
+      expect(result?.content).toContain("你已成功发送消息")
+      expect(api["sendGroupMessage"]).not.toHaveBeenCalled()
+      expect(api["sendGroupForwardMessage"]).toHaveBeenCalledTimes(1)
+      const nodes = api["sendGroupForwardMessage"]?.mock.calls[0]?.[1] as {
+        user_id: number
+        nickname: string
+        content: { type: string; data: { text: string } }[]
+      }[]
+      expect(nodes).toHaveLength(1)
+      expect(nodes[0]?.user_id).toBe(123)
+      expect(nodes[0]?.nickname).toBe("机器人")
+      expect(nodes[0]?.content[0]?.data.text).toBe("长".repeat(200))
+    })
+
+    it("转发节点太长时拆成多个节点", async () => {
+      const { tools, api } = await createHarness(group(100), {
+        reply: { minDelayMs: 0, maxDelayMs: 0, segmentChars: 150, forwardThresholdChars: 100 },
+      })
+      await tools
+        .get(`${TOOL_NAMESPACE}_send_message`)
+        ?.execute({ content: "长".repeat(7000) }, context)
+      const nodes = api["sendGroupForwardMessage"]?.mock.calls[0]?.[1] as unknown[]
+      expect(nodes).toHaveLength(3)
+    })
+
+    it("关闭转发阈值后照旧分段发送", async () => {
+      const { tools, api } = await createHarness(group(100), {
+        reply: { minDelayMs: 0, maxDelayMs: 0, segmentChars: 150, forwardThresholdChars: 0 },
+      })
+      await tools
+        .get(`${TOOL_NAMESPACE}_send_message`)
+        ?.execute({ content: "长".repeat(2000) }, context)
+      expect(api["sendGroupForwardMessage"]).not.toHaveBeenCalled()
+      expect(api["sendGroupMessage"]).toHaveBeenCalled()
+    })
+  })
+
   describe("调用链追踪", () => {
     it("发送成功后记一个 response_sent 节点", async () => {
       const dir = await mkdtemp(join(tmpdir(), "qq-bot-trace-"))
