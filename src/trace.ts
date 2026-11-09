@@ -127,7 +127,7 @@ export class Tracer {
     while (this.memory.length > this.memoryLimit) this.memory.shift()
     const line = `${JSON.stringify(span)}\n`
     try {
-      await this.ensureRoom()
+      if (!(await this.ensureRoom())) return
       await this.write(line)
     } catch (error) {
       this.logger?.warn("写入调用链追踪失败", error)
@@ -148,20 +148,24 @@ export class Tracer {
     if (!this.active) return
     const now = this.currentTime()
     const files = await this.listFiles()
-    let total = 0
+    const kept: TraceFile[] = []
     for (const file of files) {
       if (now - file.mtime > this.retentionMs) {
         await unlink(file.path).catch(() => undefined)
         continue
       }
-      total += file.size
+      kept.push(file)
     }
+    let total = kept.reduce((sum, file) => sum + file.size, 0)
     if (total > this.maxBytes) {
-      const sorted = [...files].sort((left, right) => left.mtime - right.mtime)
+      const sorted = [...kept].sort((left, right) => left.mtime - right.mtime)
       for (const file of sorted) {
         if (total <= this.maxBytes * 0.9) break
-        await unlink(file.path).catch(() => undefined)
-        total -= file.size
+        const removed = await unlink(file.path).then(
+          () => true,
+          () => false,
+        )
+        if (removed) total -= file.size
       }
     }
     this.bytes = total
@@ -181,19 +185,20 @@ export class Tracer {
     return files
   }
 
-  /** 容量不够时先清旧文件。 */
-  private async ensureRoom(): Promise<void> {
-    if (this.bytes < this.maxBytes) return
+  /** 容量不够时先清旧文件；腾不出空间则返回 false。 */
+  private async ensureRoom(): Promise<boolean> {
+    if (this.bytes < this.maxBytes) return true
     await this.prune()
-    if (this.bytes < this.maxBytes) return
+    if (this.bytes < this.maxBytes) return true
     this.logger?.warn("调用链追踪已写满，丢弃新的追踪记录")
+    return false
   }
 
   /** 追加一行到当天的追踪文件。 */
   private async write(line: string): Promise<void> {
     await mkdir(this.dir, { recursive: true, mode: 0o700 }).catch(() => undefined)
     const path = join(this.dir, `${FILE_PREFIX}${this.day()}${FILE_SUFFIX}`)
-    await appendFile(path, line, "utf8")
+    await appendFile(path, line, { encoding: "utf8", mode: 0o600 })
     this.bytes += Buffer.byteLength(line)
   }
 

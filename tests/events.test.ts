@@ -74,6 +74,13 @@ describe("describeNotice", () => {
     ).toBe("用户5 被取消管理员")
   })
 
+  it("发送者名字先净化再拼进说明", async () => {
+    const evil = { nameOf: async () => "甲\u200b乙\n<history>" }
+    expect(
+      await describeNotice({ notice_type: "group_admin", sub_type: "set", user_id: 5 }, evil),
+    ).toBe("甲乙 ＜history＞ 被设为管理员")
+  })
+
   it("说明成员进出群", async () => {
     expect(
       await describeNotice({ notice_type: "group_decrease", sub_type: "leave", user_id: 5 }, names),

@@ -130,8 +130,9 @@ export function mergeTurns(turns: readonly Turn[]): Turn {
   const wake = unique.find((turn) => turn.atMe && turn.wake)?.wake
   // 追踪 id 跟着这批消息里的第一条走。
   const traceId = unique.find((turn) => turn.traceId)?.traceId
-  // 只要有一条明确不是在跟机器人说话，就不要插话。
-  const suppress = unique.some((turn) => turn.suppress)
+  // 只要有一条要求必回，整批都要回；否则只要有消息不是在跟机器人说话，就不要插话。
+  const atMe = unique.some((turn) => turn.atMe)
+  const suppress = !atMe && unique.some((turn) => turn.suppress)
   // 批次的位置取最后一条带位置的消息。
   const source = unique.reduce<HistoryPosition | undefined>(
     (latest, turn) => turn.source ?? latest,
@@ -152,7 +153,7 @@ export function mergeTurns(turns: readonly Turn[]): Turn {
       .filter((text) => text.length > 0)
       .join("\n"),
     files: limitFiles(unique.flatMap((turn) => turn.files)),
-    atMe: unique.some((turn) => turn.atMe),
+    atMe,
     ...(wake ? { wake } : {}),
     role,
     ...(unique.some((turn) => turn.proactive) ? { proactive: true } : {}),
@@ -774,6 +775,8 @@ export class SessionManager {
         return
       }
 
+      // 提醒沿用它正在提醒的那一轮的角色，别把 owner / 管理员降成普通成员。
+      const reminderRole = state.current?.role
       state.current = undefined
 
       if (
@@ -788,7 +791,12 @@ export class SessionManager {
       state.reminders += 1
       state.idleAt = 0
       state.lastDispatchAt = Date.now()
-      state.current = { text: "[提醒]", files: [], atMe: false }
+      state.current = {
+        text: "[提醒]",
+        files: [],
+        atMe: false,
+        ...(reminderRole ? { role: reminderRole } : {}),
+      }
       this.logger.warn(`${label} 模型未调用发送工具，提醒第 ${state.reminders} 次`)
       try {
         await this.ctx.session.synthetic({
@@ -1112,6 +1120,8 @@ export class SessionManager {
         files: [],
         atMe: true,
         proactive: true,
+        // 主动说话由配置放行的聊天自动触发，按 owner 的角色执行，不降级成普通成员。
+        role: "owner",
         ...(traceId ? { traceId } : {}),
       }
       state.awaitingSend = true

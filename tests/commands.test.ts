@@ -202,6 +202,39 @@ describe("handleCommand", () => {
     expect(sent[0]?.text).toContain("无法识别聊天")
   })
 
+  it("refuses to reset a chat outside the allow list", async () => {
+    const { deps, sent, resetTarget } = createDeps()
+    expect(await handleCommand("/reset group:999", deps)).toBe(true)
+    expect(resetTarget).not.toHaveBeenCalled()
+    expect(sent[0]?.text).toContain("不在放行名单")
+  })
+
+  it("keeps chats outside the allow list out of the /reset list", async () => {
+    const { deps, sent } = createDeps()
+    deps.manager = {
+      snapshot: () => [
+        {
+          target: { kind: "group" as const, id: 100 },
+          sessionID: "session-1",
+          busy: false,
+          buffered: 0,
+          pending: false,
+        },
+        {
+          target: { kind: "group" as const, id: 999 },
+          sessionID: "session-2",
+          busy: false,
+          buffered: 0,
+          pending: false,
+        },
+      ],
+      resetTarget: vi.fn(),
+    } as unknown as SessionManager
+    expect(await handleCommand("/reset", deps)).toBe(true)
+    expect(sent[0]?.text).toContain("/reset group:100")
+    expect(sent[0]?.text).not.toContain("group:999")
+  })
+
   it("lists chat profiles and the tools of one chat", async () => {
     const { deps, sent } = createDeps()
     expect(await handleCommand("/tools", deps)).toBe(true)

@@ -233,6 +233,9 @@ export const DEFAULT_CONFIG: Omit<QQBotConfig, "napcat"> = {
   media: { allowedDirs: [] },
 }
 
+/** 迁移类告警前缀：启动时用更高等级输出，避免升级用户静默失联。 */
+export const MIGRATION_WARNING_PREFIX = "【迁移】"
+
 /** 移除的环境变量与替代项。 */
 const RENAMED_ENV_VARS: Record<string, string> = {
   QQ_TARGET_GROUPS: "QQ_ALLOW_GROUPS",
@@ -442,7 +445,13 @@ function createConfigSchema(
     .optional()
     .transform((value) => {
       if (!present(value)) return defaults.ownerQQ
-      const parsed = Number(typeof value === "string" ? value.trim() : value)
+      // 只接受数字或非空数字字符串：布尔值经 Number() 会变成 0/1。
+      const parsed =
+        typeof value === "number"
+          ? value
+          : typeof value === "string" && value.trim() !== ""
+            ? Number(value.trim())
+            : Number.NaN
       if (!Number.isInteger(parsed) || parsed <= 0) {
         warn(`${label("ownerQQ")} 不是合法的 QQ 号：${String(value)}`)
         return defaults.ownerQQ
@@ -855,7 +864,7 @@ function warnUnknownKeys(options: Record<string, unknown>, warn: ConfigWarning):
         const renamed = RENAMED_OPTIONS[childPath]
         warn(
           renamed
-            ? `插件选项 ${childPath} 已移除，请改用 ${renamed}`
+            ? `${MIGRATION_WARNING_PREFIX} 插件选项 ${childPath} 已移除，请改用 ${renamed}`
             : `插件选项 未知配置项：${childPath}`,
         )
         continue
@@ -923,10 +932,12 @@ export function resolveConfig(
     if (!subscribe.includes(category)) subscribe.push(category)
   }
 
-  // 旧的名单环境变量已经移除：给出迁移提示，避免升级后机器人不再回消息。
+  // 旧的名单环境变量已经移除：给出醒目的迁移提示，避免升级后机器人静默失联。
   for (const [name, replacement] of Object.entries(RENAMED_ENV_VARS)) {
     if (env[name] !== undefined) {
-      warn(`环境变量 ${name} 已移除，请改用 ${replacement}`)
+      warn(
+        `${MIGRATION_WARNING_PREFIX} 环境变量 ${name} 已移除，请改用 ${replacement}；未迁移时机器人不会响应任何消息`,
+      )
     }
   }
 

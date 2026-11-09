@@ -81,7 +81,7 @@ bun install
 | `access.deny.users`                 | `QQ_DENY_USERS`                    | `[]`                  | 拒绝的私聊 QQ 号，优先于放行名单                    |
 | `access.allowAllWhenEmpty`          | `QQ_ALLOW_ALL_WHEN_EMPTY`          | `false`               | 放行名单为空时是否放行全部目标                      |
 | `ownerQQ`                           | `QQ_OWNER_QQ`                      | 无                    | 所有者 QQ：管理命令只在它的私聊生效，该私聊始终放行 |
-| `admins`                            | `QQ_ADMINS`                        | `[]`                  | 管理员 QQ 号，逗号分隔：拥有全部工具权限            |
+| `admins`                            | `QQ_ADMINS`                        | `[]`                  | 管理员 QQ 号：拥有全部工具权限，私聊还需在放行名单  |
 | `toolProfilesPath`                  | `QQ_TOOL_PROFILES`                 | `tool-profiles.json`  | 工具配置文件路径（相对当前工作目录）                |
 | `chatOverridesPath`                 | `QQ_CHAT_OVERRIDES`                | `chat-overrides.json` | 会话行为覆盖文件路径（相对当前工作目录）            |
 | `soulPath`                          | `QQ_BOT_SOUL_PATH`                 | 包内 `souls/`         | 角色设定文件或目录路径                              |
@@ -147,7 +147,7 @@ bun install
 
 `QQ_TARGET_GROUPS` / `QQ_TARGET_USERS` 与插件选项里的 `groups` / `users` 已移除，
 分别改用 `QQ_ALLOW_GROUPS` / `QQ_ALLOW_USERS` 与 `access.allow.groups` /
-`access.allow.users`；继续用旧写法会看到迁移告警。
+`access.allow.users`；继续用旧写法会看到 `【迁移】` 开头的 error 级启动告警。
 
 放行名单为空并打开 `allowAllWhenEmpty` 时，插件没法枚举没写进名单的群，
 主动说话心跳只会覆盖配置里写明的目标。
@@ -266,6 +266,9 @@ souls/
 - `allow` 就是白名单：没列出的工具一律不可用；支持 `*` 与 `qq_*` 这类通配，`deny` 优先于 `allow`。
 - 文件缺失时用内置默认值；改完下一轮生效；写到一半或解析失败会沿用上一份并告警。
 - 普通成员的默认档只放行 `websearch`、`webfetch` 与 `qq_*`（发消息），`shell` / `write` / `read` / 子代理等本地工具全部拒绝；子代理被挡是因为它会开新会话，绕过按聊天过滤。
+  QQ 会话里创建子代理一律拒绝，即使配置档放行。
+- owner / 管理员固定用 `admin` 档，`chats` 里的群级档位只对普通成员生效；
+  管理员私聊要收到消息，还需在 `access.allow.users` 里。
 - 限制分两层：上下文里删掉不允许的工具，执行前再挡一次，Code Mode 与并发调用也绕不过去。
 - 模型视图里 owner / 管理员的发言分别带 `(owner)` / `(admin)` 标记（实时消息与历史回填一致），
   模型能分清是谁在说话；发送者显示名不再附带 QQ 号。
@@ -317,14 +320,14 @@ souls/
 QQ 侧只在 owner 与管理员自己的私聊里生效，
 群里和其他人的私聊不会触发；TUI 侧执行时结果发到该会话绑定的 QQ 聊天：
 
-| 命令                            | 作用                                                   |
-| ------------------------------- | ------------------------------------------------------ |
-| `/help`                         | 命令说明                                               |
-| `/status`                       | 各聊天的会话、队列与重试状态                           |
-| `/reset`                        | 列出所有聊天及各自的重置命令                           |
-| `/reset group:123`              | 打断执行中的回合并删除该聊天的会话，下一条消息重新开始 |
-| `/tools [group:123]`            | 查看各聊天使用的配置档与可用工具                       |
-| `/emoji-label [all\|inc\|list]` | 给收藏表情生成中文标签（TUI 侧是 `/qq-emoji-label`）   |
+| 命令                            | 作用                                                                   |
+| ------------------------------- | ---------------------------------------------------------------------- |
+| `/help`                         | 命令说明                                                               |
+| `/status`                       | 各聊天的会话、队列与重试状态                                           |
+| `/reset`                        | 列出放行名单里的聊天及各自的重置命令                                   |
+| `/reset group:123`              | 打断执行中的回合并删除该聊天的会话，下一条消息重新开始；名单外目标拒绝 |
+| `/tools [group:123]`            | 查看各聊天使用的配置档与可用工具                                       |
+| `/emoji-label [all\|inc\|list]` | 给收藏表情生成中文标签（TUI 侧是 `/qq-emoji-label`）                   |
 
 ### 通知事件订阅
 
@@ -435,7 +438,8 @@ QQ 私聊（owner / 管理员）用 `/emoji-label`，TUI 用加前缀的 `/qq-em
 - **保活**：默认每 20 分钟写回一次会话元数据，OpenCode 不会因为长时间没有会话活动而卸载插件。
 - **提醒**：模型一轮完全没调用任何发送工具时，插件会补一条合成消息提醒它，最多 `reminder.max` 次，
   每个新的用户轮次都会重新给一份预算。
-- **主动说话**：聊天沉默超过阈值后按每小时概率发起话题，重启后静默时长会继续累计。
+- **主动说话**：聊天沉默超过阈值后按每小时概率发起话题，重启后静默时长会继续累计；
+  主动轮次按 `owner` 角色执行，未发送提醒沿用被提醒那一轮的角色。
 - **图片**：远端图片下载到受控临时目录后以 `file:` 引用进入提示，单张不超过 5MB、
   单轮最多 8 张、总量不超过 16MB，超出的图片只保留 `[图片]` 占位文本。
   临时文件默认保留 7 天，插件会定期清理过期文件。
@@ -515,6 +519,8 @@ docs/
   commit-audit-7a3a106.md  提交审计报告（7a3a106 起）
   commit-audit-c90b2bc.md  提交审计报告（c90b2bc 起）
   commit-audit-cb7bb0b.md  提交审计报告（cb7bb0b 起）
+  commit-audit-9699c96.md  提交审计报告（9699c96 起）
+  commit-audit-e2cfecb.md  提交审计报告（e2cfecb 起）
   configuration.md   配置取值规则与限制
   design-review.md   设计审查与修复记录
   emoji.md           收藏表情（表情包）说明

@@ -1,5 +1,5 @@
 import type { ChatTarget } from "../chat"
-import { sanitizeUntrustedText } from "../model-view"
+import { sanitizeSenderName, sanitizeUntrustedText } from "../model-view"
 
 /**
  * 插件消费的通负载。
@@ -77,7 +77,7 @@ export interface NoticeNames {
  * 把通知写成一句中文描述。
  *
  * 撤回类通知不复述被撤回的内容：内容可能已经不该再出现在上下文里。
- * 外部文本（文件名、灰条内容）先净化再拼进描述。
+ * 外部文本（显示名、文件名、灰条内容）先净化再拼进描述。
  */
 export async function describeNotice(
   event: NoticePayload,
@@ -86,7 +86,7 @@ export async function describeNotice(
   const nameOf = async (userId: number | undefined): Promise<string> => {
     if (typeof userId !== "number" || userId <= 0) return ""
     const name = await names.nameOf(userId)
-    return name ? name : ""
+    return name ? sanitizeSenderName(name) : ""
   }
   const withName = async (userId: number | undefined, text: string): Promise<string> => {
     const name = await nameOf(userId)

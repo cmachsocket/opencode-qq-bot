@@ -4,11 +4,11 @@ import { Mutex } from "async-mutex"
 import { acquireBotLock, type BotLock, botLockPath } from "./bot-lock"
 import { type ChatTarget, targetKey, targetLabel } from "./chat"
 import { allowedTargets, isTargetAllowed } from "./access"
-import { resolveConfig, type QQBotConfig } from "./config"
+import { MIGRATION_WARNING_PREFIX, resolveConfig, type QQBotConfig } from "./config"
 import { resolveHome } from "./home"
 import { claimInstance } from "./instance"
 import { KeepAlive } from "./keepalive"
-import { createLogger, closeLogger, defaultLogDir, flushLogger } from "./logger"
+import { createLogger, closeLogger, defaultLogDir, flushLogger, type Logger } from "./logger"
 import { defaultMediaDir, OutboundMedia } from "./media-path"
 import { formatModelMessage } from "./model-view"
 import { QQClient } from "./naplink/client"
@@ -53,6 +53,14 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
+/** 迁移类告警用 error 级别输出，其余保持 warn。 */
+function reportWarnings(warnings: readonly string[], logger: Logger): void {
+  for (const warning of warnings) {
+    if (warning.startsWith(MIGRATION_WARNING_PREFIX)) logger.error(warning)
+    else logger.warn(warning)
+  }
+}
+
 export default Plugin.define({
   id: "opencode-qq-bot",
   async setup(ctx) {
@@ -65,7 +73,7 @@ export default Plugin.define({
       config = resolveConfig(ctx.options, process.env, (message) => warnings.push(message))
     } catch (error) {
       bootstrap.info(`opencode-qq-bot v${version}`)
-      for (const warning of warnings) bootstrap.warn(warning)
+      reportWarnings(warnings, bootstrap)
       bootstrap.error(error instanceof Error ? error.message : String(error))
       await closeLogger(bootstrap)
       return
@@ -81,7 +89,7 @@ export default Plugin.define({
       ),
     })
     logger.info(`opencode-qq-bot v${version}`)
-    for (const warning of warnings) logger.warn(warning)
+    reportWarnings(warnings, logger)
     // 正式日志器已经接管，兜底日志器只写控制台，用完就关掉。
     await closeLogger(bootstrap)
 
@@ -286,9 +294,11 @@ export default Plugin.define({
         type: "text",
         text: turn?.proactive
           ? `这是一次主动发起话题，必须调用 qq_send_message 把话题发到${destination}。`
-          : turn?.suppress
-            ? "这条消息不是在跟你说话，不要回复。"
-            : wakeHint(turn?.atMe ? turn.wake : undefined),
+          : turn?.atMe
+            ? wakeHint(turn.wake)
+            : turn?.suppress
+              ? "这条消息不是在跟你说话，不要回复。"
+              : wakeHint(undefined),
       })
       // 待注入的通知：作为附带信息出现，不要求模型回复。
       const notices = noticeStore.take(target)
@@ -449,6 +459,7 @@ export default Plugin.define({
             userId: String(event.user_id),
             text: rendered.text,
             time: event.time,
+            role: senderRole,
           }),
           files: rendered.files,
           atMe: decision.required,

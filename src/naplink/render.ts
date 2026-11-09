@@ -203,7 +203,8 @@ export async function resolveUserName(ctx: RenderContext, userId: string): Promi
         ? await ctx.api.getGroupMemberInfo(ctx.target.id, userId)
         : await ctx.api.getStrangerInfo(userId)
     ) as { card?: string; nickname?: string } | undefined
-    const name = info?.card?.trim() || info?.nickname?.trim() || "未知用户"
+    // 群名片由群友自由填写，净化后才允许进入提示词或系统提示。
+    const name = sanitizeSenderName(info?.card?.trim() || info?.nickname?.trim() || "未知用户")
     ctx.names?.set(key, { name, expires: Date.now() + USER_NAME_TTL_MS })
     return name
   } catch (error) {

@@ -50,22 +50,23 @@ NapCat（OneBot 11，本机或远端）        ← 不可信边界
 
 ## 不变量
 
-| #   | 不变量                                                                       | 实现                                                               | 测试                                               |
-| --- | ---------------------------------------------------------------------------- | ------------------------------------------------------------------ | -------------------------------------------------- |
-| 1   | 凭证不落日志：message、meta、Error stack 都逐行脱敏                          | `src/logger.ts`、`src/sensitive.ts`（`maskSecrets`）               | `tests/logger.test.ts`、`tests/sensitive.test.ts`  |
-| 2   | 凭证不出 QQ：命中即整条不发，且不把凭证写进错误说明                          | `src/sensitive.ts`、`src/tools/qq.ts`                              | `tests/sensitive.test.ts`、`tests/tools.test.ts`   |
-| 3   | 群友文本伪造不出系统结构：换行、零宽字符、结构标签先净化                     | `src/model-view.ts`                                                | `tests/model-view.test.ts`                         |
-| 4   | 入站图片只从公网拉：连接级 IP 判定 + 端口白名单 + 不跟随跳转                 | `src/safe-fetch.ts`                                                | `tests/safe-fetch.test.ts`                         |
-| 5   | 出站媒体只发白名单目录（含软链接与目录边界判定）；远端地址只允许公网         | `src/media-path.ts`、`src/tools/qq.ts`                             | `tests/media-path.test.ts`、`tests/tools.test.ts`  |
-| 6   | 出站限流按目标隔离，超限拒绝并说明                                           | `src/rate-limit.ts`                                                | `tests/rate-limit.test.ts`                         |
-| 7   | 不允许一轮里连续调用发送工具                                                 | `src/tools/send-guard.ts`                                          | `tests/send-guard.test.ts`                         |
-| 8   | 内置 `question` 工具被拦下（TUI 弹窗会阻塞）                                 | `src/tools/ask-guard.ts`                                           | `tests/ask-guard.test.ts`                          |
-| 9   | 每个群聊 / 私聊固定映射到自己的会话，互不串消息                              | `src/session/manager.ts`                                           | `tests/manager.test.ts`                            |
-| 10  | 同一台机器只跑一个实例：进程内接管 + 机器级锁                                | `src/instance.ts`、`src/bot-lock.ts`                               | `tests/instance.test.ts`、`tests/bot-lock.test.ts` |
-| 11  | 会话工作目录固定，不随加载插件的项目漂移                                     | `src/home.ts`                                                      | `tests/home.test.ts`                               |
-| 12  | 白名单为空即不响应，配置错误按拒绝处理                                       | `src/config.ts`                                                    | `tests/config.test.ts`                             |
-| 13  | 回合失败只补固定文案：上游异常原文不进聊天，同目标 5 分钟节流                | `src/session/manager.ts`                                           | `tests/manager.test.ts`                            |
-| 14  | 工具按角色与聊天收窄：普通成员默认没有联网、网页抓取与子代理；执行前二次拦截 | `src/tools/policy.ts`、`src/tools/policy-guard.ts`、`src/index.ts` | `tests/policy.test.ts`、`tests/commands.test.ts`   |
+| #   | 不变量                                                                       | 实现                                                               | 测试                                                                           |
+| --- | ---------------------------------------------------------------------------- | ------------------------------------------------------------------ | ------------------------------------------------------------------------------ |
+| 1   | 凭证不落日志：message、meta、Error stack 都逐行脱敏                          | `src/logger.ts`、`src/sensitive.ts`（`maskSecrets`）               | `tests/logger.test.ts`、`tests/sensitive.test.ts`                              |
+| 2   | 凭证不出 QQ：命中即整条不发，且不把凭证写进错误说明                          | `src/sensitive.ts`、`src/tools/qq.ts`                              | `tests/sensitive.test.ts`、`tests/tools.test.ts`                               |
+| 3   | 群友文本伪造不出系统结构：换行、零宽字符、结构标签先净化                     | `src/model-view.ts`                                                | `tests/model-view.test.ts`                                                     |
+| 4   | 入站图片只从公网拉：连接级 IP 判定 + 端口白名单 + 不跟随跳转                 | `src/safe-fetch.ts`                                                | `tests/safe-fetch.test.ts`                                                     |
+| 5   | 出站媒体只发白名单目录（含软链接与目录边界判定）；远端地址只允许公网         | `src/media-path.ts`、`src/tools/qq.ts`                             | `tests/media-path.test.ts`、`tests/tools.test.ts`                              |
+| 6   | 出站限流按目标隔离，超限拒绝并说明                                           | `src/rate-limit.ts`                                                | `tests/rate-limit.test.ts`                                                     |
+| 7   | 不允许一轮里连续调用发送工具                                                 | `src/tools/send-guard.ts`                                          | `tests/send-guard.test.ts`                                                     |
+| 8   | 内置 `question` 工具被拦下（TUI 弹窗会阻塞）                                 | `src/tools/ask-guard.ts`                                           | `tests/ask-guard.test.ts`                                                      |
+| 9   | 每个群聊 / 私聊固定映射到自己的会话，互不串消息                              | `src/session/manager.ts`                                           | `tests/manager.test.ts`                                                        |
+| 10  | 同一台机器只跑一个实例：进程内接管 + 机器级锁                                | `src/instance.ts`、`src/bot-lock.ts`                               | `tests/instance.test.ts`、`tests/bot-lock.test.ts`                             |
+| 11  | 会话工作目录固定，不随加载插件的项目漂移                                     | `src/home.ts`                                                      | `tests/home.test.ts`                                                           |
+| 12  | 白名单为空即不响应，配置错误按拒绝处理                                       | `src/config.ts`                                                    | `tests/config.test.ts`                                                         |
+| 13  | 回合失败只补固定文案：上游异常原文不进聊天，同目标 5 分钟节流                | `src/session/manager.ts`                                           | `tests/manager.test.ts`                                                        |
+| 14  | 工具按角色与聊天收窄：普通成员默认没有联网、网页抓取与子代理；执行前二次拦截 | `src/tools/policy.ts`、`src/tools/policy-guard.ts`、`src/index.ts` | `tests/policy.test.ts`、`tests/policy-guard.test.ts`、`tests/commands.test.ts` |
+| 15  | QQ 会话里不创建子代理：子会话无法继承按聊天的工具限制，配置档放行也拒绝      | `src/tools/policy-guard.ts`                                        | `tests/policy-guard.test.ts`                                                   |
 
 已知局限（不是 bug，但改代码时要记住）：
 

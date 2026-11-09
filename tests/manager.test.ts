@@ -253,6 +253,23 @@ describe("mergeTurns", () => {
     expect(merged.text).toBe("")
   })
 
+  it("让被 @ 的消息压过同批次的不要回复标记", () => {
+    const merged = mergeTurns([
+      { text: "别回", files: [], atMe: false, suppress: true },
+      { text: "在吗", files: [], atMe: true },
+    ])
+    expect(merged.atMe).toBe(true)
+    expect(merged.suppress).toBeUndefined()
+  })
+
+  it("没有必回消息时保留不要回复标记", () => {
+    const merged = mergeTurns([
+      { text: "别回", files: [], atMe: false, suppress: true },
+      { text: "随便聊聊", files: [], atMe: false },
+    ])
+    expect(merged.suppress).toBe(true)
+  })
+
   it("caps the number of merged image files", () => {
     const files = Array.from({ length: MAX_PROMPT_IMAGES + 3 }, (_, index) => ({
       uri: `data:image/png;base64,${"A".repeat(16)}`,
@@ -745,6 +762,18 @@ describe("SessionManager", () => {
     expect(synthetics).toHaveLength(2)
   })
 
+  it("空闲提醒沿用上一轮的角色", async () => {
+    const { manager } = createHarness({ reminder: { enabled: true, max: 1 } })
+    await manager.enqueue(group(100), {
+      text: "第一条",
+      files: [],
+      atMe: false,
+      role: "admin",
+    })
+    await manager.handleIdle("session-1")
+    expect(manager.activeTurn("session-1")?.role).toBe("admin")
+  })
+
   it("releases buffered messages once upstream reports idle", async () => {
     vi.useFakeTimers()
     try {
@@ -1024,6 +1053,12 @@ describe("SessionManager", () => {
     await manager.enqueue(group(100), { text: "你好", files: [], atMe: false })
     await manager.proactive(group(100), "主动话题")
     expect(synthetics).toHaveLength(0)
+  })
+
+  it("主动说话按 owner 角色执行", async () => {
+    const { manager } = createHarness()
+    await manager.proactive(group(100), "主动话题")
+    expect(manager.activeTurn("session-1")?.role).toBe("owner")
   })
 
   it("drops the oldest buffered messages when the buffer is full", async () => {

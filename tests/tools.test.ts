@@ -553,6 +553,7 @@ describe("registerTools", () => {
 
     it("超长消息按段计数", async () => {
       const { tools, api } = await createHarness(group(100), {
+        reply: { minDelayMs: 0, maxDelayMs: 0, segmentChars: 150, forwardThresholdChars: 0 },
         rateLimit: {
           maxPerMinute: 1,
           maxPerHour: 0,
@@ -729,6 +730,25 @@ describe("registerTools", () => {
         ?.execute({ content: "长".repeat(7000) }, context)
       const nodes = api["sendGroupForwardMessage"]?.mock.calls[0]?.[1] as unknown[]
       expect(nodes).toHaveLength(3)
+    })
+
+    it("剩余额度不够分段时改用合并转发", async () => {
+      const { tools, api } = await createHarness(group(100), {
+        reply: { minDelayMs: 0, maxDelayMs: 0, segmentChars: 10, forwardThresholdChars: 1000 },
+        rateLimit: {
+          maxPerMinute: 1,
+          maxPerHour: 0,
+          minGapMs: 0,
+          stall: false,
+          stallMaxWaitMs: 60_000,
+        },
+      })
+      const result = await tools
+        .get(`${TOOL_NAMESPACE}_send_message`)
+        ?.execute({ content: "一".repeat(20) }, context)
+      expect(result?.content).toContain("你已成功发送消息")
+      expect(api["sendGroupMessage"]).not.toHaveBeenCalled()
+      expect(api["sendGroupForwardMessage"]).toHaveBeenCalledTimes(1)
     })
 
     it("关闭转发阈值后照旧分段发送", async () => {

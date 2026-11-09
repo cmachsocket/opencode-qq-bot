@@ -117,6 +117,27 @@ describe("SendRateLimiter", () => {
     expect((await limiter.acquire("group:100")).allowed).toBe(true)
   })
 
+  it("报告当前窗口的剩余额度", async () => {
+    const { limiter, clock } = createLimiter({ maxPerMinute: 2, maxPerHour: 5 })
+    expect(limiter.remaining("group:100")).toBe(2)
+    await limiter.acquire("group:100")
+    expect(limiter.remaining("group:100")).toBe(1)
+    clock.advance(61_000)
+    expect(limiter.remaining("group:100")).toBe(2)
+  })
+
+  it("剩余额度取分钟与小时上限的较小值", async () => {
+    const { limiter } = createLimiter({ maxPerMinute: 2, maxPerHour: 2 })
+    await limiter.acquire("group:100")
+    await limiter.acquire("group:100")
+    expect(limiter.remaining("group:100")).toBe(0)
+  })
+
+  it("不限额度时剩余额度为 Infinity", () => {
+    const { limiter } = createLimiter({ maxPerMinute: 0, maxPerHour: 0 })
+    expect(limiter.remaining("group:100")).toBe(Infinity)
+  })
+
   it("节奏控制不会拒绝发送", async () => {
     const { limiter } = createLimiter({ maxPerMinute: 1 })
     await limiter.acquire("group:100")

@@ -1,4 +1,4 @@
-import { allowedTargets, commandTarget } from "./access"
+import { allowedTargets, commandTarget, isTargetAllowed } from "./access"
 import { type ChatTarget, parseTargetKey, targetLabel } from "./chat"
 import type { QQBotConfig } from "./config"
 import { type ChatOverrides, describeOverride } from "./overrides"
@@ -111,7 +111,7 @@ function roleForChat(config: QQBotConfig, target: ChatTarget): Role {
   return target.kind === "private" ? roleOf(config, String(target.id)) : "member"
 }
 
-/** 列出配置里的目标与已建状态的聊天，去重后按 `kind:id` 排序。 */
+/** 列出配置里的目标与已建状态的聊天，只保留仍在放行名单里的项，去重后按 `kind:id` 排序。 */
 function allTargets(config: QQBotConfig, manager: SessionManager): ChatTarget[] {
   const seen = new Set<string>()
   return [
@@ -119,6 +119,7 @@ function allTargets(config: QQBotConfig, manager: SessionManager): ChatTarget[] 
     ...manager.snapshot().map((item) => item.target),
   ]
     .filter((target) => {
+      if (!isTargetAllowed(config.access, target, config.ownerQQ)) return false
       const key = `${target.kind}:${target.id}`
       if (seen.has(key)) return false
       seen.add(key)
@@ -161,6 +162,9 @@ async function runReset(context: CommandContext, args: string[]): Promise<string
   }
   const target = parseChatArg(requested)
   if (!target) return `无法识别聊天：${requested}（示例：/reset group:123）`
+  if (!isTargetAllowed(config.access, target, config.ownerQQ)) {
+    return `${targetLabel(target)} 不在放行名单里，无法重置`
+  }
   const result = await manager.resetTarget(target)
   const lines = [
     `${targetLabel(target)} 已重置`,

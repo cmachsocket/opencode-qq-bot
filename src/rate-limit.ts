@@ -118,6 +118,22 @@ export class SendRateLimiter {
     await this.lock(scope).runExclusive(() => this.admit(scope, operation, false))
   }
 
+  /**
+   * 当前窗口内还剩多少条发送额度。
+   *
+   * 返回分钟与小时上限中较小的剩余数；对应上限为 0（不限）时按 `Infinity` 计。
+   */
+  remaining(scope: string): number {
+    const now = this.currentTime
+    const records = this.recent(scope, now)
+    const minute = records.filter((record) => now - record.at < MINUTE_MS).length
+    const minuteLeft =
+      this.config.maxPerMinute > 0 ? Math.max(0, this.config.maxPerMinute - minute) : Infinity
+    const hourLeft =
+      this.config.maxPerHour > 0 ? Math.max(0, this.config.maxPerHour - records.length) : Infinity
+    return Math.min(minuteLeft, hourLeft)
+  }
+
   /** 判定并记账一次发送。 */
   private async admit(
     scope: string,

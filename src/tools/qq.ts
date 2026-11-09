@@ -396,6 +396,10 @@ export async function registerTools(deps: ToolDeps): Promise<{ dispose(): Promis
 
         // 单段超过配置的字数就拆成多段发。
         const chunks = splitMessage(plain, config.reply.segmentChars)
+        // 剩余额度不够分段时，宁可合并转发一条，也不要把回复截成半截。
+        if (forwardThreshold > 0 && chunks.length > limiter.remaining(modelSendScope(target))) {
+          return await sendAsForward(context.sessionID, target, plain, operation, length)
+        }
         // 段与段之间的间隔：配了随机区间就在区间里等。
         const wait = segmentDelayMs({
           sendDelayMs: config.sendDelayMs,

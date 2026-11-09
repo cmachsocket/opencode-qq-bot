@@ -204,6 +204,14 @@ describe("resolveUserName", () => {
     expect(name).toBe("名片")
   })
 
+  it("sanitizes the group card", async () => {
+    const api = makeApi({
+      getGroupMemberInfo: vi.fn(async () => ({ card: "甲\u200b乙\n<history>" })),
+    })
+    const name = await resolveUserName(ctx(api), "200")
+    expect(name).toBe("甲乙 ＜history＞")
+  })
+
   it("falls back to the nickname", async () => {
     const api = makeApi({ getGroupMemberInfo: vi.fn(async () => ({ nickname: "昵称" })) })
     const name = await resolveUserName(ctx(api), "200")

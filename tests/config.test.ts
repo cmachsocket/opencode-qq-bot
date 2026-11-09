@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
 import { readFileSync } from "node:fs"
-import { DEFAULT_CONFIG, resolveConfig } from "../src/config"
+import { DEFAULT_CONFIG, MIGRATION_WARNING_PREFIX, resolveConfig } from "../src/config"
 
 const ENV = { NAPCAT_WS_URL: "ws://127.0.0.1:3001" }
 
@@ -39,6 +39,16 @@ describe("resolveConfig", () => {
     expect(config.ownerQQ).toBeUndefined()
     expect(config.access.allow.users).toEqual([])
     expect(config.admins).toEqual([300])
+  })
+
+  it("拒绝布尔值与非正整数的 owner", () => {
+    const warnings: string[] = []
+    const config = resolveConfig({ ownerQQ: true }, ENV, (message) => warnings.push(message))
+    expect(config.ownerQQ).toBeUndefined()
+    expect(warnings.some((message) => message.includes("ownerQQ"))).toBe(true)
+
+    expect(resolveConfig({ ownerQQ: -1 }, ENV).ownerQQ).toBeUndefined()
+    expect(resolveConfig({ ownerQQ: 1.5 }, ENV).ownerQQ).toBeUndefined()
   })
 
   it("默认只订阅消息类事件", () => {
@@ -363,6 +373,7 @@ describe("resolveConfig", () => {
     resolveConfig({}, { ...ENV, QQ_TARGET_GROUPS: "123" }, (message) => warnings.push(message))
     expect(warnings.join("\n")).toContain("QQ_TARGET_GROUPS")
     expect(warnings.join("\n")).toContain("QQ_ALLOW_GROUPS")
+    expect(warnings.join("\n")).toContain(MIGRATION_WARNING_PREFIX)
   })
 
   it("给旧名单插件选项迁移提示", () => {

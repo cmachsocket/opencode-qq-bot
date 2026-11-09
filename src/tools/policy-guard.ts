@@ -4,6 +4,9 @@ import type { Logger } from "../logger"
 import type { SessionManager } from "../session/manager"
 import type { ToolPolicy } from "./policy"
 
+/** 会开启独立会话的工具名；不同版本分别叫 subagent 与 task。 */
+const SUBAGENT_TOOLS = new Set(["subagent", "task"])
+
 export interface ToolPolicyGuardDeps {
   ctx: Plugin.Context
   logger: Logger
@@ -25,6 +28,11 @@ export async function registerToolPolicy(
   return await ctx.tool.hook("execute.before", async (event) => {
     const active = manager.activeTurn(event.sessionID)
     if (!active) return
+    // 子代理会开一个不受 QQ 聊天约束的新会话，哪怕配置档放行也一律拒绝。
+    if (SUBAGENT_TOOLS.has(event.tool)) {
+      logger.warn(`${targetLabel(active.target)} 会话里拒绝创建子代理 ${event.tool}`)
+      throw new Error("QQ 聊天会话里不能创建子代理：子会话不会继承按聊天的工具限制。")
+    }
     const allowed = await policy.allow(active.role, targetKey(active.target), [event.tool])
     if (allowed.size > 0) return
     logger.warn(

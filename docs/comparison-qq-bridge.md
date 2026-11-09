@@ -274,10 +274,11 @@ qq-bridge 把这些也自己做了一遍（39 个 MCP 工具 + token 台账）�
 - 两层执行：`context` 钩子删掉不允许的工具，`execute.before` 再挡一次，Code Mode 与并发调用也绕不过。
 - 管理命令只在 `ownerQQ` / `admins` 各自的私聊里生效（发送者必须是私聊主人）：`/help`、`/status`、`/tools [目标]`、
   `/reset`（不带参数列出所有聊天）/ `/reset group:123`。群聊、其他人的私聊、未知 `/xxx` 都照常交给模型。
-- `/reset` 不带参数时只列出所有聊天及 `group:<id>` / `private:<id>` 写法，不执行重置；
-  带目标时才动手。若上游正在执行，先 `interrupt` 再删除会话；下一条消息新建会话并正常补历史。
-- 已知局限：子代理是独立会话，`targetForSession` 查不到绑定，只能靠普通成员档的白名单
-  挡在门外；admin 档放开子代理时，子代理里的工具不再按聊天收窄。
+- `/reset` 不带参数时只列出放行名单里的聊天及 `group:<id>` / `private:<id>` 写法，不执行重置；
+  带目标时才动手，名单外的目标直接拒绝。若上游正在执行，先 `interrupt` 再删除会话；
+  下一条消息新建会话并正常补历史。
+- 子代理是独立会话，`targetForSession` 查不到绑定；因此 QQ 会话里创建子代理一律拒绝，
+  即使 admin 档放行也不会开出不按聊天收窄的子会话。
 
 落地位置：`src/tools/policy.ts`、`src/tools/policy-guard.ts`、`src/commands.ts`、
 `src/session/manager.ts`（`resetTarget`）、`src/index.ts`。测试见 `tests/policy.test.ts`、

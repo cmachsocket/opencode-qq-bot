@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { mkdtemp, readFile, readdir, utimes, writeFile } from "node:fs/promises"
+import { mkdtemp, readFile, readdir, stat, utimes, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { Tracer } from "../src/trace"
@@ -61,10 +61,12 @@ describe("Tracer", () => {
     await tracer.record("event_received", "trace-1", { message_id: "7" })
     const files = await readdir(dir)
     expect(files).toContain("qq-bot-traces-2026-02-03.jsonl")
-    const content = await readFile(join(dir, "qq-bot-traces-2026-02-03.jsonl"), "utf8")
+    const path = join(dir, "qq-bot-traces-2026-02-03.jsonl")
+    const content = await readFile(path, "utf8")
     const line = JSON.parse(content.trim()) as { traceId: string; name: string }
     expect(line.traceId).toBe("trace-1")
     expect(line.name).toBe("event_received")
+    expect((await stat(path)).mode & 0o777).toBe(0o600)
   })
 
   it("内存里只保留最近的记录", async () => {
@@ -110,6 +112,41 @@ describe("Tracer", () => {
     const files = await readdir(dir)
     expect(files).not.toContain("qq-bot-traces-2026-02-01.jsonl")
     expect(files).toContain("qq-bot-traces-2026-02-09.jsonl")
+  })
+
+  it("写满又清不出空间时丢弃新的追踪记录", async () => {
+    const warnings: string[] = []
+    const dir = await mkdtemp(join(tmpdir(), "qq-bot-trace-"))
+    const tracer = new Tracer({
+      dir,
+      maxSizeMb: 1,
+      logger: { ...logger, warn: (message: string) => warnings.push(message) },
+    })
+    const internals = tracer as unknown as { bytes: number; prune: () => Promise<void> }
+    internals.prune = async () => {}
+    internals.bytes = 2 * 1024 * 1024
+    await tracer.record("event_received", "trace-1")
+    expect(warnings).toContain("调用链追踪已写满，丢弃新的追踪记录")
+    expect(await readdir(dir)).toEqual([])
+  })
+
+  it("prune 不会重复扣减已过期的文件", async () => {
+    const { tracer, dir } = await createTracer({
+      maxSizeMb: 1,
+      retentionDays: 7,
+      now: () => Date.parse("2026-02-10T00:00:00Z"),
+    })
+    const expired = join(dir, "qq-bot-traces-2026-02-01.jsonl")
+    await writeFile(expired, "x", "utf8")
+    const oldTime = new Date(Date.parse("2026-02-01T00:00:00Z"))
+    await utimes(expired, oldTime, oldTime)
+    await writeFile(
+      join(dir, "qq-bot-traces-2026-02-09.jsonl"),
+      "x".repeat(2 * 1024 * 1024),
+      "utf8",
+    )
+    await tracer.prune()
+    expect((tracer as unknown as { bytes: number }).bytes).toBe(0)
   })
 
   it("写文件失败时只告警，不抛错", async () => {
