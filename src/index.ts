@@ -31,6 +31,7 @@ import {
   type WakeReason,
 } from "./overrides"
 import { Tracer } from "./trace"
+import { runUnload } from "./unload"
 import { registerAskGuard } from "./tools/ask-guard"
 import { defaultToolProfilesPath, roleOf, ToolPolicy } from "./tools/policy"
 import { registerToolPolicy } from "./tools/policy-guard"
@@ -682,41 +683,61 @@ export default Plugin.define({
     const dispose = async () => {
       if (disposed) return
       disposed = true
-      // 被新实例接管时才等在途投递落地：那一次交接才有东西可交。
-      lease.handover(lease.superseded() ? await manager.exportHandover() : [])
       if (timer) clearInterval(timer)
       clearInterval(claimTimer)
       clearInterval(mediaCleanup)
-      await keepAlive.dispose()
-      idleAbort.abort()
-      manager.dispose()
-      await manager.flush()
-      souls.dispose()
-      await toolRegistration.dispose()
-      await tuiCommandRegistration.dispose()
-      await labeler.dispose()
-      await askGuardRegistration.dispose()
-      await sendGuardRegistration.dispose()
-      await toolPolicyRegistration.dispose()
-      await contextRegistration.dispose()
-      await idleRegistration.dispose()
-      client.dispose()
-      // 先断开 NapCat 再释放机器级锁，避免新实例接管时出现两条连接。
-      try {
-        await botLock?.release()
-      } catch (error) {
-        // 释放失败也要继续释放实例租约，否则旧实例的租约会一直占着槽位。
-        logger.error("释放机器人连接锁失败", error)
-      }
-      botLock = undefined
-      lease.release()
-      logger.info(
-        "插件已卸载",
-        "若是被 OpenCode 卸载（长时间没有会话活动），可在 opencode.json 里设置 experimental.location_idle_timeout: false",
+      // 每一步单独兜底：一步失败不能挡住后面的清理。
+      await runUnload(
+        [
+          {
+            name: "交接在途状态",
+            run: async () => {
+              // 被新实例接管时才等在途投递落地：那一次交接才有东西可交。
+              lease.handover(lease.superseded() ? await manager.exportHandover() : [])
+            },
+          },
+          { name: "停止保活心跳", run: () => keepAlive.dispose() },
+          { name: "中断事件订阅", run: () => idleAbort.abort() },
+          { name: "停止会话管理", run: () => manager.dispose() },
+          { name: "落盘会话状态", run: () => manager.flush() },
+          { name: "停止角色设定热重载", run: () => souls.dispose() },
+          { name: "注销工具", run: () => toolRegistration.dispose() },
+          { name: "注销 TUI 命令", run: () => tuiCommandRegistration.dispose() },
+          { name: "停止表情标注", run: () => labeler.dispose() },
+          { name: "注销问答守卫", run: () => askGuardRegistration.dispose() },
+          { name: "注销发送守卫", run: () => sendGuardRegistration.dispose() },
+          { name: "注销工具策略守卫", run: () => toolPolicyRegistration.dispose() },
+          { name: "注销上下文钩子", run: () => contextRegistration.dispose() },
+          { name: "注销空闲钩子", run: () => idleRegistration.dispose() },
+          // 先断开 NapCat 再释放机器级锁，避免新实例接管时出现两条连接。
+          { name: "断开 NapCat", run: () => client.dispose() },
+          {
+            name: "释放机器人连接锁",
+            run: async () => {
+              try {
+                await botLock?.release()
+              } finally {
+                // 释放失败也要清掉句柄，否则下一次接管会被自己挡住。
+                botLock = undefined
+              }
+            },
+          },
+          // 释放失败也要继续释放实例租约，否则旧实例的租约会一直占着槽位。
+          { name: "释放实例租约", run: () => lease.release() },
+          {
+            name: "记录卸载日志",
+            run: () =>
+              logger.info(
+                "插件已卸载",
+                "若是被 OpenCode 卸载（长时间没有会话活动），可在 opencode.json 里设置 experimental.location_idle_timeout: false",
+              ),
+          },
+          // 关闭日志器，等文件传输把最后的日志写完，避免丢日志。
+          { name: "冲刷日志", run: () => flushLogger(logger) },
+          { name: "关闭日志器", run: () => closeLogger(logger) },
+        ],
+        logger,
       )
-      // 关闭日志器，等文件传输把最后的日志写完，避免丢日志。
-      await flushLogger(logger)
-      await closeLogger(logger)
     }
     lease.setDispose(dispose)
     return dispose
