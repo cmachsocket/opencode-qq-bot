@@ -212,10 +212,13 @@ export default Plugin.define({
     )
     await manager.load()
     // 接管上一实例留下的在途状态：那一轮还在上游跑，丢掉的话这轮的回复就没了。
-    const handover = takeHandover()
-    if (handover.length > 0) {
-      const adopted = await manager.adoptHandover(handover)
-      logger.info(`已接管上一实例的 ${adopted} 个聊天状态`)
+    // 只有真的接管了旧实例才有东西可接。
+    if (previous) {
+      const handover = takeHandover()
+      if (handover.length > 0) {
+        const adopted = await manager.adoptHandover(handover)
+        logger.info(`已接管上一实例的 ${adopted} 个聊天状态`)
+      }
     }
     // 保活心跳：OpenCode 长时间没有会话活动时会卸载 location，插件随之被卸载。
     const keepAlive = new KeepAlive(ctx, config, logger)

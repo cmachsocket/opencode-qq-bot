@@ -443,10 +443,18 @@ export class SessionManager {
    *
    * 没有轮次（TUI 里人工驱动）或会话没有绑定 QQ 目标时返回 undefined。
    */
-  activeTurn(sessionID: string): { target: ChatTarget; turn: Turn; role: Role } | undefined {
+  activeTurn(
+    sessionID: string,
+  ): { target: ChatTarget; turn: Turn; role: Role; replied: boolean } | undefined {
     const state = this.sessions.get(sessionID)
     if (!state?.current) return undefined
-    return { target: state.target, turn: state.current, role: state.current.role ?? "member" }
+    return {
+      target: state.target,
+      turn: state.current,
+      role: state.current.role ?? "member",
+      // 这一轮已经调用过发送工具（含被限流拒绝），别再发一遍。
+      replied: !state.awaitingSend,
+    }
   }
 
   /**
@@ -484,7 +492,10 @@ export class SessionManager {
    */
   async adoptHandover(handover: readonly HandoverState[]): Promise<number> {
     let adopted = 0
+    let changed = false
     for (const item of handover) {
+      // 配置里已经移除的目标不再接管，避免旧状态继续获得工具权限。
+      if (!isTargetAllowed(this.config.access, item.target, this.config.ownerQQ)) continue
       const state = this.state(item.target)
       // 已经有在途的事情就不接手，别把新实例自己的轮次顶掉。
       if (state.current || state.buffer.length > 0 || state.pending) continue
@@ -501,22 +512,35 @@ export class SessionManager {
         continue
       }
       if (item.sessionID && !this.bindSession(state, item.sessionID)) continue
-      state.current = item.current
-      state.awaitingSend = item.awaitingSend
-      state.reminders = item.reminders
+      // 没有会话的轮次根本没投到上游，接过来也只是个空壳。
+      const current = item.current && item.sessionID ? item.current : undefined
+      if (item.current && !current) {
+        this.logger.warn(`${targetLabel(item.target)} 交接的轮次没有绑定会话，丢弃这一轮`)
+      }
+      state.current = current
+      state.awaitingSend = current ? item.awaitingSend : false
+      state.reminders = current ? item.reminders : 0
       state.lastDispatchAt = item.lastDispatchAt
       state.idleAt = item.idleAt
       state.buffer = [...item.buffer]
       state.pending = item.pending
       state.pendingAttempts = item.pendingAttempts
-      // 这一轮已经投递过，位置跟着走，别再补一次同样的历史。
-      const source = item.current?.source
-      if (source) {
-        this.positions.set(targetKey(item.target), source)
-        this.restoredPositions.set(targetKey(item.target), source)
+      // 缓存里的消息已经收过，补历史时别再重复一遍。
+      for (const turn of state.buffer) {
+        if (turn.source) this.rememberIncoming(item.target, turn.source.id)
       }
+      // 这一轮已经投递过，位置跟着走，别再补一次同样的历史。
+      const source = current?.source
+      if (source) {
+        const key = targetKey(item.target)
+        this.positions.set(key, source)
+        this.restoredPositions.set(key, source)
+      }
+      if (item.sessionID || source) changed = true
       adopted += 1
     }
+    // 接手的绑定与位置要落盘，重启后才知道这一轮已经投递到哪里。
+    if (changed) this.scheduleSave()
     return adopted
   }
 

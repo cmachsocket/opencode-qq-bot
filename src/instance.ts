@@ -100,7 +100,9 @@ export function claimInstance(directory: string, label: string): InstanceClaim {
         // 已经有新实例接管时，这轮状态留给它；正常卸载没有接手方，留着也没用。
         const active = state.active
         if (!active || active.instance === instance) return
-        state.handover = states.length > 0 ? [...states] : undefined
+        // 空状态不用覆盖：前面可能有别的实例已经留下了要交接的东西。
+        if (states.length === 0) return
+        state.handover = [...(state.handover ?? []), ...states]
       },
     },
   }

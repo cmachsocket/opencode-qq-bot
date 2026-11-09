@@ -29,6 +29,7 @@ interface Harness {
   logger: Record<keyof Logger, ReturnType<typeof vi.fn>>
   setActive(active: boolean): void
   setTurn(turn: Turn | undefined): void
+  setReplied(replied: boolean): void
   before(tool: string, id?: string): Promise<void>
   after(
     tool: string,
@@ -40,10 +41,11 @@ interface Harness {
 
 async function createHarness(): Promise<Harness> {
   let active = true
+  let replied = false
   let turn: Turn | undefined = newTurn()
   const manager = {
     activeTurn: vi.fn(() =>
-      active ? { target: { kind: "group", id: 100 }, turn, role: "member" } : undefined,
+      active ? { target: { kind: "group", id: 100 }, turn, role: "member", replied } : undefined,
     ),
     hasActiveTurn: vi.fn(() => active),
     currentTurn: vi.fn(() => turn),
@@ -84,6 +86,9 @@ async function createHarness(): Promise<Harness> {
     },
     setTurn(next) {
       turn = next
+    },
+    setReplied(next) {
+      replied = next
     },
     async before(tool, id = `${tool}-${Math.random()}`) {
       await hooks.get("execute.before")?.({ tool, sessionID: "ses_1", id, status: "completed" })
@@ -131,6 +136,20 @@ describe("registerSendGuard", () => {
     await harness.before("qq_send_message", "c1")
     harness.setTurn(newTurn())
     await expect(harness.before("qq_send_message", "c2")).resolves.toBeUndefined()
+  })
+
+  it("接管后这一轮已经回复过时不再发送", async () => {
+    const harness = await createHarness()
+    // 实例刚接管，守卫没有这一轮的记忆，但轮次本身已经回复过。
+    harness.setReplied(true)
+    await expect(harness.before("qq_send_message", "c1")).rejects.toThrow(DUPLICATE_SEND_REFUSAL)
+    expect(harness.logger.warn).toHaveBeenCalled()
+  })
+
+  it("这一轮还没回复过时发送不受影响", async () => {
+    const harness = await createHarness()
+    harness.setReplied(false)
+    await expect(harness.before("qq_send_message", "c1")).resolves.toBeUndefined()
   })
 
   it("发送失败后允许立即重试", async () => {

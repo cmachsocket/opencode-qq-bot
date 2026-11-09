@@ -1421,4 +1421,62 @@ describe("实例交接", () => {
     expect(await second.manager.adoptHandover(first.manager.exportHandover())).toBe(0)
     expect(second.manager.currentTurn("session-1")?.text).toBe("另一条")
   })
+
+  it("目标已经不在放行名单里时不接手", async () => {
+    const first = createHarness()
+    await first.manager.enqueue(group(100), { text: "你好", files: [], atMe: false })
+
+    const second = createHarness()
+    const handover = first.manager.exportHandover().map((item) => ({ ...item, target: group(999) }))
+    expect(await second.manager.adoptHandover(handover)).toBe(0)
+    expect(second.manager.hasActiveTurn("session-1")).toBe(false)
+  })
+
+  it("轮次没有绑定会话时只接手排队的消息", async () => {
+    const first = createHarness()
+    await first.manager.enqueue(group(100), { text: "第一条", files: [], atMe: false })
+    await first.manager.enqueue(group(100), { text: "第二条", files: [], atMe: false })
+
+    const second = createHarness()
+    const handover = first.manager
+      .exportHandover()
+      .map((item) => ({ ...item, sessionID: undefined }))
+    expect(await second.manager.adoptHandover(handover)).toBe(1)
+    // 没有会话的轮次根本没投到上游，接过来也只是个空壳。
+    expect(second.manager.hasActiveTurn("session-1")).toBe(false)
+    expect(second.manager.snapshot()[0]?.buffered).toBe(1)
+  })
+
+  it("接手的缓存消息不会在补历史时重复", async () => {
+    const first = createHarness()
+    await first.manager.enqueue(group(100), { text: "第一条", files: [], atMe: false })
+    await first.manager.enqueue(group(100), {
+      text: "第二条",
+      files: [],
+      atMe: false,
+      source: { id: "9", time: 900 },
+    })
+
+    const second = createHarness()
+    await second.manager.adoptHandover(first.manager.exportHandover())
+    expect(second.manager.isKnownMessage(group(100), "9")).toBe(true)
+  })
+
+  it("接手后把绑定与位置写进存储", async () => {
+    const first = createHarness()
+    await first.manager.enqueue(group(100), {
+      text: "你好",
+      files: [],
+      atMe: false,
+      source: { id: "7", time: 200 },
+    })
+
+    const second = createHarness()
+    await second.manager.adoptHandover(first.manager.exportHandover())
+    await second.manager.flush()
+    expect(second.storage.set).toHaveBeenCalledWith("bindings", { "group:100": "session-1" })
+    expect(second.storage.set).toHaveBeenCalledWith("positions", {
+      "group:100": { id: "7", time: 200 },
+    })
+  })
 })

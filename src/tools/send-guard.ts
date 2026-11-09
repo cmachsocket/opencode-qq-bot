@@ -44,6 +44,11 @@ export async function registerSendGuard(
       logger.warn(`模型连续调用 ${event.tool}，已拒绝`)
       throw new Error(DUPLICATE_SEND_REFUSAL)
     }
+    // 守卫没有这一轮的记忆（实例刚接管）时，看轮次本身：已经回复过就别再发一遍。
+    if (send && (previous === undefined || previous.turn !== turn) && active.replied) {
+      logger.warn(`这一轮已经回复过，拒绝再次调用 ${event.tool}`)
+      throw new Error(DUPLICATE_SEND_REFUSAL)
+    }
     last.set(event.sessionID, { turn, send, ...(send ? { callID: event.id } : {}) })
   })
 

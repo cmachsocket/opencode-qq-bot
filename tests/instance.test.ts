@@ -113,4 +113,16 @@ describe("实例交接", () => {
 
     second.lease.release()
   })
+
+  it("空的交接不会覆盖已经留下的状态", () => {
+    const first = claimInstance(home, nextLabel())
+    const second = claimInstance(home, nextLabel())
+
+    first.lease.handover([handoverState])
+    // 第二个旧实例没有在途状态，不能把前面留下的那份清掉。
+    second.lease.handover([])
+    expect(takeHandover()).toEqual([handoverState])
+
+    second.lease.release()
+  })
 })
