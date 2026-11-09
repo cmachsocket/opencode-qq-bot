@@ -58,6 +58,10 @@ async function createHarness(
   target: ChatTarget | null = group(100),
   configOverrides: Partial<QQBotConfig> = {},
   tracer?: Tracer,
+  /** 是否持有机器人连接锁；不传表示持有。 */
+  canSend: () => boolean = () => true,
+  /** NapCat 是否连得上；不传表示连得上。 */
+  connected: () => boolean = () => true,
 ): Promise<Harness> {
   const tools = new Map<string, ToolDefinition>()
   const api = {
@@ -142,13 +146,18 @@ async function createHarness(
     config,
     logger: logger as unknown as Logger,
     manager: manager as unknown as SessionManager,
-    client: { api, selfId: "123" } as unknown as QQClient,
+    client: {
+      api,
+      selfId: "123",
+      ensureConnected: vi.fn(async () => connected()),
+    } as unknown as QQClient,
     favorites: favorites as never,
     favoriteIndex,
     limiter: new SendRateLimiter(config.rateLimit),
     sensitive: new SensitiveChecker({ enabled: config.sensitive.enabled }),
     outbound,
     tracer,
+    canSend,
   })
 
   return { tools, api, favorites, manager, logger, workspace }
@@ -192,6 +201,30 @@ describe("registerTools", () => {
     expect(result?.content).toBe("你已成功发送消息，可以选择结束对话")
     expect(api["sendGroupMessage"]).toHaveBeenCalledTimes(1)
     expect(api["sendGroupMessage"]).toHaveBeenCalledWith(100, "第一行\n\n第二行")
+  })
+
+  it("refuses to send when this instance does not hold the bot lock", async () => {
+    const { tools, api } = await createHarness(group(100), {}, undefined, () => false)
+    const result = await tools
+      .get(`${TOOL_NAMESPACE}_send_message`)
+      ?.execute({ content: "你好" }, context)
+    expect(result?.content).toContain("没有机器人连接锁")
+    expect(api["sendGroupMessage"]).not.toHaveBeenCalled()
+  })
+
+  it("reports a clear error when NapCat is not connected", async () => {
+    const { tools, api } = await createHarness(
+      group(100),
+      {},
+      undefined,
+      () => true,
+      () => false,
+    )
+    const result = await tools
+      .get(`${TOOL_NAMESPACE}_send_message`)
+      ?.execute({ content: "你好" }, context)
+    expect(result?.content).toContain("NapCat 未连接")
+    expect(api["sendGroupMessage"]).not.toHaveBeenCalled()
   })
 
   it("skips sending when the model chooses not to reply", async () => {

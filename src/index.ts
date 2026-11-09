@@ -31,7 +31,7 @@ import {
   type WakeReason,
 } from "./overrides"
 import { Tracer } from "./trace"
-import { runUnload } from "./unload"
+import { Cleanup, CleanupOrder } from "./cleanup"
 import { registerAskGuard } from "./tools/ask-guard"
 import { defaultToolProfilesPath, roleOf, ToolPolicy } from "./tools/policy"
 import { registerToolPolicy } from "./tools/policy-guard"
@@ -130,18 +130,62 @@ export default Plugin.define({
       await closeLogger(logger)
       return
     }
-    if (previous?.dispose) {
-      logger.info("接管已有的插件实例并卸载它", previous.label)
-      try {
-        await previous.dispose()
-      } catch (error) {
-        logger.error("卸载旧插件实例失败", error)
-      }
-    }
 
     // 机器级锁：抢不到就保持安静，等持有者退出后再接管。
     let botLock: BotLock | undefined
+    // 卸载标记：初始化途中被接管时立刻置位，让后面的初始化步骤自己停下。
     let disposed = false
+    // 主动说话的定时器：初始化没走到那一步时也是 undefined。
+    let proactiveTimer: ReturnType<typeof setInterval> | undefined
+
+    // 卸载步骤随资源一起登记：初始化还没结束时新实例就会来要清理函数，
+    // 那时 dispose 必须已经可用，否则两份实例并存，谁的工具生效全看谁后注册。
+    const cleanup = new Cleanup()
+    let disposeStarted = false
+    const dispose = async () => {
+      if (disposeStarted) return
+      disposeStarted = true
+      // 先让初始化停下：它会检查 disposed，不再注册工具、不再抢锁。
+      disposed = true
+      await cleanup.run(logger)
+    }
+    lease.setDispose(dispose)
+    cleanup.add(
+      "记录卸载日志",
+      () =>
+        logger.info(
+          "插件已卸载",
+          "若是被 OpenCode 卸载（长时间没有会话活动），可在 opencode.json 里设置 experimental.location_idle_timeout: false",
+        ),
+      CleanupOrder.logs,
+    )
+    cleanup.add("冲刷日志", () => flushLogger(logger), CleanupOrder.logs)
+    cleanup.add("关闭日志器", () => closeLogger(logger), CleanupOrder.logs)
+    cleanup.add(
+      "释放机器人连接锁",
+      async () => {
+        try {
+          await botLock?.release()
+        } finally {
+          // 释放失败也要清掉句柄，否则下一次接管会被自己挡住。
+          botLock = undefined
+        }
+      },
+      CleanupOrder.lock,
+    )
+    cleanup.add("释放实例租约", () => lease.release(), CleanupOrder.lease)
+
+    if (previous?.dispose) {
+      logger.info("接管已有的插件实例并卸载它", previous.label)
+      // 旧实例的清理可能卡在在途投递上，最多等一会儿：
+      // 它释放机器级锁之后我们才能接管，等不到就按没抢到锁处理，稍后重试。
+      await Promise.race([
+        previous.dispose().catch((error: unknown) => {
+          logger.error("卸载旧插件实例失败", error)
+        }),
+        delay(CLAIM_RETRY_MS),
+      ])
+    }
 
     // 角色设定：默认档加上按聊天覆盖的其它文件，改完下一轮即生效。
     const souls = new SoulLibrary(
@@ -153,9 +197,11 @@ export default Plugin.define({
       },
       logger,
     )
+    cleanup.add("停止角色设定热重载", () => souls.dispose(), CleanupOrder.souls)
     await souls.loadDefault()
 
     const client = new QQClient(config.napcat, logger)
+    cleanup.add("断开 NapCat", () => client.dispose(), CleanupOrder.napcat)
     const mediaDir = defaultMediaDir()
     const media = await createMediaStore(logger, { root: mediaDir })
     // 出站媒体把关：只允许工作目录、媒体目录和配置里放开的目录，远端地址只允许公网。
@@ -211,6 +257,17 @@ export default Plugin.define({
       overrides,
       tracer,
     )
+    cleanup.add("停止会话管理", () => manager.dispose(), CleanupOrder.manager)
+    cleanup.add("落盘会话状态", () => manager.flush(), CleanupOrder.persist)
+    // 交接在途状态最先做：接管方要拿到上一轮还在跑的状态。
+    cleanup.add(
+      "交接在途状态",
+      async () => {
+        // 被新实例接管时才等在途投递落地：那一次交接才有东西可交。
+        lease.handover(lease.superseded() ? await manager.exportHandover() : [])
+      },
+      CleanupOrder.handover,
+    )
     await manager.load()
     // 接管上一实例留下的在途状态：那一轮还在上游跑，丢掉的话这轮的回复就没了。
     // 只有真的接管了旧实例才有东西可接。
@@ -225,6 +282,7 @@ export default Plugin.define({
     await manager.restoreInflight()
     // 保活心跳：OpenCode 长时间没有会话活动时会卸载 location，插件随之被卸载。
     const keepAlive = new KeepAlive(ctx, config, logger)
+    cleanup.add("停止保活心跳", () => keepAlive.dispose(), CleanupOrder.keepAlive)
     keepAlive.start()
     const mediaCleanup = setInterval(
       () => {
@@ -234,23 +292,37 @@ export default Plugin.define({
     )
     const mediaHandle = mediaCleanup as { unref?: () => void }
     mediaHandle.unref?.()
+    cleanup.add("停止媒体清理定时器", () => clearInterval(mediaCleanup), CleanupOrder.events)
     // 收藏表情：标签只存在 NapCat 侧，插件不保存副本；编号由插件自己维护。
     const favorites = new FavoriteStore((method, params) => client.callApi(method, params), logger)
     const favoriteIndex = new FavoriteIndex(ctx.storage, logger)
     const labeler = new EmojiLabeler({ ctx, config, home, logger, media, favorites })
-    const toolRegistration = await registerTools({
-      ctx,
-      config,
-      logger,
-      manager,
-      client,
-      favorites,
-      favoriteIndex,
-      limiter,
-      sensitive,
-      outbound,
-      tracer,
-    })
+    cleanup.add("注销表情标注", () => labeler.dispose(), CleanupOrder.labeler)
+    // QQ 工具只有持有机器级锁的实例才注册：工具表在进程内共享，
+    // 没锁的实例注册了会覆盖持有者的实现，模型就会调到没有连接的那一份。
+    let toolRegistration: { dispose(): Promise<void> } | undefined
+    const registerRuntime = async (): Promise<void> => {
+      if (toolRegistration) return
+      // 卸载已经开始就不再注册：这时注册会覆盖接管方的工具。
+      if (disposed) return
+      const registration = await registerTools({
+        ctx,
+        config,
+        logger,
+        manager,
+        client,
+        favorites,
+        favoriteIndex,
+        limiter,
+        sensitive,
+        outbound,
+        tracer,
+        // 没有机器级锁的实例不能发送：那是别的实例的机器人。
+        canSend: () => botLock !== undefined,
+      })
+      toolRegistration = registration
+      cleanup.add("注销工具", () => registration.dispose(), CleanupOrder.tools)
+    }
     // 命令表：管理命令 + 表情标注，QQ 私聊与 TUI 共用同一套实现。
     const commands = [
       ...COMMANDS,
@@ -284,12 +356,22 @@ export default Plugin.define({
       limiter,
       commands,
     })
+    cleanup.add("注销 TUI 命令", () => tuiCommandRegistration.dispose(), CleanupOrder.tui)
     // QQ 会话里禁止模型调用内置 question 工具，改用 qq_send_message 询问用户。
     const askGuardRegistration = await registerAskGuard({ ctx, logger, manager })
     // 禁止连续调用发送工具，避免同一条消息被重复发送。
     const sendGuardRegistration = await registerSendGuard({ ctx, logger, manager })
     // 按聊天与角色收窄工具：上下文里先删，执行前再挡一次。
     const toolPolicyRegistration = await registerToolPolicy({ ctx, logger, manager, policy })
+    cleanup.add(
+      "注销工具守卫",
+      async () => {
+        await askGuardRegistration.dispose()
+        await sendGuardRegistration.dispose()
+        await toolPolicyRegistration.dispose()
+      },
+      CleanupOrder.guards,
+    )
 
     // 系统提示：角色设定、当前时间、本轮是否必须回复。
     const contextRegistration = await ctx.session.hook("context", async (event) => {
@@ -379,6 +461,7 @@ export default Plugin.define({
         }
       }
     })
+    cleanup.add("注销上下文钩子", () => contextRegistration.dispose(), CleanupOrder.hooks)
 
     // 会话空闲：冲刷缓存消息，或提醒模型补一次发送。
     const idleRegistration = await ctx.session.hook("experimental.idle", async (event) => {
@@ -387,12 +470,14 @@ export default Plugin.define({
       })
       await manager.handleIdle(event.sessionID, event.background)
     })
+    cleanup.add("注销空闲钩子", () => idleRegistration.dispose(), CleanupOrder.hooks)
 
     // 会话空闲后，把队列里缓存的消息合并成新的一轮。
     // `session.status` 是官方推荐的状态信号；2.2.5 实际只在执行结束时发
     // `session.execution.succeeded`，所以两者都要监听。失败或中断单独结束轮次。
     // 订阅断掉后自动重连。
     const idleAbort = new AbortController()
+    cleanup.add("中断事件订阅", () => idleAbort.abort(), CleanupOrder.events)
     void (async () => {
       while (!idleAbort.signal.aborted) {
         try {
@@ -656,6 +741,8 @@ export default Plugin.define({
       }
       botLock = lock
       logger.info("已占用机器级锁", botLockPath())
+      // 拿到锁才注册 QQ 工具：工具表在进程内共享，没锁的实例注册了会覆盖持有者。
+      await registerRuntime()
       await startConsuming()
       return true
     }
@@ -678,9 +765,16 @@ export default Plugin.define({
     }, CLAIM_RETRY_MS)
     const claimHandle = claimTimer as { unref?: () => void }
     claimHandle.unref?.()
+    cleanup.add(
+      "停止接管重试定时器",
+      () => {
+        clearInterval(claimTimer)
+        if (proactiveTimer) clearInterval(proactiveTimer)
+      },
+      CleanupOrder.events,
+    )
 
     // 主动说话心跳。
-    let timer: ReturnType<typeof setInterval> | undefined
     if (config.proactive.enabled) {
       const tickMutex = new Mutex()
       const tick = async () => {
@@ -711,10 +805,10 @@ export default Plugin.define({
           }
         })
       }
-      timer = setInterval(() => {
+      proactiveTimer = setInterval(() => {
         void tick().catch((error: unknown) => logger.error("主动说话心跳失败", error))
       }, config.proactive.tickSeconds * 1000)
-      const handle = timer as { unref?: () => void }
+      const handle = proactiveTimer as { unref?: () => void }
       handle.unref?.()
     }
 
@@ -723,68 +817,9 @@ export default Plugin.define({
       allowUsers: config.access.allow.users,
       napcat: redactUrl(config.napcat.url),
       agent: config.agent ?? "(默认)",
+      locked: botLock !== undefined,
     })
 
-    const dispose = async () => {
-      if (disposed) return
-      disposed = true
-      if (timer) clearInterval(timer)
-      clearInterval(claimTimer)
-      clearInterval(mediaCleanup)
-      // 每一步单独兜底：一步失败不能挡住后面的清理。
-      await runUnload(
-        [
-          {
-            name: "交接在途状态",
-            run: async () => {
-              // 被新实例接管时才等在途投递落地：那一次交接才有东西可交。
-              lease.handover(lease.superseded() ? await manager.exportHandover() : [])
-            },
-          },
-          { name: "停止保活心跳", run: () => keepAlive.dispose() },
-          { name: "中断事件订阅", run: () => idleAbort.abort() },
-          { name: "停止会话管理", run: () => manager.dispose() },
-          { name: "落盘会话状态", run: () => manager.flush() },
-          { name: "停止角色设定热重载", run: () => souls.dispose() },
-          { name: "注销工具", run: () => toolRegistration.dispose() },
-          { name: "注销 TUI 命令", run: () => tuiCommandRegistration.dispose() },
-          { name: "停止表情标注", run: () => labeler.dispose() },
-          { name: "注销问答守卫", run: () => askGuardRegistration.dispose() },
-          { name: "注销发送守卫", run: () => sendGuardRegistration.dispose() },
-          { name: "注销工具策略守卫", run: () => toolPolicyRegistration.dispose() },
-          { name: "注销上下文钩子", run: () => contextRegistration.dispose() },
-          { name: "注销空闲钩子", run: () => idleRegistration.dispose() },
-          // 先断开 NapCat 再释放机器级锁，避免新实例接管时出现两条连接。
-          { name: "断开 NapCat", run: () => client.dispose() },
-          {
-            name: "释放机器人连接锁",
-            run: async () => {
-              try {
-                await botLock?.release()
-              } finally {
-                // 释放失败也要清掉句柄，否则下一次接管会被自己挡住。
-                botLock = undefined
-              }
-            },
-          },
-          // 释放失败也要继续释放实例租约，否则旧实例的租约会一直占着槽位。
-          { name: "释放实例租约", run: () => lease.release() },
-          {
-            name: "记录卸载日志",
-            run: () =>
-              logger.info(
-                "插件已卸载",
-                "若是被 OpenCode 卸载（长时间没有会话活动），可在 opencode.json 里设置 experimental.location_idle_timeout: false",
-              ),
-          },
-          // 关闭日志器，等文件传输把最后的日志写完，避免丢日志。
-          { name: "冲刷日志", run: () => flushLogger(logger) },
-          { name: "关闭日志器", run: () => closeLogger(logger) },
-        ],
-        logger,
-      )
-    }
-    lease.setDispose(dispose)
     return dispose
   },
 })

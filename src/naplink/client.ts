@@ -29,6 +29,17 @@ function isMediaSegmentType(type: string): type is MediaSegmentType {
   return (MEDIA_SEGMENT_TYPES as readonly string[]).includes(type)
 }
 
+/** 把 SDK 事件里的关键字段摘出来，便于日志排查。 */
+function describeEvent(event: unknown): Record<string, unknown> {
+  if (!event || typeof event !== "object") return {}
+  const record = event as Record<string, unknown>
+  const result: Record<string, unknown> = {}
+  for (const key of ["code", "reason", "attempt", "delay", "url"]) {
+    if (record[key] !== undefined) result[key] = record[key]
+  }
+  return result
+}
+
 /** 取第一个可下载的 http(s) 直链，忽略本地路径与 base64。 */
 export function pickRemoteUrl(...values: unknown[]): string | undefined {
   for (const value of values) {
@@ -110,6 +121,19 @@ export class QQClient {
         )
       })
     })
+    // 断线与重连要能看到：发送失败往往是因为连接在那一刻正好断了。
+    this.link.on("disconnect", (event: unknown) => {
+      this.logger.warn("NapCat 连接断开", describeEvent(event))
+    })
+    this.link.on("reconnecting", (event: unknown) => {
+      this.logger.info("NapCat 正在重连", describeEvent(event))
+    })
+    this.link.on("connection:restored", (event: unknown) => {
+      this.logger.info("NapCat 连接已恢复", describeEvent(event))
+    })
+    this.link.on("connection:lost", (event: unknown) => {
+      this.logger.error("NapCat 连接丢失", describeEvent(event))
+    })
   }
 
   get api(): OneBotApi {
@@ -133,6 +157,20 @@ export class QQClient {
   async connect(): Promise<void> {
     await this.link.connect()
     await this.refreshBotId()
+  }
+
+  /**
+   * 发送前确保连接可用。
+   *
+   * NapLink 在正常关闭（code 1000）后不会自动重连，这时发送会报
+   * 「连接未建立，请先调用 connect()」。这里补一次连接。
+   *
+   * @returns 连接是否可用。
+   */
+  async ensureConnected(): Promise<boolean> {
+    if (this.connected) return true
+    this.logger.info("NapCat 未连接，发送前先重连")
+    return await this.connectSafe()
   }
 
   /** 读取机器人自己的 QQ 号，并发调用时复用同一个请求。 */
