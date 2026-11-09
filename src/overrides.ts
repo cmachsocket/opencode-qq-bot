@@ -57,6 +57,14 @@ export interface WakeDecision {
   suppress?: boolean
 }
 
+/** 主动说话的白名单。 */
+export interface ProactiveScope {
+  /** 只在这些群里主动说话；为空表示不限制。 */
+  allowGroups: number[]
+  /** 只在这些私聊里主动说话；为空表示不限制。 */
+  allowUsers: number[]
+}
+
 /** 单个聊天的行为覆盖。 */
 export interface ChatOverride {
   /** 唤醒方式，缺省按被 @ 才必回。 */
@@ -65,6 +73,8 @@ export interface ChatOverride {
   prefix?: string
   /** 是否允许主动说话，false 表示这个聊天不主动开口。 */
   proactive?: boolean
+  /** 这个聊天主动说话的概率，0 到 1；缺省按全局公式计算。 */
+  proactiveProbability?: number
   /** 覆盖该聊天使用的 OpenCode agent。 */
   agent?: string
   /** 覆盖该聊天使用的模型，格式 `provider/model[/variant]`。 */
@@ -137,6 +147,20 @@ export function parseChatOverrides(
         override.proactive = record.proactive
       } else {
         warn(`会话覆盖 ${key} 的 proactive 必须是布尔值，已忽略`)
+      }
+    }
+    if (record.proactiveProbability !== undefined) {
+      const raw = record.proactiveProbability
+      const value =
+        typeof raw === "number"
+          ? raw
+          : typeof raw === "string" && raw.trim()
+            ? Number(raw.trim())
+            : Number.NaN
+      if (Number.isFinite(value) && value >= 0 && value <= 1) {
+        override.proactiveProbability = value
+      } else {
+        warn(`会话覆盖 ${key} 的 proactiveProbability 必须是 0 到 1 之间的数字，已忽略`)
       }
     }
     if (record.agent !== undefined) {
@@ -256,10 +280,20 @@ export function wakeDecision(
 }
 
 /** 这个聊天允不允许主动说话。 */
-export function proactiveAllowed(override: ChatOverride, target: ChatTarget): boolean {
+export function proactiveAllowed(
+  override: ChatOverride,
+  target: ChatTarget,
+  scope?: ProactiveScope,
+): boolean {
   if (override.proactive === false) return false
   if (chatMuted(override, target)) return false
-  return true
+  // 写死打开的聊天不受白名单限制。
+  if (override.proactive === true) return true
+  if (!scope) return true
+  const list = target.kind === "group" ? scope.allowGroups : scope.allowUsers
+  // 名单为空表示这一类不限制。
+  if (list.length === 0) return true
+  return list.includes(target.id)
 }
 
 /** 覆盖配置的简明描述，给 `/status` 看。 */
@@ -268,6 +302,9 @@ export function describeOverride(override: ChatOverride): string {
   parts.push(override.wake ? `唤醒 ${override.wake}` : "唤醒 mention（默认）")
   if (override.wake === "prefix") parts.push(`前缀 ${override.prefix ?? "（未设置）"}`)
   parts.push(override.proactive === false ? "不主动说话" : "允许主动说话")
+  if (override.proactiveProbability !== undefined) {
+    parts.push(`主动概率 ${override.proactiveProbability}`)
+  }
   if (override.agent) parts.push(`agent ${override.agent}`)
   if (override.model) parts.push(`模型 ${override.model.providerID}/${override.model.id}`)
   if (override.soul) parts.push(`角色设定 ${override.soul}`)

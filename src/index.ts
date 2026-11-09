@@ -19,7 +19,7 @@ import { SendRateLimiter } from "./rate-limit"
 import { collectEnvSecrets, SensitiveChecker } from "./sensitive"
 import { SessionManager } from "./session/manager"
 import { currentTimeText, PROACTIVE_HINT } from "./session/prompt"
-import { proactiveTickProbability } from "./session/proactive"
+import { proactiveProbability } from "./session/proactive"
 import { packageDirectory, SoulLibrary } from "./session/soul"
 import { COMMANDS, handleCommand, isCommandChat } from "./commands"
 import {
@@ -606,9 +606,19 @@ export default Plugin.define({
           for (const target of allowedTargets(config.access, config.ownerQQ)) {
             // 没有机器人连接就发不出去，不主动发起话题。
             if (!botLock) continue
-            // 被覆盖成不主动说话的聊天跳过。
-            if (!proactiveAllowed(await overrides.for(target), target)) continue
-            const probability = proactiveTickProbability(
+            const override = await overrides.for(target)
+            // 被覆盖成不主动说话的聊天，或不在主动说话白名单里的聊天，跳过。
+            if (
+              !proactiveAllowed(override, target, {
+                allowGroups: config.proactive.allowGroups,
+                allowUsers: config.proactive.allowUsers,
+              })
+            ) {
+              continue
+            }
+            // 聊天自己写了概率就用它，否则按全局公式随沉默时长增长。
+            const probability = proactiveProbability(
+              override,
               config.proactive,
               manager.silenceSeconds(target),
             )

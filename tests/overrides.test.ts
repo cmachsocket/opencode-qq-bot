@@ -123,6 +123,32 @@ describe("parseChatOverrides", () => {
     expect(file.chats["group:100"]).toEqual({})
     expect(warn).toHaveBeenCalledWith(expect.stringContaining("prefix"))
   })
+
+  it("读取主动说话概率", () => {
+    const warn = vi.fn()
+    const file = parseChatOverrides(
+      { chats: { "group:100": { proactiveProbability: 0.25 } } },
+      warn,
+    )
+    expect(file.chats["group:100"]).toEqual({ proactiveProbability: 0.25 })
+    expect(warn).not.toHaveBeenCalled()
+  })
+
+  it("概率写错时忽略这一项", () => {
+    const warn = vi.fn()
+    const file = parseChatOverrides(
+      {
+        chats: {
+          "group:100": { proactiveProbability: 1.5 },
+          "group:200": { proactiveProbability: "abc" },
+        },
+      },
+      warn,
+    )
+    expect(file.chats["group:100"]).toEqual({})
+    expect(file.chats["group:200"]).toEqual({})
+    expect(warn).toHaveBeenCalledTimes(2)
+  })
 })
 
 describe("chatMuted", () => {
@@ -263,6 +289,22 @@ describe("proactiveAllowed", () => {
     expect(proactiveAllowed({ wake: "none" }, group(100))).toBe(false)
     expect(proactiveAllowed({ wake: "none" }, priv(200))).toBe(true)
   })
+
+  it("白名单只放行名单里的聊天", () => {
+    const scope = { allowGroups: [100], allowUsers: [] }
+    expect(proactiveAllowed({}, group(100), scope)).toBe(true)
+    expect(proactiveAllowed({}, group(200), scope)).toBe(false)
+    // 名单为空表示这一类不限制。
+    expect(proactiveAllowed({}, group(200), { allowGroups: [], allowUsers: [] })).toBe(true)
+    expect(proactiveAllowed({}, priv(200), { allowGroups: [], allowUsers: [300] })).toBe(false)
+  })
+
+  it("写死打开的聊天不受白名单限制", () => {
+    const scope = { allowGroups: [100], allowUsers: [] }
+    expect(proactiveAllowed({ proactive: true }, group(200), scope)).toBe(true)
+    // 写死关掉的聊天永远不主动说话。
+    expect(proactiveAllowed({ proactive: false }, group(100), scope)).toBe(false)
+  })
 })
 
 describe("describeOverride", () => {
@@ -283,6 +325,12 @@ describe("describeOverride", () => {
       }),
     ).toBe(
       "唤醒 mention（默认），允许主动说话，agent reviewer，模型 anthropic/claude-sonnet-4，角色设定 souls/reviewer.txt",
+    )
+  })
+
+  it("说明主动说话概率", () => {
+    expect(describeOverride({ proactiveProbability: 0.2 })).toBe(
+      "唤醒 mention（默认），允许主动说话，主动概率 0.2",
     )
   })
 })
