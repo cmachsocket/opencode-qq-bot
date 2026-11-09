@@ -6,10 +6,12 @@ import {
   chatMuted,
   ChatOverrides,
   defaultChatOverrides,
+  DEFAULT_WAKE_POLICY,
   describeOverride,
   parseChatOverrides,
   proactiveAllowed,
   wakeDecision,
+  type WakeContext,
 } from "../src/overrides"
 import type { Logger } from "../src/logger"
 
@@ -22,6 +24,16 @@ const logger: Logger = {
 
 const group = (id: number) => ({ kind: "group" as const, id })
 const priv = (id: number) => ({ kind: "private" as const, id })
+
+/** 构造一次唤醒判定需要的消息特征。 */
+const ctx = (partial: Partial<WakeContext> = {}): WakeContext => ({
+  mentioned: false,
+  atAll: false,
+  atOthersFirst: false,
+  replyToSelf: false,
+  text: "",
+  ...partial,
+})
 
 describe("parseChatOverrides", () => {
   it("忽略不是对象的配置", () => {
@@ -123,48 +135,117 @@ describe("chatMuted", () => {
 
 describe("wakeDecision", () => {
   it("私聊永远必回", () => {
-    expect(wakeDecision({}, priv(200), false, "在吗")).toEqual({
+    expect(wakeDecision({}, priv(200), ctx({ text: "在吗" }))).toEqual({
       required: true,
       reason: "private",
     })
   })
 
   it("默认只在被 @ 时必回", () => {
-    expect(wakeDecision({}, group(100), false, "闲聊")).toEqual({ required: false })
-    expect(wakeDecision({}, group(100), true, "@机器人 你好")).toEqual({
+    expect(wakeDecision({}, group(100), ctx({ text: "闲聊" }))).toEqual({ required: false })
+    expect(wakeDecision({}, group(100), ctx({ mentioned: true, text: "@机器人 你好" }))).toEqual({
       required: true,
       reason: "mention",
     })
   })
 
   it("all 让群里每条消息都必回", () => {
-    expect(wakeDecision({ wake: "all" }, group(100), false, "闲聊")).toEqual({
+    expect(wakeDecision({ wake: "all" }, group(100), ctx({ text: "闲聊" }))).toEqual({
       required: true,
       reason: "all",
     })
   })
 
   it("none 不必回", () => {
-    expect(wakeDecision({ wake: "none" }, group(100), true, "@机器人 你好")).toEqual({
+    expect(
+      wakeDecision({ wake: "none" }, group(100), ctx({ mentioned: true, text: "@机器人 你好" })),
+    ).toEqual({
       required: false,
     })
   })
 
   it("prefix 只在前缀命中时必回，被 @ 也算", () => {
     const override = { wake: "prefix" as const, prefix: "bot," }
-    expect(wakeDecision(override, group(100), false, "bot, 查一下")).toEqual({
+    expect(wakeDecision(override, group(100), ctx({ text: "bot, 查一下" }))).toEqual({
       required: true,
       reason: "prefix",
     })
-    expect(wakeDecision(override, group(100), false, "  bot, 查一下")).toEqual({
+    expect(wakeDecision(override, group(100), ctx({ text: "  bot, 查一下" }))).toEqual({
       required: true,
       reason: "prefix",
     })
-    expect(wakeDecision(override, group(100), false, "闲聊")).toEqual({ required: false })
-    expect(wakeDecision(override, group(100), true, "@机器人 你好")).toEqual({
+    expect(wakeDecision(override, group(100), ctx({ text: "闲聊" }))).toEqual({ required: false })
+    expect(
+      wakeDecision(override, group(100), ctx({ mentioned: true, text: "@机器人 你好" })),
+    ).toEqual({
       required: true,
       reason: "mention",
     })
+  })
+
+  it("全局前缀命中时必回", () => {
+    expect(wakeDecision({}, group(100), ctx({ text: "/查一下" }))).toEqual({
+      required: true,
+      reason: "prefix",
+    })
+    expect(
+      wakeDecision({}, group(100), ctx({ text: "/查一下" }), {
+        ...DEFAULT_WAKE_POLICY,
+        prefixes: ["bot,"],
+      }),
+    ).toEqual({ required: false })
+  })
+
+  it("@全体成员默认忽略，打开后必回", () => {
+    expect(wakeDecision({}, group(100), ctx({ atAll: true, text: "在吗" }))).toEqual({
+      required: false,
+    })
+    expect(
+      wakeDecision({}, group(100), ctx({ atAll: true, text: "在吗" }), {
+        ...DEFAULT_WAKE_POLICY,
+        ignoreAtAll: false,
+      }),
+    ).toEqual({ required: true, reason: "at_all" })
+  })
+
+  it("回复机器人自己时必回", () => {
+    expect(wakeDecision({}, group(100), ctx({ replyToSelf: true, text: "继续" }))).toEqual({
+      required: true,
+      reason: "reply",
+    })
+    expect(
+      wakeDecision({}, group(100), ctx({ replyToSelf: true, text: "继续" }), {
+        ...DEFAULT_WAKE_POLICY,
+        replyToSelf: false,
+      }),
+    ).toEqual({ required: false })
+  })
+
+  it("群里第一个 @ 的是别人时不唤醒", () => {
+    expect(
+      wakeDecision({}, group(100), ctx({ atOthersFirst: true, text: "@张三 帮忙看下" })),
+    ).toEqual({ required: false, suppress: true })
+  })
+
+  it("明确 @ 机器人时不受“@了别人”影响", () => {
+    expect(
+      wakeDecision({}, group(100), ctx({ mentioned: true, atOthersFirst: true, text: "@机器人" })),
+    ).toEqual({ required: true, reason: "mention" })
+  })
+
+  it("聊天写死 all 时不受“@了别人”影响", () => {
+    expect(
+      wakeDecision({ wake: "all" }, group(100), ctx({ atOthersFirst: true, text: "@张三" })),
+    ).toEqual({ required: true, reason: "all" })
+  })
+
+  it("关掉“@了别人就不理”之后照旧判定", () => {
+    expect(
+      wakeDecision({}, group(100), ctx({ atOthersFirst: true, text: "@张三 帮忙看下" }), {
+        ...DEFAULT_WAKE_POLICY,
+        ignoreAtOthers: false,
+      }),
+    ).toEqual({ required: false })
   })
 })
 

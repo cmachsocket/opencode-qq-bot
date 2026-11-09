@@ -11,7 +11,51 @@ export type WakeMode = "all" | "mention" | "prefix" | "none"
 export const WAKE_MODES: readonly WakeMode[] = ["all", "mention", "prefix", "none"]
 
 /** 触发必回的原因，给模型一句准确的话。 */
-export type WakeReason = "private" | "all" | "mention" | "prefix"
+export type WakeReason = "private" | "all" | "mention" | "prefix" | "at_all" | "reply"
+
+/** 一次唤醒判定需要的消息特征。 */
+export interface WakeContext {
+  /** 消息里 @ 了机器人。 */
+  mentioned: boolean
+  /** 消息里 @ 了全体成员。 */
+  atAll: boolean
+  /** 消息里第一个 @ 指向的是别人。 */
+  atOthersFirst: boolean
+  /** 这条消息回复的是机器人自己。 */
+  replyToSelf: boolean
+  /** 消息正文。 */
+  text: string
+}
+
+/** 全局唤醒策略。 */
+export interface WakePolicy {
+  /** 全局唤醒前缀，命中即必回。 */
+  prefixes: string[]
+  /** 是否忽略 @全体成员。 */
+  ignoreAtAll: boolean
+  /** 回复机器人自己的消息是否必回。 */
+  replyToSelf: boolean
+  /** 群里第一个 @ 指向别人时是否不唤醒机器人。 */
+  ignoreAtOthers: boolean
+}
+
+/** 内置的全局唤醒策略。 */
+export const DEFAULT_WAKE_POLICY: WakePolicy = {
+  prefixes: ["/"],
+  ignoreAtAll: true,
+  replyToSelf: true,
+  ignoreAtOthers: true,
+}
+
+/** 唤醒判定的结果。 */
+export interface WakeDecision {
+  /** 本轮是否必须回复。 */
+  required: boolean
+  /** 触发必回的原因。 */
+  reason?: WakeReason
+  /** 这条消息明确不是在跟机器人说话，别插话。 */
+  suppress?: boolean
+}
 
 /** 单个聊天的行为覆盖。 */
 export interface ChatOverride {
@@ -168,30 +212,47 @@ export function chatMuted(override: ChatOverride, target: ChatTarget): boolean {
   return target.kind === "group" && override.wake === "none"
 }
 
-/** 这次要不要让模型必须回复，以及为什么。 */
+/**
+ * 这次要不要让模型必须回复，以及为什么。
+ *
+ * 判定顺序：私聊必回；聊天自己写死的唤醒方式优先；被直接 @ 一定回；
+ * 群里第一个 @ 指向别人时这条消息不是跟机器人说的；
+ * 其余看全局前缀、@全体成员与回复机器人自己。
+ */
 export function wakeDecision(
   override: ChatOverride,
   target: ChatTarget,
-  mentioned: boolean,
-  text: string,
-): { required: boolean; reason?: WakeReason } {
+  context: WakeContext,
+  policy: WakePolicy = DEFAULT_WAKE_POLICY,
+): WakeDecision {
   // 私聊都是冲着机器人来的，永远必回。
   if (target.kind === "private") return { required: true, reason: "private" }
-  switch (override.wake) {
-    case "all":
-      return { required: true, reason: "all" }
-    case "none":
-      return { required: false }
-    case "prefix": {
-      if (mentioned) return { required: true, reason: "mention" }
-      const prefix = override.prefix
-      return prefix && text.trimStart().startsWith(prefix)
-        ? { required: true, reason: "prefix" }
-        : { required: false }
-    }
-    default:
-      return mentioned ? { required: true, reason: "mention" } : { required: false }
+  // 静音的群完全不理。
+  if (override.wake === "none") return { required: false }
+  // 逐条回复的群每条都要回：写死的配置优先于其它规则。
+  if (override.wake === "all") return { required: true, reason: "all" }
+  // 被直接 @ 时一定回，不管这个聊天配了什么。
+  if (context.mentioned) return { required: true, reason: "mention" }
+  // 群里第一个 @ 的是别人：这条消息不是跟机器人说的，别插话。
+  if (policy.ignoreAtOthers && context.atOthersFirst) return { required: false, suppress: true }
+  // 前缀模式只看这个聊天自己的前缀。
+  if (override.wake === "prefix") {
+    const prefix = override.prefix
+    return prefix && context.text.trimStart().startsWith(prefix)
+      ? { required: true, reason: "prefix" }
+      : { required: false }
   }
+  // 全局前缀。
+  for (const prefix of policy.prefixes) {
+    if (prefix && context.text.trimStart().startsWith(prefix)) {
+      return { required: true, reason: "prefix" }
+    }
+  }
+  // @全体成员：默认忽略，群里点名全体成员多半不是在跟机器人说话。
+  if (context.atAll && !policy.ignoreAtAll) return { required: true, reason: "at_all" }
+  // 回复了机器人自己：顺着回。
+  if (context.replyToSelf && policy.replyToSelf) return { required: true, reason: "reply" }
+  return { required: false }
 }
 
 /** 这个聊天允不允许主动说话。 */

@@ -41,6 +41,8 @@ export interface RenderedMessage {
   text: string
   /** 图片附件，交给 OpenCode 作为多模态输入。 */
   files: PromptFile[]
+  /** 这条消息回复的是机器人自己。 */
+  replyToSelf?: boolean
 }
 
 export interface RenderContext {
@@ -49,6 +51,8 @@ export interface RenderContext {
   logger: Logger
   /** 受控临时图片存储。 */
   media: MediaStore
+  /** 机器人自己的 QQ 号，用来判断回复的是不是自己。 */
+  selfId?: string
   /** 用户显示名缓存，避免每条消息都请求一次 API。 */
   names?: Map<string, { name: string; expires: number }>
 }
@@ -114,6 +118,43 @@ export function mentionsUser(
   return segments(message).some(
     (segment) => segment.type === "at" && String(segment.data.qq) === userId,
   )
+}
+
+/** 消息里的 @ 指向谁。 */
+export interface MentionInfo {
+  /** @ 了机器人自己。 */
+  mentioned: boolean
+  /** @ 了全体成员。 */
+  atAll: boolean
+  /** 第一个 @ 指向的是别人。 */
+  atOthersFirst: boolean
+}
+
+/**
+ * 看清消息里的 @ 指向谁。
+ *
+ * @全体成员 在 NapCat 里是 `qq = "all"`；第一个 @ 指向别人时，
+ * 这条消息多半不是在跟机器人说话。
+ */
+export function describeMentions(
+  message: readonly MessageSegment[],
+  selfId: string | undefined,
+): MentionInfo {
+  let mentioned = false
+  let atAll = false
+  let atOthersFirst = false
+  let seen = false
+  for (const segment of segments(message)) {
+    if (segment.type !== "at") continue
+    const qq = String(segment.data.qq)
+    if (!seen) {
+      seen = true
+      if (qq !== "all" && (!selfId || qq !== selfId)) atOthersFirst = true
+    }
+    if (qq === "all") atAll = true
+    else if (selfId && qq === selfId) mentioned = true
+  }
+  return { mentioned, atAll, atOthersFirst }
 }
 
 /** 图片引用的预算：数量与原始字节总量，渲染过程中边用边扣。 */
@@ -382,6 +423,7 @@ export async function renderMessage(
   let imageIndex = 0
 
   const replySegments = message.filter((segment) => segment.type === "reply")
+  let replyToSelf = false
   if (replySegments.length > 0) {
     const quoteLines = [guard.protect("<quote>")]
     for (const segment of replySegments) {
@@ -393,6 +435,8 @@ export async function renderMessage(
         const name = data.sender?.user_id
           ? sanitizeSenderName(await resolveUserName(ctx, String(data.sender.user_id)))
           : "未知用户"
+        // 引用的是机器人自己：这条消息是在跟机器人说话。
+        if (ctx.selfId && String(data.sender?.user_id ?? "") === ctx.selfId) replyToSelf = true
         const quoted = await renderForwardSegments(
           ctx,
           data.message ?? [],
@@ -505,5 +549,5 @@ export async function renderMessage(
   // 整条消息拼好之后再整体净化：群友把结构标签拆成两段发过来，
   // 逐段净化匹配不到，只有整体净化才拦得住。
   const text = guard.restore(neutralizeStructureTags(textBuffer.join("")))
-  return { text, files }
+  return { text, files, ...(replyToSelf ? { replyToSelf: true } : {}) }
 }

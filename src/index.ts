@@ -14,7 +14,7 @@ import { formatModelMessage } from "./model-view"
 import { QQClient } from "./naplink/client"
 import { createHistoryProvider } from "./naplink/history"
 import { createMediaStore } from "./naplink/media"
-import { mentionsUser, renderMessage, resolveUserName, shouldProcess } from "./naplink/render"
+import { describeMentions, renderMessage, resolveUserName, shouldProcess } from "./naplink/render"
 import { SendRateLimiter } from "./rate-limit"
 import { collectEnvSecrets, SensitiveChecker } from "./sensitive"
 import { SessionManager } from "./session/manager"
@@ -263,7 +263,9 @@ export default Plugin.define({
         type: "text",
         text: turn?.proactive
           ? `这是一次主动发起话题，必须调用 qq_send_message 把话题发到${destination}。`
-          : wakeHint(turn?.atMe ? turn.wake : undefined),
+          : turn?.suppress
+            ? "这条消息不是在跟你说话，不要回复。"
+            : wakeHint(turn?.atMe ? turn.wake : undefined),
       })
       // 待注入的通知：作为附带信息出现，不要求模型回复。
       const notices = noticeStore.take(target)
@@ -346,6 +348,10 @@ export default Plugin.define({
           return "你被 @ 了，必须回复。"
         case "prefix":
           return "这条消息命中了唤醒前缀，必须回复。"
+        case "at_all":
+          return "这条消息 @ 了全体成员，必须回复。"
+        case "reply":
+          return "这条消息回复了你，必须回复。"
         default:
           return "这条消息没有要求你回复，可以选择不回复。"
       }
@@ -387,18 +393,26 @@ export default Plugin.define({
           logger,
           media,
           names: nameCache,
+          selfId,
         }
         const rendered = await renderMessage(renderCtx, event)
         if (!rendered.text.trim()) return
 
         const senderRole = roleOf(config, String(event.user_id))
         const userName = await resolveUserName(renderCtx, String(event.user_id))
-        // 私聊消息默认都是对机器人说的；群里按会话覆盖决定什么时候必须回复。
+        // 私聊消息默认都是对机器人说的；群里按会话覆盖与全局唤醒策略决定什么时候必须回复。
+        const mentions = describeMentions(event.message, selfId)
         const decision = wakeDecision(
           override,
           target,
-          mentionsUser(event.message, selfId),
-          messageText(event),
+          {
+            mentioned: mentions.mentioned,
+            atAll: mentions.atAll,
+            atOthersFirst: mentions.atOthersFirst,
+            replyToSelf: rendered.replyToSelf === true,
+            text: messageText(event),
+          },
+          config.wake,
         )
 
         await manager.enqueue(target, {
@@ -411,6 +425,7 @@ export default Plugin.define({
           files: rendered.files,
           atMe: decision.required,
           ...(decision.reason ? { wake: decision.reason } : {}),
+          ...(decision.suppress ? { suppress: true } : {}),
           role: senderRole,
           source: { id: String(event.message_id), time: event.time },
         })

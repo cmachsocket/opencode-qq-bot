@@ -81,6 +81,8 @@ export interface Turn {
   source?: HistoryPosition
   /** 发送者角色；决定这一轮能用哪些工具，缺省按普通成员处理。 */
   role?: Role
+  /** 这条消息明确不是在跟机器人说话，不要插话。 */
+  suppress?: boolean
 }
 
 interface ChatState {
@@ -123,6 +125,8 @@ export function mergeTurns(turns: readonly Turn[]): Turn {
   })
   // 必回原因跟着真正要求回复的那条消息走。
   const wake = unique.find((turn) => turn.atMe && turn.wake)?.wake
+  // 只要有一条明确不是在跟机器人说话，就不要插话。
+  const suppress = unique.some((turn) => turn.suppress)
   // 批次的位置取最后一条带位置的消息。
   const source = unique.reduce<HistoryPosition | undefined>(
     (latest, turn) => turn.source ?? latest,
@@ -147,6 +151,7 @@ export function mergeTurns(turns: readonly Turn[]): Turn {
     ...(wake ? { wake } : {}),
     role,
     ...(unique.some((turn) => turn.proactive) ? { proactive: true } : {}),
+    ...(suppress ? { suppress: true } : {}),
     ...(source ? { source } : {}),
   }
 }
