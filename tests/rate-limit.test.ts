@@ -25,7 +25,14 @@ function createClock() {
 function createLimiter(config: Partial<RateLimitConfig> = {}) {
   const clock = createClock()
   const limiter = new SendRateLimiter(
-    { maxPerMinute: 8, maxPerHour: 60, minGapMs: 0, ...config },
+    {
+      maxPerMinute: 8,
+      maxPerHour: 60,
+      minGapMs: 0,
+      stall: false,
+      stallMaxWaitMs: 60_000,
+      ...config,
+    },
     { now: clock.now, sleep: clock.sleep },
   )
   return { limiter, clock }

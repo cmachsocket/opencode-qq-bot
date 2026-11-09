@@ -535,7 +535,13 @@ async function createCommandHarness(
     napcat: { url: "ws://127.0.0.1:3001" },
     access: accessConfig({ groups: [100], users: [200] }),
     sendDelayMs: 0,
-    rateLimit: { maxPerMinute: 0, maxPerHour: 0, minGapMs: 0 },
+    rateLimit: {
+      maxPerMinute: 0,
+      maxPerHour: 0,
+      minGapMs: 0,
+      stall: false,
+      stallMaxWaitMs: 60_000,
+    },
     ...options.config,
   }
 

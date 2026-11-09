@@ -102,7 +102,13 @@ async function createHarness(
     napcat: { url: "ws://127.0.0.1:3001" },
     access: accessConfig({ groups: [100], users: [200] }),
     sendDelayMs: 0,
-    rateLimit: { maxPerMinute: 0, maxPerHour: 0, minGapMs: 0 },
+    rateLimit: {
+      maxPerMinute: 0,
+      maxPerHour: 0,
+      minGapMs: 0,
+      stall: false,
+      stallMaxWaitMs: 60_000,
+    },
     ...configOverrides,
   }
 
@@ -499,7 +505,13 @@ describe("registerTools", () => {
   describe("出站限流", () => {
     it("超过每分钟上限时拒绝发送，并标记本轮已回复", async () => {
       const { tools, api, manager } = await createHarness(group(100), {
-        rateLimit: { maxPerMinute: 1, maxPerHour: 0, minGapMs: 0 },
+        rateLimit: {
+          maxPerMinute: 1,
+          maxPerHour: 0,
+          minGapMs: 0,
+          stall: false,
+          stallMaxWaitMs: 60_000,
+        },
       })
       const first = await tools
         .get(`${TOOL_NAMESPACE}_send_message`)
@@ -516,7 +528,13 @@ describe("registerTools", () => {
 
     it("图片发送同样受限", async () => {
       const { tools, api, workspace } = await createHarness(group(100), {
-        rateLimit: { maxPerMinute: 1, maxPerHour: 0, minGapMs: 0 },
+        rateLimit: {
+          maxPerMinute: 1,
+          maxPerHour: 0,
+          minGapMs: 0,
+          stall: false,
+          stallMaxWaitMs: 60_000,
+        },
       })
       await tools
         .get(`${TOOL_NAMESPACE}_send_image`)
@@ -530,7 +548,13 @@ describe("registerTools", () => {
 
     it("超长消息按段计数", async () => {
       const { tools, api } = await createHarness(group(100), {
-        rateLimit: { maxPerMinute: 1, maxPerHour: 0, minGapMs: 0 },
+        rateLimit: {
+          maxPerMinute: 1,
+          maxPerHour: 0,
+          minGapMs: 0,
+          stall: false,
+          stallMaxWaitMs: 60_000,
+        },
       })
       const result = await tools
         .get(`${TOOL_NAMESPACE}_send_message`)
@@ -541,7 +565,13 @@ describe("registerTools", () => {
 
     it("不同目标各自计数", async () => {
       const { tools, api, manager } = await createHarness(group(100), {
-        rateLimit: { maxPerMinute: 1, maxPerHour: 0, minGapMs: 0 },
+        rateLimit: {
+          maxPerMinute: 1,
+          maxPerHour: 0,
+          minGapMs: 0,
+          stall: false,
+          stallMaxWaitMs: 60_000,
+        },
       })
       manager.targetForSession.mockImplementation((sessionID: string) =>
         sessionID === "session-2" ? privateChat(200) : group(100),

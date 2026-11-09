@@ -37,6 +37,46 @@ export interface ProactiveConfig {
   probabilityPerHour: number
   /** 心跳间隔（秒）。 */
   tickSeconds: number
+  /** 只在这些群里主动说话；为空表示不限制。 */
+  allowGroups: number[]
+  /** 只在这些私聊里主动说话；为空表示不限制。 */
+  allowUsers: number[]
+}
+
+/** 唤醒判定配置：全局的触发条件。 */
+export interface WakeConfig {
+  /** 全局唤醒前缀，命中即必回。 */
+  prefixes: string[]
+  /** 是否忽略 @全体成员。 */
+  ignoreAtAll: boolean
+  /** 回复机器人自己的消息是否必回。 */
+  replyToSelf: boolean
+  /** 群里第一条 @ 的是别人时是否不唤醒机器人。 */
+  ignoreAtOthers: boolean
+}
+
+/** 回复节奏配置：怎么拆段、怎么发。 */
+export interface ReplyConfig {
+  /** 分段之间的最小间隔（毫秒）。 */
+  minDelayMs: number
+  /** 分段之间的最大间隔（毫秒），0 表示沿用 `sendDelayMs`。 */
+  maxDelayMs: number
+  /** 单条消息超过该字数就拆成多段发送。 */
+  segmentChars: number
+  /** 单条回复超过该字数就改用合并转发，0 表示关闭。 */
+  forwardThresholdChars: number
+}
+
+/** 调用链追踪配置。 */
+export interface TraceConfig {
+  /** 是否记录调用链追踪。 */
+  enabled: boolean
+  /** 追踪文件目录，空表示与日志同目录。 */
+  dir: string
+  /** 追踪文件总容量上限（MB）。 */
+  maxSizeMb: number
+  /** 追踪文件保留天数。 */
+  retentionDays: number
 }
 
 export interface ReminderConfig {
@@ -65,6 +105,10 @@ export interface RateLimitConfig {
   maxPerHour: number
   /** 相邻两次发送之间的最小间隔（毫秒），0 表示不限制。 */
   minGapMs: number
+  /** 触顶时是否等窗口结束再发；关闭时直接拒绝这次发送。 */
+  stall: boolean
+  /** 单次等待窗口结束的上限（毫秒）。 */
+  stallMaxWaitMs: number
 }
 
 export interface SensitiveConfig {
@@ -135,6 +179,9 @@ export interface QQBotConfig {
   /** 重启后是否复用上一次的会话。 */
   reuseSession: boolean
   proactive: ProactiveConfig
+  wake: WakeConfig
+  reply: ReplyConfig
+  trace: TraceConfig
   reminder: ReminderConfig
   keepAlive: KeepAliveConfig
   history: HistoryConfig
@@ -164,11 +211,22 @@ export const DEFAULT_CONFIG: Omit<QQBotConfig, "napcat"> = {
     startProbability: 0.01,
     probabilityPerHour: 0.05,
     tickSeconds: 3600,
+    allowGroups: [],
+    allowUsers: [],
   },
+  wake: { prefixes: ["/"], ignoreAtAll: true, replyToSelf: true, ignoreAtOthers: true },
+  reply: { minDelayMs: 0, maxDelayMs: 0, segmentChars: 150, forwardThresholdChars: 1500 },
+  trace: { enabled: true, dir: "", maxSizeMb: 80, retentionDays: 7 },
   reminder: { enabled: true, max: 2 },
   keepAlive: { enabled: true, seconds: 20 * 60 },
   history: { count: 20 },
-  rateLimit: { maxPerMinute: 8, maxPerHour: 60, minGapMs: 1500 },
+  rateLimit: {
+    maxPerMinute: 8,
+    maxPerHour: 60,
+    minGapMs: 1500,
+    stall: false,
+    stallMaxWaitMs: 60_000,
+  },
   sensitive: { enabled: true },
   events: { subscribe: ["message"], notices: [], inject: true },
   log: { level: "info", dir: "", maxSize: "5m", maxFiles: 5 },
@@ -405,8 +463,8 @@ function createConfigSchema(
       return parsed
     })
 
-  /** 事件订阅列表：数组或逗号分隔字符串。 */
-  const eventList = (path: string, fallback: readonly string[]) =>
+  /** 字符串列表：数组或逗号分隔字符串。 */
+  const stringList = (path: string, fallback: readonly string[]) =>
     z
       .unknown()
       .optional()
@@ -530,9 +588,60 @@ function createConfigSchema(
           defaults.proactive.probabilityPerHour,
         ),
         tickSeconds: positive("proactive.tickSeconds", defaults.proactive.tickSeconds),
+        allowGroups: idList(
+          "proactive.allowGroups",
+          defaults.proactive.allowGroups,
+          "群号",
+        ).default([...defaults.proactive.allowGroups]),
+        allowUsers: idList("proactive.allowUsers", defaults.proactive.allowUsers, "QQ 号").default([
+          ...defaults.proactive.allowUsers,
+        ]),
       })
       .prefault({})
       .catch(defaults.proactive),
+    wake: z
+      .object({
+        prefixes: stringList("wake.prefixes", defaults.wake.prefixes).default([
+          ...defaults.wake.prefixes,
+        ]),
+        ignoreAtAll: boolean("wake.ignoreAtAll", defaults.wake.ignoreAtAll),
+        replyToSelf: boolean("wake.replyToSelf", defaults.wake.replyToSelf),
+        ignoreAtOthers: boolean("wake.ignoreAtOthers", defaults.wake.ignoreAtOthers),
+      })
+      .prefault({})
+      .catch(defaults.wake),
+    reply: z
+      .object({
+        minDelayMs: nonNegative("reply.minDelayMs", defaults.reply.minDelayMs),
+        maxDelayMs: nonNegative("reply.maxDelayMs", defaults.reply.maxDelayMs),
+        segmentChars: integer("reply.segmentChars", defaults.reply.segmentChars, 1),
+        forwardThresholdChars: nonNegative(
+          "reply.forwardThresholdChars",
+          defaults.reply.forwardThresholdChars,
+        ),
+      })
+      .prefault({})
+      .catch(defaults.reply),
+    trace: z
+      .object({
+        enabled: boolean("trace.enabled", defaults.trace.enabled),
+        dir: z
+          .unknown()
+          .optional()
+          .transform((value) => {
+            if (value === undefined || value === null) return defaults.trace.dir
+            if (typeof value !== "string") {
+              warn(`${label("trace.dir")} 必须是字符串：${String(value)}`)
+              return defaults.trace.dir
+            }
+            // 空目录是有意义的：表示与日志同目录。
+            return value.trim()
+          }),
+        maxSizeMb: positive("trace.maxSizeMb", defaults.trace.maxSizeMb),
+        retentionDays: integer("trace.retentionDays", defaults.trace.retentionDays, 1),
+      })
+      .prefault({})
+      .catch(defaults.trace),
     reminder: z
       .object({
         enabled: boolean("reminder.enabled", defaults.reminder.enabled),
@@ -558,6 +667,8 @@ function createConfigSchema(
         maxPerMinute: nonNegative("rateLimit.maxPerMinute", defaults.rateLimit.maxPerMinute),
         maxPerHour: nonNegative("rateLimit.maxPerHour", defaults.rateLimit.maxPerHour),
         minGapMs: nonNegative("rateLimit.minGapMs", defaults.rateLimit.minGapMs),
+        stall: boolean("rateLimit.stall", defaults.rateLimit.stall),
+        stallMaxWaitMs: nonNegative("rateLimit.stallMaxWaitMs", defaults.rateLimit.stallMaxWaitMs),
       })
       .prefault({})
       .catch(defaults.rateLimit),
@@ -569,8 +680,8 @@ function createConfigSchema(
       .catch(defaults.sensitive),
     events: z
       .object({
-        subscribe: eventList("events.subscribe", defaults.events.subscribe),
-        notices: eventList("events.notices", defaults.events.notices),
+        subscribe: stringList("events.subscribe", defaults.events.subscribe),
+        notices: stringList("events.notices", defaults.events.notices),
         inject: boolean("events.inject", defaults.events.inject),
       })
       .prefault({
@@ -633,6 +744,20 @@ export const ENV_VARS = {
   "proactive.startProbability": "QQ_PROACTIVE_P_START",
   "proactive.probabilityPerHour": "QQ_PROACTIVE_P_SLOPE_PER_HOUR",
   "proactive.tickSeconds": "QQ_PROACTIVE_TICK_SECONDS",
+  "proactive.allowGroups": "QQ_PROACTIVE_ALLOW_GROUPS",
+  "proactive.allowUsers": "QQ_PROACTIVE_ALLOW_USERS",
+  "wake.prefixes": "QQ_WAKE_PREFIXES",
+  "wake.ignoreAtAll": "QQ_WAKE_IGNORE_AT_ALL",
+  "wake.replyToSelf": "QQ_WAKE_REPLY_TO_SELF",
+  "wake.ignoreAtOthers": "QQ_WAKE_IGNORE_AT_OTHERS",
+  "reply.minDelayMs": "QQ_REPLY_MIN_DELAY_MS",
+  "reply.maxDelayMs": "QQ_REPLY_MAX_DELAY_MS",
+  "reply.segmentChars": "QQ_REPLY_SEGMENT_CHARS",
+  "reply.forwardThresholdChars": "QQ_REPLY_FORWARD_THRESHOLD_CHARS",
+  "trace.enabled": "QQ_TRACE_ENABLED",
+  "trace.dir": "QQ_TRACE_DIR",
+  "trace.maxSizeMb": "QQ_TRACE_MAX_SIZE_MB",
+  "trace.retentionDays": "QQ_TRACE_RETENTION_DAYS",
   "reminder.enabled": "QQ_REMINDER_ENABLED",
   "reminder.max": "QQ_REMINDER_MAX",
   "keepAlive.enabled": "QQ_KEEP_ALIVE_ENABLED",
@@ -641,6 +766,8 @@ export const ENV_VARS = {
   "rateLimit.maxPerMinute": "QQ_RATE_MAX_PER_MINUTE",
   "rateLimit.maxPerHour": "QQ_RATE_MAX_PER_HOUR",
   "rateLimit.minGapMs": "QQ_RATE_MIN_GAP_MS",
+  "rateLimit.stall": "QQ_RATE_STALL",
+  "rateLimit.stallMaxWaitMs": "QQ_RATE_STALL_MAX_WAIT_MS",
   "sensitive.enabled": "QQ_SENSITIVE_ENABLED",
   "events.subscribe": "QQ_EVENT_SUBSCRIBE",
   "events.notices": "QQ_EVENT_NOTICES",
@@ -668,6 +795,9 @@ const OPTION_KEYS = new Set([
   "warnLength",
   "reuseSession",
   "proactive",
+  "wake",
+  "reply",
+  "trace",
   "reminder",
   "keepAlive",
   "history",
@@ -689,11 +819,16 @@ const NESTED_OPTION_KEYS: Record<string, ReadonlySet<string>> = {
     "startProbability",
     "probabilityPerHour",
     "tickSeconds",
+    "allowGroups",
+    "allowUsers",
   ]),
+  wake: new Set(["prefixes", "ignoreAtAll", "replyToSelf", "ignoreAtOthers"]),
+  reply: new Set(["minDelayMs", "maxDelayMs", "segmentChars", "forwardThresholdChars"]),
+  trace: new Set(["enabled", "dir", "maxSizeMb", "retentionDays"]),
   reminder: new Set(["enabled", "max"]),
   keepAlive: new Set(["enabled", "seconds"]),
   history: new Set(["count"]),
-  rateLimit: new Set(["maxPerMinute", "maxPerHour", "minGapMs"]),
+  rateLimit: new Set(["maxPerMinute", "maxPerHour", "minGapMs", "stall", "stallMaxWaitMs"]),
   sensitive: new Set(["enabled"]),
   events: new Set(["subscribe", "notices", "inject"]),
   log: new Set(["level", "dir", "maxSize", "maxFiles"]),
@@ -826,7 +961,14 @@ export function resolveConfig(
       allowAllWhenEmpty: parsed.access.allowAllWhenEmpty,
     },
     admins: [...parsed.admins],
-    proactive: { ...parsed.proactive },
+    proactive: {
+      ...parsed.proactive,
+      allowGroups: [...parsed.proactive.allowGroups],
+      allowUsers: [...parsed.proactive.allowUsers],
+    },
+    wake: { ...parsed.wake, prefixes: [...parsed.wake.prefixes] },
+    reply: { ...parsed.reply },
+    trace: { ...parsed.trace },
     reminder: { ...parsed.reminder },
     keepAlive: { ...parsed.keepAlive },
     history: { ...parsed.history },
