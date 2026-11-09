@@ -1369,7 +1369,7 @@ describe("实例交接", () => {
       source: { id: "7", time: 200 },
     })
 
-    const handover = first.manager.exportHandover()
+    const handover = await first.manager.exportHandover()
     expect(handover).toHaveLength(1)
     expect(handover[0]?.sessionID).toBe("session-1")
     expect(handover[0]?.current?.text).toBe("你好")
@@ -1384,12 +1384,30 @@ describe("实例交接", () => {
     expect(active?.turn.text).toBe("你好")
   })
 
+  it("交接时等在途投递落地再导出", async () => {
+    const harness = createHarness()
+    // 会话创建慢一点：模拟正卡在投递中途。
+    harness.sessionCreate.mockImplementation(async () => {
+      await new Promise<void>((resolve) => setTimeout(resolve, 200))
+      return { id: "session-1" }
+    })
+
+    const pending = harness.manager.enqueue(group(100), { text: "你好", files: [], atMe: false })
+    await vi.waitFor(() => expect(harness.sessionCreate).toHaveBeenCalled())
+
+    // 会话还没定下来时导出，要等这一轮投递落地，交出去的状态才接得住。
+    const handover = await harness.manager.exportHandover()
+    expect(handover[0]?.sessionID).toBe("session-1")
+    expect(handover[0]?.current?.text).toBe("你好")
+    await pending
+  })
+
   it("交接时把排队的消息一起带过去", async () => {
     const first = createHarness()
     await first.manager.enqueue(group(100), { text: "第一条", files: [], atMe: false })
     await first.manager.enqueue(group(100), { text: "第二条", files: [], atMe: false })
 
-    const handover = first.manager.exportHandover()
+    const handover = await first.manager.exportHandover()
     expect(handover[0]?.buffer.map((turn) => turn.text)).toEqual(["第二条"])
 
     const second = createHarness()
@@ -1399,7 +1417,7 @@ describe("实例交接", () => {
 
   it("没有在途消息时不导出状态", async () => {
     const { manager } = createHarness()
-    expect(manager.exportHandover()).toEqual([])
+    expect(await manager.exportHandover()).toEqual([])
   })
 
   it("上游会话已经不在时丢弃这轮状态", async () => {
@@ -1408,7 +1426,7 @@ describe("实例交接", () => {
 
     const second = createHarness()
     second.sessionGet.mockRejectedValue(new Error("会话不存在"))
-    expect(await second.manager.adoptHandover(first.manager.exportHandover())).toBe(0)
+    expect(await second.manager.adoptHandover(await first.manager.exportHandover())).toBe(0)
     expect(second.manager.hasActiveTurn("session-1")).toBe(false)
   })
 
@@ -1418,7 +1436,7 @@ describe("实例交接", () => {
 
     const second = createHarness()
     await second.manager.enqueue(group(100), { text: "另一条", files: [], atMe: false })
-    expect(await second.manager.adoptHandover(first.manager.exportHandover())).toBe(0)
+    expect(await second.manager.adoptHandover(await first.manager.exportHandover())).toBe(0)
     expect(second.manager.currentTurn("session-1")?.text).toBe("另一条")
   })
 
@@ -1427,7 +1445,10 @@ describe("实例交接", () => {
     await first.manager.enqueue(group(100), { text: "你好", files: [], atMe: false })
 
     const second = createHarness()
-    const handover = first.manager.exportHandover().map((item) => ({ ...item, target: group(999) }))
+    const handover = (await first.manager.exportHandover()).map((item) => ({
+      ...item,
+      target: group(999),
+    }))
     expect(await second.manager.adoptHandover(handover)).toBe(0)
     expect(second.manager.hasActiveTurn("session-1")).toBe(false)
   })
@@ -1438,9 +1459,10 @@ describe("实例交接", () => {
     await first.manager.enqueue(group(100), { text: "第二条", files: [], atMe: false })
 
     const second = createHarness()
-    const handover = first.manager
-      .exportHandover()
-      .map((item) => ({ ...item, sessionID: undefined }))
+    const handover = (await first.manager.exportHandover()).map((item) => ({
+      ...item,
+      sessionID: undefined,
+    }))
     expect(await second.manager.adoptHandover(handover)).toBe(1)
     // 没有会话的轮次根本没投到上游，接过来也只是个空壳。
     expect(second.manager.hasActiveTurn("session-1")).toBe(false)
@@ -1458,7 +1480,7 @@ describe("实例交接", () => {
     })
 
     const second = createHarness()
-    await second.manager.adoptHandover(first.manager.exportHandover())
+    await second.manager.adoptHandover(await first.manager.exportHandover())
     expect(second.manager.isKnownMessage(group(100), "9")).toBe(true)
   })
 
@@ -1472,7 +1494,7 @@ describe("实例交接", () => {
     })
 
     const second = createHarness()
-    await second.manager.adoptHandover(first.manager.exportHandover())
+    await second.manager.adoptHandover(await first.manager.exportHandover())
     await second.manager.flush()
     expect(second.storage.set).toHaveBeenCalledWith("bindings", { "group:100": "session-1" })
     expect(second.storage.set).toHaveBeenCalledWith("positions", {

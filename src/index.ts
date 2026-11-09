@@ -682,8 +682,8 @@ export default Plugin.define({
     const dispose = async () => {
       if (disposed) return
       disposed = true
-      // 被新实例接管时把在途状态交出去：这一轮还在上游跑，别让它白跑。
-      lease.handover(manager.exportHandover())
+      // 被新实例接管时才等在途投递落地：那一次交接才有东西可交。
+      lease.handover(lease.superseded() ? await manager.exportHandover() : [])
       if (timer) clearInterval(timer)
       clearInterval(claimTimer)
       clearInterval(mediaCleanup)

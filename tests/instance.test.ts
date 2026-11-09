@@ -93,6 +93,17 @@ describe("claimInstance", () => {
 })
 
 describe("实例交接", () => {
+  it("判断自己是否已经被接管", () => {
+    const first = claimInstance(home, nextLabel())
+    expect(first.lease.superseded()).toBe(false)
+
+    const second = claimInstance(home, nextLabel())
+    expect(first.lease.superseded()).toBe(true)
+    expect(second.lease.superseded()).toBe(false)
+
+    second.lease.release()
+  })
+
   it("正常卸载时不留在途状态", () => {
     const first = claimInstance(home, nextLabel())
     first.lease.handover([handoverState])

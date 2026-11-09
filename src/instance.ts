@@ -25,6 +25,8 @@ export interface InstanceLease {
   setDispose(dispose: () => Promise<void>): void
   /** Clears the slot only when this lease still owns it. */
   release(): void
+  /** 本实例是否已经被更新的实例接管。 */
+  superseded(): boolean
   /**
    * 把在途状态留给接管本实例的新实例。
    *
@@ -82,7 +84,14 @@ export function claimInstance(directory: string, label: string): InstanceClaim {
   if (active && active.directory !== directory) {
     return {
       occupied: active.directory,
-      lease: { setDispose() {}, release() {}, handover() {} },
+      lease: {
+        setDispose() {},
+        release() {},
+        superseded() {
+          return false
+        },
+        handover() {},
+      },
     }
   }
   const instance: PluginInstance = { label }
@@ -95,6 +104,10 @@ export function claimInstance(directory: string, label: string): InstanceClaim {
       },
       release() {
         if (state.active?.instance === instance) state.active = undefined
+      },
+      superseded() {
+        const active = state.active
+        return active !== undefined && active.instance !== instance
       },
       handover(states) {
         // 已经有新实例接管时，这轮状态留给它；正常卸载没有接手方，留着也没用。

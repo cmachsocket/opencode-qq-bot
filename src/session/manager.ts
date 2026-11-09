@@ -40,6 +40,8 @@ export const INTERRUPTED_NOTICE = "⏹️ 已停止"
 export const FAILURE_NOTICE_INTERVAL_MS = 5 * 60 * 1000
 /** 退役会话后的冷却时间：这段时间内不再重建，避免上游整体故障时反复重建会话。 */
 export const SESSION_RETIRE_COOLDOWN_MS = 10 * 60 * 1000
+/** 交接时等在途投递落地的最长时间（毫秒）。 */
+const HANDOVER_WAIT_MS = 3_000
 
 /** 插件自己往聊天里补话的通道，失败兜底用。 */
 export type FailureNotifier = (target: ChatTarget, text: string) => Promise<void>
@@ -462,10 +464,16 @@ export class SessionManager {
    *
    * 只导出还有事情要做的聊天：正在执行的一轮、排队的消息、冻结的失败批次。
    */
-  exportHandover(): HandoverState[] {
+  async exportHandover(): Promise<HandoverState[]> {
     const handover: HandoverState[] = []
     for (const state of this.states.values()) {
       if (!state.current && state.buffer.length === 0 && !state.pending) continue
+      // 轮次挂上了但会话还没定下来：说明正卡在投递中途。等它落地再导出，
+      // 否则接手的实例拿到的是一个投不到上游的空壳轮次。
+      if (state.current && !state.sessionID) {
+        await this.waitDispatch(state.target)
+        if (!state.current && state.buffer.length === 0 && !state.pending) continue
+      }
       handover.push({
         target: state.target,
         ...(state.sessionID ? { sessionID: state.sessionID } : {}),
@@ -480,6 +488,20 @@ export class SessionManager {
       })
     }
     return handover
+  }
+
+  /** 等这个聊天正在进行的投递结束，最多等 HANDOVER_WAIT_MS。 */
+  private async waitDispatch(target: ChatTarget): Promise<void> {
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const timeout = new Promise<void>((resolve) => {
+      timer = setTimeout(resolve, HANDOVER_WAIT_MS)
+      timer.unref?.()
+    })
+    try {
+      await Promise.race([this.targetMutex(target).runExclusive(async () => {}), timeout])
+    } finally {
+      if (timer) clearTimeout(timer)
+    }
   }
 
   /**
