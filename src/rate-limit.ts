@@ -6,6 +6,8 @@ import type { RateLimitConfig } from "./config"
 const MINUTE_MS = 60_000
 /** 一小时的毫秒数。 */
 const HOUR_MS = 60 * MINUTE_MS
+/** 等待窗口结束时最多重算几次，兜底防止时钟不前进时死循环。 */
+const MAX_STALL_ATTEMPTS = 5
 
 /** 限流判定结果。 */
 export interface RateLimitVerdict {
@@ -15,6 +17,8 @@ export interface RateLimitVerdict {
   reason: string
   /** 为了放行这次发送实际等待的毫秒数。 */
   waitedMs: number
+  /** 这次放行是否靠等待窗口结束换来的。 */
+  stalled: boolean
 }
 
 /** 一次出站发送的记录。 */
@@ -120,33 +124,80 @@ export class SendRateLimiter {
     operation: string | undefined,
     enforce: boolean,
   ): Promise<RateLimitVerdict> {
-    const now = this.currentTime
-    const records = this.recent(scope, now)
+    let waitedMs = 0
+    let stalled = false
     if (enforce) {
-      const minute = records.filter((record) => now - record.at < MINUTE_MS).length
-      if (this.config.maxPerMinute > 0 && minute >= this.config.maxPerMinute) {
-        return {
-          allowed: false,
-          reason: `发送频率超限：本分钟已发出 ${minute} 条，最多为每分钟 ${this.config.maxPerMinute} 条。请停止发送并结束本轮。`,
-          waitedMs: 0,
-        }
-      }
-      if (this.config.maxPerHour > 0 && records.length >= this.config.maxPerHour) {
-        return {
-          allowed: false,
-          reason: `发送频率超限：本小时已发出 ${records.length} 条，最多为每小时 ${this.config.maxPerHour} 条。请停止发送并结束本轮。`,
-          waitedMs: 0,
-        }
-      }
+      const slot = await this.waitForSlot(scope)
+      if (!slot.allowed) return slot
+      waitedMs = slot.waitedMs
+      stalled = slot.stalled
     }
 
-    const waitedMs = this.gapDelay(records, now, operation)
-    if (waitedMs > 0) await this.wait(waitedMs)
+    const now = this.currentTime
+    const records = this.recent(scope, now)
+    const gap = this.gapDelay(records, now, operation)
+    if (gap > 0) await this.wait(gap)
     this.records.set(scope, [
       ...records,
       { at: this.currentTime, ...(operation ? { operation } : {}) },
     ])
-    return { allowed: true, reason: "", waitedMs }
+    return { allowed: true, reason: "", waitedMs: waitedMs + gap, stalled }
+  }
+
+  /**
+   * 等一个发送名额出来。
+   *
+   * 每分钟上限可以配成“等窗口结束再发”：只等到最早的记录滑出短窗口，
+   * 等待总时长受 `stallMaxWaitMs` 限制；每小时上限始终直接拒绝，
+   * 不真的睡一小时。长窗口满了就没什么可等的。
+   */
+  private async waitForSlot(scope: string): Promise<RateLimitVerdict> {
+    let waitedMs = 0
+    for (let attempt = 0; attempt < MAX_STALL_ATTEMPTS; attempt += 1) {
+      const now = this.currentTime
+      const records = this.recent(scope, now)
+      if (this.config.maxPerHour > 0 && records.length >= this.config.maxPerHour) {
+        return {
+          allowed: false,
+          reason: `发送频率超限：本小时已发出 ${records.length} 条，最多为每小时 ${this.config.maxPerHour} 条。请停止发送并结束本轮。`,
+          waitedMs,
+          stalled: waitedMs > 0,
+        }
+      }
+      const minute = records.filter((record) => now - record.at < MINUTE_MS)
+      if (this.config.maxPerMinute <= 0 || minute.length < this.config.maxPerMinute) {
+        return { allowed: true, reason: "", waitedMs, stalled: waitedMs > 0 }
+      }
+      if (!this.config.stall) {
+        return {
+          allowed: false,
+          reason: `发送频率超限：本分钟已发出 ${minute.length} 条，最多为每分钟 ${this.config.maxPerMinute} 条。请停止发送并结束本轮。`,
+          waitedMs,
+          stalled: false,
+        }
+      }
+      // 需要滑出窗口的记录数：腾出一个名额就够了。
+      const needed = minute.length - (this.config.maxPerMinute - 1)
+      const candidate = [...minute].sort((left, right) => left.at - right.at)[needed - 1]
+      if (!candidate) break
+      const waitMs = MINUTE_MS - (now - candidate.at)
+      if (waitedMs + waitMs > this.config.stallMaxWaitMs) {
+        return {
+          allowed: false,
+          reason: `发送频率超限：本分钟已发出 ${minute.length} 条，最多为每分钟 ${this.config.maxPerMinute} 条；等窗口结束需要 ${waitMs} 毫秒，超过允许的 ${this.config.stallMaxWaitMs} 毫秒。请停止发送并结束本轮。`,
+          waitedMs,
+          stalled: waitedMs > 0,
+        }
+      }
+      await this.wait(waitMs)
+      waitedMs += waitMs
+    }
+    return {
+      allowed: false,
+      reason: "发送频率超限：等待窗口结束后仍未拿到发送名额。请停止发送并结束本轮。",
+      waitedMs,
+      stalled: waitedMs > 0,
+    }
   }
 
   /** 距离上一次发送还差多久；同一次操作的多段之间不再等待。 */

@@ -136,3 +136,77 @@ describe("SendRateLimiter", () => {
     expect(modelSendScope(otherGroup)).not.toBe(modelSendScope(group))
   })
 })
+
+describe("SendRateLimiter 的等待档", () => {
+  it("默认关闭等待档：触顶直接拒绝", async () => {
+    const { limiter, clock } = createLimiter({ maxPerMinute: 1 })
+    await limiter.acquire("group:100")
+    const verdict = await limiter.acquire("group:100")
+    expect(verdict.allowed).toBe(false)
+    expect(verdict.stalled).toBe(false)
+    expect(clock.sleeps).toEqual([])
+  })
+
+  it("开启等待档后等窗口结束再发", async () => {
+    const { limiter, clock } = createLimiter({
+      maxPerMinute: 1,
+      stall: true,
+      stallMaxWaitMs: 60_000,
+    })
+    await limiter.acquire("group:100")
+    const verdict = await limiter.acquire("group:100")
+    expect(verdict.allowed).toBe(true)
+    expect(verdict.stalled).toBe(true)
+    expect(verdict.waitedMs).toBe(60_000)
+    expect(clock.sleeps).toEqual([60_000])
+  })
+
+  it("等待档只等到额度用完的那一刻", async () => {
+    const { limiter, clock } = createLimiter({
+      maxPerMinute: 2,
+      stall: true,
+      stallMaxWaitMs: 60_000,
+    })
+    await limiter.acquire("group:100")
+    clock.advance(30_000)
+    await limiter.acquire("group:100")
+    const verdict = await limiter.acquire("group:100")
+    expect(verdict.allowed).toBe(true)
+    // 第一条记录滑出窗口还要 30 秒。
+    expect(verdict.waitedMs).toBe(30_000)
+    expect(clock.sleeps).toEqual([30_000])
+  })
+
+  it("等待时间超过上限时仍然拒绝", async () => {
+    const { limiter, clock } = createLimiter({
+      maxPerMinute: 1,
+      stall: true,
+      stallMaxWaitMs: 1_000,
+    })
+    await limiter.acquire("group:100")
+    const verdict = await limiter.acquire("group:100")
+    expect(verdict.allowed).toBe(false)
+    expect(verdict.reason).toContain("毫秒")
+    expect(clock.sleeps).toEqual([])
+  })
+
+  it("等待档不影响每小时上限：长窗口满了直接拒绝", async () => {
+    const { limiter, clock } = createLimiter({
+      maxPerMinute: 0,
+      maxPerHour: 1,
+      stall: true,
+      stallMaxWaitMs: 60_000,
+    })
+    await limiter.acquire("group:100")
+    const verdict = await limiter.acquire("group:100")
+    expect(verdict.allowed).toBe(false)
+    expect(verdict.reason).toContain("本小时")
+    expect(clock.sleeps).toEqual([])
+  })
+
+  it("节奏控制不受等待档影响", async () => {
+    const { limiter } = createLimiter({ maxPerMinute: 1, stall: true })
+    await limiter.acquire("group:100")
+    await expect(limiter.pace("group:100")).resolves.toBeUndefined()
+  })
+})
