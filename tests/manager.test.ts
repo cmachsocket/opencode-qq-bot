@@ -1357,3 +1357,68 @@ describe("B1 冷启动补历史", () => {
     expect(merged.source).toEqual({ id: "2", time: 2 })
   })
 })
+
+describe("实例交接", () => {
+  it("导处在途状态并交给新实例接手", async () => {
+    const first = createHarness()
+    await first.manager.enqueue(group(100), {
+      text: "你好",
+      files: [],
+      atMe: true,
+      role: "admin",
+      source: { id: "7", time: 200 },
+    })
+
+    const handover = first.manager.exportHandover()
+    expect(handover).toHaveLength(1)
+    expect(handover[0]?.sessionID).toBe("session-1")
+    expect(handover[0]?.current?.text).toBe("你好")
+
+    const second = createHarness()
+    expect(await second.manager.adoptHandover(handover)).toBe(1)
+    // 接手后这一轮还在，模型再调用发送工具不会被当成没有轮次。
+    expect(second.manager.hasActiveTurn("session-1")).toBe(true)
+    const active = second.manager.activeTurn("session-1")
+    expect(active?.target).toEqual(group(100))
+    expect(active?.role).toBe("admin")
+    expect(active?.turn.text).toBe("你好")
+  })
+
+  it("交接时把排队的消息一起带过去", async () => {
+    const first = createHarness()
+    await first.manager.enqueue(group(100), { text: "第一条", files: [], atMe: false })
+    await first.manager.enqueue(group(100), { text: "第二条", files: [], atMe: false })
+
+    const handover = first.manager.exportHandover()
+    expect(handover[0]?.buffer.map((turn) => turn.text)).toEqual(["第二条"])
+
+    const second = createHarness()
+    expect(await second.manager.adoptHandover(handover)).toBe(1)
+    expect(second.manager.snapshot()[0]?.buffered).toBe(1)
+  })
+
+  it("没有在途消息时不导出状态", async () => {
+    const { manager } = createHarness()
+    expect(manager.exportHandover()).toEqual([])
+  })
+
+  it("上游会话已经不在时丢弃这轮状态", async () => {
+    const first = createHarness()
+    await first.manager.enqueue(group(100), { text: "你好", files: [], atMe: false })
+
+    const second = createHarness()
+    second.sessionGet.mockRejectedValue(new Error("会话不存在"))
+    expect(await second.manager.adoptHandover(first.manager.exportHandover())).toBe(0)
+    expect(second.manager.hasActiveTurn("session-1")).toBe(false)
+  })
+
+  it("新实例自己已经在跑时不接手", async () => {
+    const first = createHarness()
+    await first.manager.enqueue(group(100), { text: "你好", files: [], atMe: false })
+
+    const second = createHarness()
+    await second.manager.enqueue(group(100), { text: "另一条", files: [], atMe: false })
+    expect(await second.manager.adoptHandover(first.manager.exportHandover())).toBe(0)
+    expect(second.manager.currentTurn("session-1")?.text).toBe("另一条")
+  })
+})

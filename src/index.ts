@@ -6,7 +6,7 @@ import { type ChatTarget, targetKey, targetLabel } from "./chat"
 import { allowedTargets, isTargetAllowed } from "./access"
 import { MIGRATION_WARNING_PREFIX, resolveConfig, type QQBotConfig } from "./config"
 import { resolveHome } from "./home"
-import { claimInstance } from "./instance"
+import { claimInstance, takeHandover } from "./instance"
 import { KeepAlive } from "./keepalive"
 import { createLogger, closeLogger, defaultLogDir, flushLogger, type Logger } from "./logger"
 import { defaultMediaDir, OutboundMedia } from "./media-path"
@@ -211,6 +211,12 @@ export default Plugin.define({
       tracer,
     )
     await manager.load()
+    // 接管上一实例留下的在途状态：那一轮还在上游跑，丢掉的话这轮的回复就没了。
+    const handover = takeHandover()
+    if (handover.length > 0) {
+      const adopted = await manager.adoptHandover(handover)
+      logger.info(`已接管上一实例的 ${adopted} 个聊天状态`)
+    }
     // 保活心跳：OpenCode 长时间没有会话活动时会卸载 location，插件随之被卸载。
     const keepAlive = new KeepAlive(ctx, config, logger)
     keepAlive.start()
@@ -673,6 +679,8 @@ export default Plugin.define({
     const dispose = async () => {
       if (disposed) return
       disposed = true
+      // 被新实例接管时把在途状态交出去：这一轮还在上游跑，别让它白跑。
+      lease.handover(manager.exportHandover())
       if (timer) clearInterval(timer)
       clearInterval(claimTimer)
       clearInterval(mediaCleanup)

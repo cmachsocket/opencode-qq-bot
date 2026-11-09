@@ -119,6 +119,30 @@ interface ChatState {
   lastRetireAt: number
 }
 
+/** 实例交接时移交的会话状态。 */
+export interface HandoverState {
+  /** 这个聊天对应的目标。 */
+  target: ChatTarget
+  /** 绑定的上游会话。 */
+  sessionID?: string
+  /** 正在执行的一轮；为空表示上游已经空闲。 */
+  current?: Turn
+  /** 当前轮次模型是否还没调用发送工具。 */
+  awaitingSend: boolean
+  /** 连续提醒次数，防止死循环。 */
+  reminders: number
+  /** 最近一次投递的时间戳（毫秒）。 */
+  lastDispatchAt: number
+  /** 最近一次上游确认空闲的时间戳（毫秒）。 */
+  idleAt: number
+  /** 上游还在跑时排队的消息。 */
+  buffer: Turn[]
+  /** 已经尝试投递但失败的一批。 */
+  pending?: Turn
+  /** 当前失败批次已经重试的次数。 */
+  pendingAttempts: number
+}
+
 type SessionListCursor = NonNullable<Parameters<Plugin.Context["session"]["list"]>[0]>["cursor"]
 
 /** 角色权限高低：数字越小权限越低。 */
@@ -423,6 +447,77 @@ export class SessionManager {
     const state = this.sessions.get(sessionID)
     if (!state?.current) return undefined
     return { target: state.target, turn: state.current, role: state.current.role ?? "member" }
+  }
+
+  /**
+   * 导处在途状态，供实例交接时交给新实例。
+   *
+   * 只导出还有事情要做的聊天：正在执行的一轮、排队的消息、冻结的失败批次。
+   */
+  exportHandover(): HandoverState[] {
+    const handover: HandoverState[] = []
+    for (const state of this.states.values()) {
+      if (!state.current && state.buffer.length === 0 && !state.pending) continue
+      handover.push({
+        target: state.target,
+        ...(state.sessionID ? { sessionID: state.sessionID } : {}),
+        ...(state.current ? { current: state.current } : {}),
+        awaitingSend: state.awaitingSend,
+        reminders: state.reminders,
+        lastDispatchAt: state.lastDispatchAt,
+        idleAt: state.idleAt,
+        buffer: [...state.buffer],
+        ...(state.pending ? { pending: state.pending } : {}),
+        pendingAttempts: state.pendingAttempts,
+      })
+    }
+    return handover
+  }
+
+  /**
+   * 接管上一实例留下的状态。
+   *
+   * 实例被接管时，正在执行的一轮还在上游跑着；不接手的话，
+   * 这一轮模型再调用发送工具就会被当成没有轮次而拒绝，回复直接丢掉。
+   *
+   * @returns 实际接手的聊天数量。
+   */
+  async adoptHandover(handover: readonly HandoverState[]): Promise<number> {
+    let adopted = 0
+    for (const item of handover) {
+      const state = this.state(item.target)
+      // 已经有在途的事情就不接手，别把新实例自己的轮次顶掉。
+      if (state.current || state.buffer.length > 0 || state.pending) continue
+      if (state.sessionID && item.sessionID && state.sessionID !== item.sessionID) {
+        this.logger.warn(
+          `${targetLabel(item.target)} 交接时会话不一致（${state.sessionID} / ${item.sessionID}），保留原绑定`,
+        )
+        continue
+      }
+      if (item.sessionID && !(await this.sessionExists(item.sessionID))) {
+        this.logger.warn(
+          `${targetLabel(item.target)} 交接时会话 ${item.sessionID} 已不存在，丢弃这轮状态`,
+        )
+        continue
+      }
+      if (item.sessionID && !this.bindSession(state, item.sessionID)) continue
+      state.current = item.current
+      state.awaitingSend = item.awaitingSend
+      state.reminders = item.reminders
+      state.lastDispatchAt = item.lastDispatchAt
+      state.idleAt = item.idleAt
+      state.buffer = [...item.buffer]
+      state.pending = item.pending
+      state.pendingAttempts = item.pendingAttempts
+      // 这一轮已经投递过，位置跟着走，别再补一次同样的历史。
+      const source = item.current?.source
+      if (source) {
+        this.positions.set(targetKey(item.target), source)
+        this.restoredPositions.set(targetKey(item.target), source)
+      }
+      adopted += 1
+    }
+    return adopted
   }
 
   /**

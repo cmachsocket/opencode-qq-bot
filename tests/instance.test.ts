@@ -1,9 +1,21 @@
 import { describe, expect, it } from "vitest"
-import { claimInstance, type PluginInstance } from "../src/instance"
+import { claimInstance, takeHandover, type PluginInstance } from "../src/instance"
+import type { HandoverState } from "../src/session/manager"
 
 let sequence = 0
 const nextLabel = () => `project-${process.pid}-${sequence++}`
 const home = "/work/qq-bot"
+
+const handoverState: HandoverState = {
+  target: { kind: "group", id: 100 },
+  sessionID: "session-1",
+  awaitingSend: true,
+  reminders: 0,
+  lastDispatchAt: 1,
+  idleAt: 0,
+  buffer: [],
+  pendingAttempts: 0,
+}
 
 describe("claimInstance", () => {
   it("returns the previous instance on the next claim", () => {
@@ -76,6 +88,29 @@ describe("claimInstance", () => {
 
     const second = claimInstance(home, nextLabel())
     expect(second.previous).toBeUndefined()
+    second.lease.release()
+  })
+})
+
+describe("实例交接", () => {
+  it("正常卸载时不留在途状态", () => {
+    const first = claimInstance(home, nextLabel())
+    first.lease.handover([handoverState])
+    expect(takeHandover()).toEqual([])
+    first.lease.release()
+  })
+
+  it("被接管时把在途状态留给新实例", () => {
+    const first = claimInstance(home, nextLabel())
+    const second = claimInstance(home, nextLabel())
+    expect(second.previous).toBeDefined()
+
+    // 旧实例卸载时把还在跑的那一轮交出来。
+    first.lease.handover([handoverState])
+    expect(takeHandover()).toEqual([handoverState])
+    // 取走即清空，后来的实例不会捡到陈旧的状态。
+    expect(takeHandover()).toEqual([])
+
     second.lease.release()
   })
 })

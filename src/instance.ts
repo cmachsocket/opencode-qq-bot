@@ -7,7 +7,12 @@
  *
  * 槽位绑定到机器人固定的工作目录：只有同一目录的实例才能互相接管，
  * 否则会话上下文会落在不同项目里。
+ *
+ * 接管时旧实例把在途状态留在注册表里，新实例取走并继续，
+ * 免得正在跑的那一轮在上游白跑、回复丢掉。
  */
+
+import type { HandoverState } from "./session/manager"
 
 export interface PluginInstance {
   dispose?: () => Promise<void>
@@ -20,6 +25,12 @@ export interface InstanceLease {
   setDispose(dispose: () => Promise<void>): void
   /** Clears the slot only when this lease still owns it. */
   release(): void
+  /**
+   * 把在途状态留给接管本实例的新实例。
+   *
+   * 只有真的被接管时才留：正常卸载没有接手方，留着也没用。
+   */
+  handover(states: readonly HandoverState[]): void
 }
 
 export interface InstanceClaim {
@@ -32,6 +43,8 @@ export interface InstanceClaim {
 
 interface Host {
   active?: { directory: string; instance: PluginInstance }
+  /** 上一实例留下的在途状态，由接管它的新实例取走。 */
+  handover?: HandoverState[]
 }
 
 const HOST_KEY = "__opencodeQQBotHost__"
@@ -46,6 +59,18 @@ function host(): Host {
 }
 
 /**
+ * 取走上一实例留下的在途状态。
+ *
+ * 取走即清空，避免陈旧的状态被后来的实例误当成自己的。
+ */
+export function takeHandover(): HandoverState[] {
+  const state = host()
+  const handover = state.handover ?? []
+  state.handover = undefined
+  return handover
+}
+
+/**
  * 占用进程内唯一的实例槽位。
  *
  * @param directory 机器人固定服务的工作目录。
@@ -55,7 +80,10 @@ export function claimInstance(directory: string, label: string): InstanceClaim {
   const state = host()
   const active = state.active
   if (active && active.directory !== directory) {
-    return { occupied: active.directory, lease: { setDispose() {}, release() {} } }
+    return {
+      occupied: active.directory,
+      lease: { setDispose() {}, release() {}, handover() {} },
+    }
   }
   const instance: PluginInstance = { label }
   state.active = { directory, instance }
@@ -67,6 +95,12 @@ export function claimInstance(directory: string, label: string): InstanceClaim {
       },
       release() {
         if (state.active?.instance === instance) state.active = undefined
+      },
+      handover(states) {
+        // 已经有新实例接管时，这轮状态留给它；正常卸载没有接手方，留着也没用。
+        const active = state.active
+        if (!active || active.instance === instance) return
+        state.handover = states.length > 0 ? [...states] : undefined
       },
     },
   }
