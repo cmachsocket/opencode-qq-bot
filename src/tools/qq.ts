@@ -192,13 +192,6 @@ export async function registerTools(deps: ToolDeps): Promise<{ dispose(): Promis
       logger.warn(`${targetLabel(target)} 已不在放行名单里，拒绝工具调用`)
       return undefined
     }
-    if (!manager.hasActiveTurn(sessionID)) {
-      logger.warn(
-        `会话 ${sessionID} 当前没有 QQ 消息轮次，拒绝工具调用`,
-        manager.describeTurn(sessionID),
-      )
-      return undefined
-    }
     return target
   }
 

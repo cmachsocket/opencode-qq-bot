@@ -29,8 +29,6 @@ interface Harness {
   manager: {
     targetForSession: ReturnType<typeof vi.fn>
     markMessageSent: ReturnType<typeof vi.fn>
-    hasActiveTurn: ReturnType<typeof vi.fn>
-    describeTurn: ReturnType<typeof vi.fn>
     rememberOutgoing: ReturnType<typeof vi.fn>
     isOutgoing: ReturnType<typeof vi.fn>
     isKnownMessage: ReturnType<typeof vi.fn>
@@ -77,8 +75,6 @@ async function createHarness(
   const manager = {
     targetForSession: vi.fn(() => target ?? undefined),
     markMessageSent: vi.fn(),
-    hasActiveTurn: vi.fn(() => true),
-    describeTurn: vi.fn(() => ({ bound: true })),
     rememberOutgoing: vi.fn(),
     isOutgoing: vi.fn(() => true),
     isKnownMessage: vi.fn(() => true),
@@ -495,14 +491,13 @@ describe("registerTools", () => {
     expect(api["sendGroupMessage"]).not.toHaveBeenCalled()
   })
 
-  it("rejects tools outside an active QQ turn", async () => {
-    const { tools, api, manager } = await createHarness()
-    manager.hasActiveTurn.mockReturnValue(false)
+  it("allows tools without an active turn because the session is already bound", async () => {
+    const { tools, api } = await createHarness()
     const result = await tools
       .get(`${TOOL_NAMESPACE}_send_message`)
       ?.execute({ content: "你好" }, context)
-    expect(result?.content).toContain("error")
-    expect(api["sendGroupMessage"]).not.toHaveBeenCalled()
+    expect(result?.content).not.toContain("error")
+    expect(api["sendGroupMessage"]).toHaveBeenCalled()
   })
 
   it("rejects transcribing an unknown message", async () => {

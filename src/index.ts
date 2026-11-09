@@ -221,6 +221,8 @@ export default Plugin.define({
         logger.info(`已接管上一实例的 ${adopted} 个聊天状态`)
       }
     }
+    // 进程重启时上游可能还在跑上一轮；恢复它的状态，否则模型调用 QQ 工具会被拒绝。
+    await manager.restoreInflight()
     // 保活心跳：OpenCode 长时间没有会话活动时会卸载 location，插件随之被卸载。
     const keepAlive = new KeepAlive(ctx, config, logger)
     keepAlive.start()
@@ -307,9 +309,10 @@ export default Plugin.define({
       event.system.push({ type: "text", text: `当前时间：${currentTimeText()}` })
       const active = manager.activeTurn(event.sessionID)
       const turn = active?.turn
+      const role = active?.role ?? manager.currentRole(event.sessionID)
       logger.debug(`上下文钩子：会话 ${event.sessionID}`, {
         target: targetLabel(target),
-        role: active?.role,
+        role,
         proactive: turn?.proactive === true,
         atMe: turn?.atMe,
         suppress: turn?.suppress,
@@ -345,8 +348,9 @@ export default Plugin.define({
         })
       }
       // 本轮发送者的角色决定工具档：owner / admin 全开，其他按聊天配置。
-      if (active) {
-        const allowed = await policy.allow(active.role, targetKey(target), Object.keys(event.tools))
+      // 角色按会话保留，没有在途轮次（重启、TUI 驱动）时也照样收窄。
+      {
+        const allowed = await policy.allow(role, targetKey(target), Object.keys(event.tools))
         const removed: string[] = []
         for (const name of Object.keys(event.tools)) {
           if (!allowed.has(name)) {
@@ -356,8 +360,8 @@ export default Plugin.define({
         }
         logger.debug(`上下文钩子：按角色收窄工具`, {
           target: targetLabel(target),
-          role: active.role,
-          profile: await policy.profileOf(active.role, targetKey(target)),
+          role,
+          profile: await policy.profileOf(role, targetKey(target)),
           removed,
         })
       }

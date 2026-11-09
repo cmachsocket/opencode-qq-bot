@@ -12,17 +12,14 @@ interface BeforeEvent {
 
 interface Harness {
   before(tool: string): Promise<void>
-  setActive(active: boolean): void
+  setBound(bound: boolean): void
 }
 
 async function createHarness(options: { allow?: string[]; role?: "member" | "admin" } = {}) {
-  let active = true
+  let bound = true
   const manager = {
-    activeTurn: vi.fn(() =>
-      active
-        ? { target: { kind: "group", id: 100 }, turn: undefined, role: options.role }
-        : undefined,
-    ),
+    targetForSession: vi.fn(() => (bound ? { kind: "group", id: 100 } : undefined)),
+    currentRole: vi.fn(() => options.role ?? "member"),
   }
   const logger = {
     debug: vi.fn(),
@@ -58,25 +55,31 @@ async function createHarness(options: { allow?: string[]; role?: "member" | "adm
     async before(tool) {
       await handler?.({ tool, sessionID: "ses_1" })
     },
-    setActive(next) {
-      active = next
+    setBound(next) {
+      bound = next
     },
   }
   return { harness, logger, policy }
 }
 
 describe("registerToolPolicy", () => {
-  it("QQ 轮次里拒绝创建子代理", async () => {
+  it("QQ 会话里拒绝创建子代理", async () => {
     const { harness, logger } = await createHarness({ allow: ["subagent", "task"] })
     await expect(harness.before("subagent")).rejects.toThrow(/子代理/)
     await expect(harness.before("task")).rejects.toThrow(/子代理/)
     expect(logger.warn).toHaveBeenCalled()
   })
 
-  it("没有 QQ 轮次时放行子代理", async () => {
+  it("会话没有绑定 QQ 目标时放行", async () => {
     const { harness } = await createHarness({ allow: ["subagent"] })
-    harness.setActive(false)
+    harness.setBound(false)
     await expect(harness.before("subagent")).resolves.toBeUndefined()
+  })
+
+  it("没有在途轮次时仍按会话角色收窄", async () => {
+    const { harness, policy } = await createHarness({ allow: ["websearch"], role: "member" })
+    await expect(harness.before("shell")).rejects.toThrow(/tool-profiles/)
+    expect(policy.allow).toHaveBeenCalledWith("member", "group:100", ["shell"])
   })
 
   it("按配置档拒绝其它工具", async () => {

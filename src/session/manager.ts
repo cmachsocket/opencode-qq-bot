@@ -20,6 +20,8 @@ const BINDINGS_KEY = "bindings"
 const ACTIVITY_KEY = "activity"
 /** 插件存储里保存每个目标已投递到的消息位置的键。 */
 const POSITIONS_KEY = "positions"
+/** 插件存储里保存重启前仍在执行的轮次的键。 */
+const INFLIGHT_KEY = "inflight"
 /** 单个目标最多缓存的消息条数。 */
 export const MAX_BUFFER_TURNS = 100
 /** 单个目标最多缓存的文本与附件字节数。 */
@@ -49,6 +51,48 @@ function toMillis(value: unknown): number | undefined {
   if (value instanceof Date) return value.getTime()
   if (typeof value === "number") return value
   return undefined
+}
+
+/** 存储里的角色是否合法。 */
+function isRole(value: unknown): value is Role {
+  return value === "owner" || value === "admin" || value === "member" || value === "proactive"
+}
+
+/** 存储里的唤醒原因是否合法。 */
+function isWakeReason(value: unknown): value is WakeReason {
+  return (
+    value === "private" ||
+    value === "all" ||
+    value === "mention" ||
+    value === "prefix" ||
+    value === "at_all" ||
+    value === "reply"
+  )
+}
+
+/** 解析存储里的在途轮次，格式不对时忽略。 */
+function parseInflight(value: unknown): InflightTurn | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined
+  const record = value as Record<string, unknown>
+  const numbers = [record.reminders, record.lastDispatchAt, record.idleAt, record.at]
+  if (typeof record.sessionID !== "string" || record.sessionID.length === 0) return undefined
+  if (typeof record.atMe !== "boolean" || typeof record.awaitingSend !== "boolean") return undefined
+  if (!numbers.every((entry) => typeof entry === "number" && Number.isFinite(entry)))
+    return undefined
+  return {
+    sessionID: record.sessionID,
+    ...(isRole(record.role) ? { role: record.role } : {}),
+    atMe: record.atMe,
+    ...(isWakeReason(record.wake) ? { wake: record.wake } : {}),
+    ...(record.suppress === true ? { suppress: true } : {}),
+    ...(record.proactive === true ? { proactive: true } : {}),
+    ...(typeof record.traceId === "string" ? { traceId: record.traceId } : {}),
+    awaitingSend: record.awaitingSend,
+    reminders: record.reminders as number,
+    lastDispatchAt: record.lastDispatchAt as number,
+    idleAt: record.idleAt as number,
+    at: record.at as number,
+  }
 }
 
 /** 解析存储里的消息位置，格式不对时忽略。 */
@@ -94,6 +138,8 @@ export interface Turn {
 
 interface ChatState {
   target: ChatTarget
+  /** 最近一轮的发送者角色；轮次结束后保留，供工具策略继续使用。 */
+  role: Role
   sessionID?: string
   /** 等上游空闲后要投递的消息。 */
   buffer: Turn[]
@@ -121,6 +167,25 @@ interface ChatState {
   lastRetireAt: number
   /** 最近一次清空当前轮次的原因与时间，仅供排查。 */
   lastClear?: { reason: string; at: number; role?: Role; traceId?: string }
+}
+
+/** 插件存储接受的值类型。 */
+type StoredJson = Parameters<Plugin.Context["storage"]["set"]>[1]
+
+/** 重启前仍在执行的轮次：只留判定工具权限需要的字段，不保存正文与附件。 */
+interface InflightTurn {
+  sessionID: string
+  role?: Role
+  atMe: boolean
+  wake?: WakeReason
+  suppress?: boolean
+  proactive?: boolean
+  traceId?: string
+  awaitingSend: boolean
+  reminders: number
+  lastDispatchAt: number
+  idleAt: number
+  at: number
 }
 
 /** 实例交接时移交的会话状态。 */
@@ -274,6 +339,70 @@ export class SessionManager {
     await this.ensureBindings()
   }
 
+  /**
+   * 恢复重启前仍在执行的轮次。
+   *
+   * 上游会把没跑完的轮次接着跑；插件这边不恢复的话，模型再调用 QQ 工具
+   * 就会被当成「没有轮次」而拒绝。只有上游确实还在执行时才恢复。
+   */
+  async restoreInflight(): Promise<number> {
+    let stored: unknown
+    try {
+      stored = await this.ctx.storage.get(INFLIGHT_KEY)
+    } catch (error) {
+      this.logger.warn("读取在途轮次失败", error)
+      return 0
+    }
+    const records =
+      stored && typeof stored === "object" && !Array.isArray(stored)
+        ? (stored as Record<string, unknown>)
+        : {}
+    let restored = 0
+    for (const [key, value] of Object.entries(records)) {
+      const target = parseTargetKey(key)
+      if (!target || !isTargetAllowed(this.config.access, target, this.config.ownerQQ)) continue
+      const record = parseInflight(value)
+      if (!record) continue
+      const state = this.states.get(targetKey(target))
+      // 已经有这一轮的状态（例如刚从上一个实例接手）就不要覆盖。
+      if (!state || state.current || state.sessionID !== record.sessionID) continue
+      if (!(await this.sessionRunning(record.sessionID))) continue
+      state.current = {
+        text: "",
+        files: [],
+        atMe: record.atMe,
+        ...(record.wake ? { wake: record.wake } : {}),
+        ...(record.role ? { role: record.role } : {}),
+        ...(record.proactive ? { proactive: true } : {}),
+        ...(record.suppress ? { suppress: true } : {}),
+        ...(record.traceId ? { traceId: record.traceId } : {}),
+      }
+      state.awaitingSend = record.awaitingSend
+      state.reminders = record.reminders
+      state.lastDispatchAt = record.lastDispatchAt
+      state.idleAt = record.idleAt
+      state.role = record.role ?? "member"
+      restored += 1
+      this.logger.warn(
+        `${targetLabel(target)} 恢复重启前仍在执行的一轮，角色 ${record.role ?? "member"}`,
+      )
+    }
+    // 老版本或落盘失败时没有记录，但上游确实还在跑：按普通成员恢复，
+    // 至少别让这一轮调用 QQ 工具时被当成「没有轮次」。
+    for (const state of this.states.values()) {
+      if (!state.sessionID || state.current) continue
+      if (records[targetKey(state.target)] !== undefined) continue
+      if (!(await this.sessionRunning(state.sessionID))) continue
+      state.current = { text: "", files: [], atMe: false, role: "member" }
+      state.role = "member"
+      // 不知道模型是否已经发过，按还没发送处理：否则发送守卫会把第一次发送也拒掉。
+      state.awaitingSend = true
+      restored += 1
+      this.logger.warn(`${targetLabel(state.target)} 上游仍在执行，按普通成员恢复这一轮的工具权限`)
+    }
+    return restored
+  }
+
   private ensureBindings(): Promise<void> {
     this.bindingsLoaded ??= this.readBindings()
     return this.bindingsLoaded
@@ -350,6 +479,7 @@ export class SessionManager {
     await this.writeBindings()
     await this.writeActivity()
     await this.writePositions()
+    await this.writeInflight()
   }
 
   private async writeBindings(): Promise<void> {
@@ -378,6 +508,35 @@ export class SessionManager {
       await this.ctx.storage.set(POSITIONS_KEY, data)
     } catch (error) {
       this.logger.error("保存消息位置失败", error)
+    }
+  }
+
+  /** 把正在执行的轮次写回存储，重启后据此恢复工具权限。 */
+  private async writeInflight(): Promise<void> {
+    const inflight: Record<string, InflightTurn> = {}
+    const now = Date.now()
+    for (const state of this.states.values()) {
+      const turn = state.current
+      if (!turn || !state.sessionID) continue
+      inflight[targetKey(state.target)] = {
+        sessionID: state.sessionID,
+        ...(turn.role ? { role: turn.role } : {}),
+        atMe: turn.atMe,
+        ...(turn.wake ? { wake: turn.wake } : {}),
+        ...(turn.suppress ? { suppress: true } : {}),
+        ...(turn.proactive ? { proactive: true } : {}),
+        ...(turn.traceId ? { traceId: turn.traceId } : {}),
+        awaitingSend: state.awaitingSend,
+        reminders: state.reminders,
+        lastDispatchAt: state.lastDispatchAt,
+        idleAt: state.idleAt,
+        at: now,
+      }
+    }
+    try {
+      await this.ctx.storage.set(INFLIGHT_KEY, inflight as unknown as StoredJson)
+    } catch (error) {
+      this.logger.error("保存在途轮次失败", error)
     }
   }
 
@@ -413,6 +572,7 @@ export class SessionManager {
     if (!state) {
       state = {
         target,
+        role: "member",
         buffer: [],
         pendingAttempts: 0,
         lastDispatchAt: 0,
@@ -437,9 +597,9 @@ export class SessionManager {
     return this.sessions.get(sessionID)?.current
   }
 
-  /** 当前轮次发送者的角色；没有轮次时按普通成员处理。 */
+  /** 该会话最近一轮发送者的角色；没有记录时按普通成员处理。 */
   currentRole(sessionID: string): Role {
-    return this.sessions.get(sessionID)?.current?.role ?? "member"
+    return this.sessions.get(sessionID)?.role ?? "member"
   }
 
   /**
@@ -455,7 +615,7 @@ export class SessionManager {
     return {
       target: state.target,
       turn: state.current,
-      role: state.current.role ?? "member",
+      role: state.current.role ?? state.role,
       // 这一轮已经调用过发送工具（含被限流拒绝），别再发一遍。
       replied: !state.awaitingSend,
     }
@@ -542,6 +702,7 @@ export class SessionManager {
         this.logger.warn(`${targetLabel(item.target)} 交接的轮次没有绑定会话，丢弃这一轮`)
       }
       state.current = current
+      state.role = current?.role ?? "member"
       state.awaitingSend = current ? item.awaitingSend : false
       state.reminders = current ? item.reminders : 0
       state.lastDispatchAt = item.lastDispatchAt
@@ -684,9 +845,11 @@ export class SessionManager {
       ...(state.lastClear.traceId ? { trace_id: state.lastClear.traceId } : {}),
     })
     state.current = undefined
+    // 在途轮次落盘，重启后不会把已经结束的一轮又恢复出来。
+    this.scheduleSave()
   }
 
-  /** 当前是否有 QQ 消息轮次正在执行，用于阻止手动 prompt 调用 QQ 工具。 */
+  /** 当前是否有 QQ 消息轮次正在执行；仅用于查询与诊断，不再作为工具门禁。 */
   hasActiveTurn(sessionID: string): boolean {
     const active = this.sessions.get(sessionID)?.current !== undefined
     if (!active) {
@@ -726,6 +889,7 @@ export class SessionManager {
     if (!state) return
     state.awaitingSend = false
     state.reminders = 0
+    this.scheduleSave()
   }
 
   /** 记录一条机器人发出的消息，撤回工具只能操作这些消息。 */
@@ -953,6 +1117,7 @@ export class SessionManager {
   /** 把一轮消息投进 OpenCode 会话；失败时由调用方放回队列。 */
   private async dispatch(state: ChatState, turn: Turn): Promise<boolean> {
     state.current = turn
+    state.role = turn.role ?? "member"
     state.awaitingSend = true
     // 新的用户轮次重新给一份提醒预算，否则连续几轮不调工具就再也提醒不了。
     state.reminders = 0
@@ -972,6 +1137,8 @@ export class SessionManager {
         state.awaitingSend = false
         return false
       }
+      // 先把在途状态落盘：进程在模型执行期间重启时，下一实例据此恢复工具权限。
+      this.scheduleSave()
       // 模型起跑：从这里开始计时，看这一轮花了多久。
       if (turn.traceId) {
         await this.tracer?.record(
@@ -1406,6 +1573,7 @@ export class SessionManager {
         role: "proactive",
         ...(traceId ? { traceId } : {}),
       }
+      state.role = "proactive"
       state.awaitingSend = true
       state.reminders = 0
       try {
@@ -1420,6 +1588,7 @@ export class SessionManager {
           state.awaitingSend = false
           return
         }
+        this.scheduleSave()
         state.lastUserMessageAt = Date.now()
         this.activity[targetKey(target)] = state.lastUserMessageAt
         this.scheduleSave()

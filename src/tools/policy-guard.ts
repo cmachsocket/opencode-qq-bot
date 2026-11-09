@@ -19,30 +19,32 @@ export interface ToolPolicyGuardDeps {
  *
  * 上下文钩子会把不允许的工具从列表里删掉，这里是第二道闸：
  * Code Mode、并发调用或子代理绕过列表时仍然执行不了。
- * 只对正在执行 QQ 轮次的会话生效，人工在 TUI 里驱动的会话不受影响。
+ * 只看会话绑定的聊天，不看进程内是否还有轮次状态：插件重启后
+ * 上游可能还在跑，此时 `current` 为空但权限仍要按最近一轮的角色收窄。
  */
 export async function registerToolPolicy(
   deps: ToolPolicyGuardDeps,
 ): Promise<{ dispose(): Promise<void> }> {
   const { ctx, logger, manager, policy } = deps
   return await ctx.tool.hook("execute.before", async (event) => {
-    const active = manager.activeTurn(event.sessionID)
-    if (!active) return
+    const target = manager.targetForSession(event.sessionID)
+    if (!target) return
+    const role = manager.currentRole(event.sessionID)
     // 子代理会开一个不受 QQ 聊天约束的新会话，哪怕配置档放行也一律拒绝。
     if (SUBAGENT_TOOLS.has(event.tool)) {
-      logger.warn(`${targetLabel(active.target)} 会话里拒绝创建子代理 ${event.tool}`)
+      logger.warn(`${targetLabel(target)} 会话里拒绝创建子代理 ${event.tool}`)
       throw new Error("QQ 聊天会话里不能创建子代理：子会话不会继承按聊天的工具限制。")
     }
-    const allowed = await policy.allow(active.role, targetKey(active.target), [event.tool])
-    logger.debug(`${targetLabel(active.target)} 工具策略检查`, {
-      role: active.role,
-      profile: await policy.profileOf(active.role, targetKey(active.target)),
+    const allowed = await policy.allow(role, targetKey(target), [event.tool])
+    logger.debug(`${targetLabel(target)} 工具策略检查`, {
+      role,
+      profile: await policy.profileOf(role, targetKey(target)),
       tool: event.tool,
       allowed: allowed.size > 0,
     })
     if (allowed.size > 0) return
     logger.warn(
-      `${targetLabel(active.target)} 会话里 ${active.role} 尝试调用工具 ${event.tool}，已被工具配置拒绝`,
+      `${targetLabel(target)} 会话里 ${role} 尝试调用工具 ${event.tool}，已被工具配置拒绝`,
     )
     throw new Error(
       `当前用户不能使用工具 ${event.tool}：工具权限由 tool-profiles.json 按聊天分配。`,

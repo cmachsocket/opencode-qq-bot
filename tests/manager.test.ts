@@ -687,6 +687,100 @@ describe("SessionManager", () => {
     )
   })
 
+  it("restores a turn that was still running when the process restarted", async () => {
+    const { manager, storage, sessionGet } = createHarness()
+    storage.get.mockImplementation(async (key: string) => {
+      if (key === "bindings") return { "group:100": "session-1" }
+      if (key === "inflight") {
+        return {
+          "group:100": {
+            sessionID: "session-1",
+            role: "owner",
+            atMe: true,
+            awaitingSend: true,
+            reminders: 1,
+            lastDispatchAt: 1000,
+            idleAt: 0,
+            at: 1500,
+          },
+        }
+      }
+      return undefined
+    })
+    sessionGet.mockResolvedValue({ id: "session-1", time: { busy: 2000, idle: 1000 } })
+
+    await manager.load()
+    expect(await manager.restoreInflight()).toBe(1)
+    expect(manager.hasActiveTurn("session-1")).toBe(true)
+    expect(manager.activeTurn("session-1")).toMatchObject({
+      role: "owner",
+      replied: false,
+    })
+    expect(manager.describeTurn("session-1")).toMatchObject({
+      lastDispatchAt: 1000,
+      reminders: 1,
+    })
+  })
+
+  it("does not restore an in-flight turn after the upstream session went idle", async () => {
+    const { manager, storage, sessionGet } = createHarness()
+    storage.get.mockImplementation(async (key: string) => {
+      if (key === "bindings") return { "group:100": "session-1" }
+      if (key === "inflight") {
+        return {
+          "group:100": {
+            sessionID: "session-1",
+            role: "owner",
+            atMe: false,
+            awaitingSend: true,
+            reminders: 0,
+            lastDispatchAt: 1000,
+            idleAt: 0,
+            at: 1500,
+          },
+        }
+      }
+      return undefined
+    })
+    sessionGet.mockResolvedValue({ id: "session-1", time: { busy: 1000, idle: 2000 } })
+
+    await manager.load()
+    expect(await manager.restoreInflight()).toBe(0)
+    expect(manager.hasActiveTurn("session-1")).toBe(false)
+  })
+
+  it("recovers a running bound session even without a saved turn", async () => {
+    const { manager, storage, sessionGet } = createHarness()
+    storage.get.mockImplementation(async (key: string) => {
+      if (key === "bindings") return { "group:100": "session-1" }
+      return undefined
+    })
+    sessionGet.mockResolvedValue({ id: "session-1", time: { busy: 2000, idle: 1000 } })
+
+    await manager.load()
+    expect(await manager.restoreInflight()).toBe(1)
+    expect(manager.hasActiveTurn("session-1")).toBe(true)
+    // 没有记录时不知道原来的角色，按普通成员恢复。
+    expect(manager.activeTurn("session-1")?.role).toBe("member")
+  })
+
+  it("persists the in-flight turn until the turn ends", async () => {
+    const { manager, storage } = createHarness()
+    const lastInflight = (): unknown =>
+      storage.set.mock.calls.filter((call) => call[0] === "inflight").at(-1)?.[1]
+
+    await manager.enqueue(group(100), { text: "你好", files: [], atMe: false })
+    await manager.flush()
+    expect(lastInflight()).toMatchObject({
+      "group:100": { sessionID: "session-1", awaitingSend: true },
+    })
+
+    manager.markMessageSent("session-1")
+    await manager.handleIdle("session-1")
+    await manager.flush()
+    expect(lastInflight()).toEqual({})
+  })
+
   it("stops reminding once the send tool was called", async () => {
     const { manager, synthetics } = createHarness()
     await manager.enqueue(group(100), { text: "你好", files: [], atMe: false })
@@ -1305,6 +1399,23 @@ describe("B1 冷启动补历史", () => {
     expect(active?.turn.text).toBe("你好")
     expect(active?.role).toBe("admin")
     expect(harness.manager.activeTurn("session-x")).toBeUndefined()
+  })
+
+  it("keeps the last sender role after the turn ends", async () => {
+    const harness = createHarness()
+    await harness.manager.enqueue(group(100), {
+      text: "你好",
+      files: [],
+      atMe: false,
+      role: "admin",
+    })
+    expect(harness.manager.currentRole("session-1")).toBe("admin")
+
+    harness.manager.markMessageSent("session-1")
+    await harness.manager.handleIdle("session-1")
+
+    expect(harness.manager.hasActiveTurn("session-1")).toBe(false)
+    expect(harness.manager.currentRole("session-1")).toBe("admin")
   })
 
   it("重置聊天时打断执行中的回合并解绑会话", async () => {
