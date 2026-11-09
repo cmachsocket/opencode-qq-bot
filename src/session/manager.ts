@@ -12,7 +12,7 @@ import type { ChatOverrides } from "../overrides"
 import type { Tracer } from "../trace"
 import { limitFiles, type PromptFile } from "../naplink/render"
 import type { WakeReason } from "../overrides"
-import type { Role } from "../tools/policy"
+import { roleOf, type Role } from "../tools/policy"
 
 /** 插件存储里保存会话与目标绑定的键。 */
 const BINDINGS_KEY = "bindings"
@@ -82,6 +82,7 @@ function parseInflight(value: unknown): InflightTurn | undefined {
   return {
     sessionID: record.sessionID,
     ...(isRole(record.role) ? { role: record.role } : {}),
+    ...(typeof record.senderId === "string" ? { senderId: record.senderId } : {}),
     atMe: record.atMe,
     ...(isWakeReason(record.wake) ? { wake: record.wake } : {}),
     ...(record.suppress === true ? { suppress: true } : {}),
@@ -130,6 +131,8 @@ export interface Turn {
   source?: HistoryPosition
   /** 发送者角色；决定这一轮能用哪些工具，缺省按普通成员处理。 */
   role?: Role
+  /** 发送者 QQ 号；角色缺失时据此还原，群聊也能确定是谁在说话。 */
+  senderId?: string
   /** 调用链追踪 id，用来把这一轮的各个节点串起来。 */
   traceId?: string
   /** 这条消息明确不是在跟机器人说话，不要插话。 */
@@ -176,6 +179,8 @@ type StoredJson = Parameters<Plugin.Context["storage"]["set"]>[1]
 interface InflightTurn {
   sessionID: string
   role?: Role
+  /** 发送者 QQ 号；角色丢失时据此还原。 */
+  senderId?: string
   atMe: boolean
   wake?: WakeReason
   suppress?: boolean
@@ -245,11 +250,18 @@ export function mergeTurns(turns: readonly Turn[]): Turn {
   )
   // 一批消息可能来自不同的人：按最低权限执行，避免普通成员的话借到管理员的工具。
   // 主动说话没有人参与，它带进来的上下文同样不可信，权限比普通成员还低。
-  const roles = unique.map((turn) => turn.role ?? "member")
-  const role = roles.reduce<Role>(
-    (lowest, current) => (ROLE_RANK[current] < ROLE_RANK[lowest] ? current : lowest),
-    "owner",
-  )
+  // 没有携带角色的轮次不参与比较：调用方会按绑定的聊天补角色，不能在这里直接降成普通成员。
+  const known = unique.flatMap((turn) => (turn.role ? [turn.role] : []))
+  const role =
+    known.length > 0
+      ? known.reduce<Role>(
+          (lowest, current) => (ROLE_RANK[current] < ROLE_RANK[lowest] ? current : lowest),
+          "owner",
+        )
+      : undefined
+  // 整批只有一个发送者时把 QQ 号带上，角色缺失时还能精确还原。
+  const senders = new Set(unique.flatMap((turn) => (turn.senderId ? [turn.senderId] : [])))
+  const senderId = senders.size === 1 ? senders.values().next().value : undefined
   return {
     // 合并后的批次沿用第一条消息的幂等键，重试时保持一致。
     ...(unique[0]?.id ? { id: unique[0].id } : {}),
@@ -260,7 +272,8 @@ export function mergeTurns(turns: readonly Turn[]): Turn {
     files: limitFiles(unique.flatMap((turn) => turn.files)),
     atMe,
     ...(wake ? { wake } : {}),
-    role,
+    ...(role ? { role } : {}),
+    ...(senderId ? { senderId } : {}),
     ...(unique.some((turn) => turn.proactive) ? { proactive: true } : {}),
     ...(traceId ? { traceId } : {}),
     ...(suppress ? { suppress: true } : {}),
@@ -367,12 +380,14 @@ export class SessionManager {
       // 已经有这一轮的状态（例如刚从上一个实例接手）就不要覆盖。
       if (!state || state.current || state.sessionID !== record.sessionID) continue
       if (!(await this.sessionRunning(record.sessionID))) continue
+      const role = record.role ?? this.roleFor(target, record.senderId)
       state.current = {
         text: "",
         files: [],
         atMe: record.atMe,
+        role,
+        ...(record.senderId ? { senderId: record.senderId } : {}),
         ...(record.wake ? { wake: record.wake } : {}),
-        ...(record.role ? { role: record.role } : {}),
         ...(record.proactive ? { proactive: true } : {}),
         ...(record.suppress ? { suppress: true } : {}),
         ...(record.traceId ? { traceId: record.traceId } : {}),
@@ -381,24 +396,23 @@ export class SessionManager {
       state.reminders = record.reminders
       state.lastDispatchAt = record.lastDispatchAt
       state.idleAt = record.idleAt
-      state.role = record.role ?? "member"
+      state.role = role
       restored += 1
-      this.logger.warn(
-        `${targetLabel(target)} 恢复重启前仍在执行的一轮，角色 ${record.role ?? "member"}`,
-      )
+      this.logger.warn(`${targetLabel(target)} 恢复重启前仍在执行的一轮，角色 ${role}`)
     }
-    // 老版本或落盘失败时没有记录，但上游确实还在跑：按普通成员恢复，
+    // 老版本或落盘失败时没有记录，但上游确实还在跑：按聊天恢复角色，
     // 至少别让这一轮调用 QQ 工具时被当成「没有轮次」。
     for (const state of this.states.values()) {
       if (!state.sessionID || state.current) continue
       if (records[targetKey(state.target)] !== undefined) continue
       if (!(await this.sessionRunning(state.sessionID))) continue
-      state.current = { text: "", files: [], atMe: false, role: "member" }
-      state.role = "member"
+      const role = this.defaultRole(state.target)
+      state.current = { text: "", files: [], atMe: false, role }
+      state.role = role
       // 不知道模型是否已经发过，按还没发送处理：否则发送守卫会把第一次发送也拒掉。
       state.awaitingSend = true
       restored += 1
-      this.logger.warn(`${targetLabel(state.target)} 上游仍在执行，按普通成员恢复这一轮的工具权限`)
+      this.logger.warn(`${targetLabel(state.target)} 上游仍在执行，按 ${role} 恢复这一轮的工具权限`)
     }
     return restored
   }
@@ -520,7 +534,9 @@ export class SessionManager {
       if (!turn || !state.sessionID) continue
       inflight[targetKey(state.target)] = {
         sessionID: state.sessionID,
-        ...(turn.role ? { role: turn.role } : {}),
+        // 轮次没带角色时用会话角色，重启后不要丢掉 owner / 管理员。
+        role: turn.role ?? state.role,
+        ...(turn.senderId ? { senderId: turn.senderId } : {}),
         atMe: turn.atMe,
         ...(turn.wake ? { wake: turn.wake } : {}),
         ...(turn.suppress ? { suppress: true } : {}),
@@ -566,13 +582,32 @@ export class SessionManager {
     return mutex
   }
 
+  /**
+   * 没有任何发送者信息时的角色：私聊按对方的 QQ 号判断，群聊只能按普通成员。
+   *
+   * 群聊消息入队时都带发送者 QQ 号，只有历史遗留或合成轮次才会走到这里；
+   * 能拿到发送者时用 `roleFor` 精确判定。
+   */
+  private defaultRole(target: ChatTarget): Role {
+    if (target.kind !== "private") return "member"
+    if (target.id === this.config.ownerQQ) return "owner"
+    if (this.config.admins.includes(target.id)) return "admin"
+    return "member"
+  }
+
+  /** 按发送者 QQ 号还原角色；没有发送者时回退到聊天本身。 */
+  private roleFor(target: ChatTarget, senderId?: string): Role {
+    if (senderId) return roleOf(this.config, senderId)
+    return this.defaultRole(target)
+  }
+
   private state(target: ChatTarget): ChatState {
     const key = targetKey(target)
     let state = this.states.get(key)
     if (!state) {
       state = {
         target,
-        role: "member",
+        role: this.defaultRole(target),
         buffer: [],
         pendingAttempts: 0,
         lastDispatchAt: 0,
@@ -597,9 +632,11 @@ export class SessionManager {
     return this.sessions.get(sessionID)?.current
   }
 
-  /** 该会话最近一轮发送者的角色；没有记录时按普通成员处理。 */
+  /** 该会话当前生效的发送者角色；有在途轮次时以轮次为准。 */
   currentRole(sessionID: string): Role {
-    return this.sessions.get(sessionID)?.role ?? "member"
+    const state = this.sessions.get(sessionID)
+    if (!state) return "member"
+    return state.current?.role ?? state.role
   }
 
   /**
@@ -702,7 +739,7 @@ export class SessionManager {
         this.logger.warn(`${targetLabel(item.target)} 交接的轮次没有绑定会话，丢弃这一轮`)
       }
       state.current = current
-      state.role = current?.role ?? "member"
+      state.role = current?.role ?? this.defaultRole(item.target)
       state.awaitingSend = current ? item.awaitingSend : false
       state.reminders = current ? item.reminders : 0
       state.lastDispatchAt = item.lastDispatchAt
@@ -1116,14 +1153,16 @@ export class SessionManager {
 
   /** 把一轮消息投进 OpenCode 会话；失败时由调用方放回队列。 */
   private async dispatch(state: ChatState, turn: Turn): Promise<boolean> {
+    // 轮次没带角色时按发送者 QQ 号补；没有发送者时再按聊天本身补。
+    const role = turn.role ?? this.roleFor(state.target, turn.senderId)
     state.current = turn
-    state.role = turn.role ?? "member"
+    state.role = role
     state.awaitingSend = true
     // 新的用户轮次重新给一份提醒预算，否则连续几轮不调工具就再也提醒不了。
     state.reminders = 0
     const label = targetLabel(state.target)
     this.logger.debug(`${label} 开始投递一轮`, {
-      role: turn.role ?? "member",
+      role,
       proactive: turn.proactive === true,
       atMe: turn.atMe,
       ...(turn.traceId ? { trace_id: turn.traceId } : {}),
@@ -1206,7 +1245,7 @@ export class SessionManager {
       }
 
       // 提醒沿用它正在提醒的那一轮的角色，别把 owner / 管理员降成普通成员。
-      const reminderRole = state.current?.role
+      const reminderRole = state.current?.role ?? this.defaultRole(state.target)
       this.endTurn(state, "handleIdle")
 
       if (

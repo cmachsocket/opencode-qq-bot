@@ -20,6 +20,7 @@ import { accessConfig } from "./fixtures"
 interface ToolDefinition {
   name: string
   execute: (raw: unknown, context: { sessionID: string }) => Promise<{ content: string }>
+  options?: { namespace?: string; codemode?: boolean }
 }
 
 interface Harness {
@@ -91,7 +92,7 @@ async function createHarness(
       transform: vi.fn(async (callback: (editor: unknown) => void) => {
         callback({
           namespace: vi.fn(),
-          add: (tool: ToolDefinition & { options?: { namespace?: string } }) => {
+          add: (tool: ToolDefinition) => {
             tools.set(`${tool.options?.namespace ?? ""}_${tool.name}`, tool)
           },
         })
@@ -171,6 +172,11 @@ describe("registerTools", () => {
       "qq_send_record",
       "qq_send_sticker",
     ])
+  })
+
+  it("exposes every tool directly instead of through Code Mode", async () => {
+    const { tools } = await createHarness()
+    expect([...tools.values()].every((tool) => tool.options?.codemode === false)).toBe(true)
   })
 
   it("keeps the message formatting in one send", async () => {

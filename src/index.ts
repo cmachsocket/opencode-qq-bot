@@ -525,6 +525,7 @@ export default Plugin.define({
           ...(decision.suppress ? { suppress: true } : {}),
           ...(traceId ? { traceId } : {}),
           role: senderRole,
+          senderId: String(event.user_id),
           source: { id: String(event.message_id), time: event.time },
         })
       } catch (error) {

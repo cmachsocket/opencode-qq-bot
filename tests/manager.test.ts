@@ -764,6 +764,80 @@ describe("SessionManager", () => {
     expect(manager.activeTurn("session-1")?.role).toBe("member")
   })
 
+  it("gives a private owner chat the owner role from the bound target", async () => {
+    const { manager } = createHarness({
+      ownerQQ: 700,
+      access: accessConfig({ users: [700] }),
+    })
+    await manager.enqueue(privateChat(700), { text: "你好", files: [], atMe: true })
+    expect(manager.currentRole("session-1")).toBe("owner")
+  })
+
+  it("keeps the owner role for a private chat without a saved turn", async () => {
+    const { manager, storage, sessionGet } = createHarness({
+      ownerQQ: 700,
+      access: accessConfig({ users: [700] }),
+    })
+    storage.get.mockImplementation(async (key: string) => {
+      if (key === "bindings") return { "private:700": "session-1" }
+      return undefined
+    })
+    sessionGet.mockResolvedValue({ id: "session-1", time: { busy: 2000, idle: 1000 } })
+
+    await manager.load()
+    expect(await manager.restoreInflight()).toBe(1)
+    expect(manager.currentRole("session-1")).toBe("owner")
+    expect(manager.activeTurn("session-1")?.role).toBe("owner")
+  })
+
+  it("uses the sender id when a turn carries no role", async () => {
+    const { manager } = createHarness({ ownerQQ: 700 })
+    await manager.enqueue(group(100), {
+      text: "你好",
+      files: [],
+      atMe: true,
+      senderId: "700",
+    })
+    expect(manager.currentRole("session-1")).toBe("owner")
+  })
+
+  it("recovers a group owner role from the sender id", async () => {
+    const { manager, storage, sessionGet } = createHarness({ ownerQQ: 700 })
+    storage.get.mockImplementation(async (key: string) => {
+      if (key === "bindings") return { "group:100": "session-1" }
+      if (key === "inflight") {
+        return {
+          "group:100": {
+            sessionID: "session-1",
+            senderId: "700",
+            atMe: true,
+            awaitingSend: true,
+            reminders: 0,
+            lastDispatchAt: 1000,
+            idleAt: 0,
+            at: 1500,
+          },
+        }
+      }
+      return undefined
+    })
+    sessionGet.mockResolvedValue({ id: "session-1", time: { busy: 2000, idle: 1000 } })
+
+    await manager.load()
+    expect(await manager.restoreInflight()).toBe(1)
+    expect(manager.currentRole("session-1")).toBe("owner")
+  })
+
+  it("keeps the owner role when reminding the model", async () => {
+    const { manager } = createHarness({
+      ownerQQ: 700,
+      access: accessConfig({ users: [700] }),
+    })
+    await manager.enqueue(privateChat(700), { text: "你好", files: [], atMe: true })
+    await manager.handleIdle("session-1")
+    expect(manager.currentRole("session-1")).toBe("owner")
+  })
+
   it("persists the in-flight turn until the turn ends", async () => {
     const { manager, storage } = createHarness()
     const lastInflight = (): unknown =>

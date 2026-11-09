@@ -353,6 +353,9 @@ export async function registerTools(deps: ToolDeps): Promise<{ dispose(): Promis
         "QQ 聊天工具：发送消息、图片、语音、合并转发，以及查询用户信息。仅在 QQ 群聊或私聊会话里可用，其他会话调用会返回错误。",
     })
 
+    // QQ 工具必须作为独立工具暴露。Code Mode 只给模型一个 execute，
+    // 按聊天配置的 qq_* 规则永远命不中，普通成员会连发消息的能力都没有。
+
     editor.add({
       name: "send_message",
       description:
@@ -366,7 +369,7 @@ export async function registerTools(deps: ToolDeps): Promise<{ dispose(): Promis
         },
         additionalProperties: false,
       },
-      options: { namespace: TOOL_NAMESPACE },
+      options: { namespace: TOOL_NAMESPACE, codemode: false },
       execute: async (raw, context) => {
         const input = (raw ?? {}) as SendMessageInput
         const target = requireTarget(context.sessionID)
@@ -457,7 +460,7 @@ export async function registerTools(deps: ToolDeps): Promise<{ dispose(): Promis
         },
         additionalProperties: false,
       },
-      options: { namespace: TOOL_NAMESPACE },
+      options: { namespace: TOOL_NAMESPACE, codemode: false },
       execute: async (raw, context) => {
         const input = (raw ?? {}) as MediaInput
         const target = requireTarget(context.sessionID)
@@ -488,7 +491,7 @@ export async function registerTools(deps: ToolDeps): Promise<{ dispose(): Promis
         properties: {},
         additionalProperties: false,
       },
-      options: { namespace: TOOL_NAMESPACE },
+      options: { namespace: TOOL_NAMESPACE, codemode: false },
       execute: async () => {
         const faces = await favorites.list()
         const rows = await favoriteIndex.sync(faces)
@@ -508,7 +511,7 @@ export async function registerTools(deps: ToolDeps): Promise<{ dispose(): Promis
         required: ["id"],
         additionalProperties: false,
       },
-      options: { namespace: TOOL_NAMESPACE },
+      options: { namespace: TOOL_NAMESPACE, codemode: false },
       execute: async (raw, context) => {
         const input = (raw ?? {}) as StickerInput
         const target = requireTarget(context.sessionID)
@@ -554,7 +557,7 @@ export async function registerTools(deps: ToolDeps): Promise<{ dispose(): Promis
         },
         additionalProperties: false,
       },
-      options: { namespace: TOOL_NAMESPACE },
+      options: { namespace: TOOL_NAMESPACE, codemode: false },
       execute: async (raw, context) => {
         const input = (raw ?? {}) as MediaInput
         const target = requireTarget(context.sessionID)
@@ -600,7 +603,7 @@ export async function registerTools(deps: ToolDeps): Promise<{ dispose(): Promis
         required: ["nodes"],
         additionalProperties: false,
       },
-      options: { namespace: TOOL_NAMESPACE },
+      options: { namespace: TOOL_NAMESPACE, codemode: false },
       execute: async (raw, context) => {
         const input = (raw ?? {}) as ForwardInput
         const target = requireTarget(context.sessionID)
@@ -648,7 +651,7 @@ export async function registerTools(deps: ToolDeps): Promise<{ dispose(): Promis
         required: ["user_id"],
         additionalProperties: false,
       },
-      options: { namespace: TOOL_NAMESPACE },
+      options: { namespace: TOOL_NAMESPACE, codemode: false },
       execute: async (raw, context) => {
         const input = (raw ?? {}) as UserInput
         const target = requireTarget(context.sessionID)
@@ -673,7 +676,7 @@ export async function registerTools(deps: ToolDeps): Promise<{ dispose(): Promis
         required: ["message_id"],
         additionalProperties: false,
       },
-      options: { namespace: TOOL_NAMESPACE },
+      options: { namespace: TOOL_NAMESPACE, codemode: false },
       execute: async (raw, context) => {
         const input = (raw ?? {}) as MessageIdInput
         const target = requireTarget(context.sessionID)
@@ -698,7 +701,7 @@ export async function registerTools(deps: ToolDeps): Promise<{ dispose(): Promis
         required: ["user_id"],
         additionalProperties: false,
       },
-      options: { namespace: TOOL_NAMESPACE },
+      options: { namespace: TOOL_NAMESPACE, codemode: false },
       execute: async (raw, context) => {
         const input = (raw ?? {}) as UserInput
         const target = requireTarget(context.sessionID)
@@ -723,7 +726,7 @@ export async function registerTools(deps: ToolDeps): Promise<{ dispose(): Promis
         required: ["message_id"],
         additionalProperties: false,
       },
-      options: { namespace: TOOL_NAMESPACE },
+      options: { namespace: TOOL_NAMESPACE, codemode: false },
       execute: async (raw, context) => {
         const input = (raw ?? {}) as MessageIdInput
         const target = requireTarget(context.sessionID)
@@ -745,7 +748,7 @@ export async function registerTools(deps: ToolDeps): Promise<{ dispose(): Promis
         properties: {},
         additionalProperties: false,
       },
-      options: { namespace: TOOL_NAMESPACE },
+      options: { namespace: TOOL_NAMESPACE, codemode: false },
       execute: async () => {
         const info = await client.api.getLoginInfo()
         return text(JSON.stringify(info))
