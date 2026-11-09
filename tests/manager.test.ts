@@ -10,6 +10,7 @@ import {
   MAX_BUFFER_TURNS,
   PENDING_MAX_ATTEMPTS,
   RESUME_INTERVAL_MS,
+  SESSION_RETIRE_COOLDOWN_MS,
   SUBMIT_GRACE_MS,
   SessionManager,
   mergeTurns,
@@ -1024,6 +1025,98 @@ describe("SessionManager", () => {
       expect(notices).toEqual([{ target: group(100), text: FAILURE_NOTICE }])
     } finally {
       vi.useRealTimers()
+    }
+  })
+
+  it("retires the session that stopped accepting messages", async () => {
+    vi.useFakeTimers()
+    try {
+      const { manager, prompt, sessionRemove } = createHarness()
+      prompt.mockRejectedValue(new Error("upstream refused"))
+
+      await manager.enqueue(group(100), { text: "第一条", files: [], atMe: false })
+      await manager.resumeBuffered()
+      await manager.resumeBuffered()
+      expect(prompt).toHaveBeenCalledTimes(PENDING_MAX_ATTEMPTS)
+
+      // 收不下消息的会话被退役：删掉上游会话并解绑。
+      expect(sessionRemove).toHaveBeenCalledTimes(1)
+      expect(sessionRemove).toHaveBeenCalledWith({ sessionID: "session-1" })
+
+      // 下一条消息走新会话，不会再撞上那个坏掉的会话。
+      prompt.mockResolvedValue(undefined)
+      await manager.enqueue(group(100), { text: "第二条", files: [], atMe: false })
+      const last = prompt.mock.calls.at(-1)?.[0] as { sessionID?: string } | undefined
+      expect(last?.sessionID).toBe("session-2")
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it("keeps the messages buffered during the failure and hands them to the new session", async () => {
+    vi.useFakeTimers()
+    try {
+      const { manager, prompt, sessionRemove } = createHarness()
+      prompt.mockRejectedValue(new Error("upstream refused"))
+
+      await manager.enqueue(group(100), { text: "第一条", files: [], atMe: false })
+      // 失败期间又来一条，缓存里等着。
+      await manager.enqueue(group(100), { text: "第二条", files: [], atMe: false })
+
+      await manager.resumeBuffered()
+      expect(sessionRemove).toHaveBeenCalledTimes(1)
+
+      // 缓存里的消息交给新会话，不会跟着坏会话一起丢掉。
+      const last = prompt.mock.calls.at(-1)?.[0] as
+        { sessionID?: string; text?: string } | undefined
+      expect(last?.sessionID).toBe("session-2")
+      expect(last?.text).toBe("第二条")
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it("does not rebuild the session again during the cooldown", async () => {
+    vi.useFakeTimers()
+    try {
+      const { manager, prompt, sessionRemove } = createHarness()
+      prompt.mockRejectedValue(new Error("upstream refused"))
+
+      await manager.enqueue(group(100), { text: "第一条", files: [], atMe: false })
+      await manager.resumeBuffered()
+      await manager.resumeBuffered()
+      expect(sessionRemove).toHaveBeenCalledTimes(1)
+
+      // 新会话同样收不下消息，冷却期内不再重建。
+      await manager.enqueue(group(100), { text: "第二条", files: [], atMe: false })
+      await manager.resumeBuffered()
+      await manager.resumeBuffered()
+      expect(sessionRemove).toHaveBeenCalledTimes(1)
+
+      // 冷却过去之后才允许再重建。
+      vi.setSystemTime(new Date(Date.now() + SESSION_RETIRE_COOLDOWN_MS + 1000))
+      await manager.enqueue(group(100), { text: "第三条", files: [], atMe: false })
+      await manager.resumeBuffered()
+      await manager.resumeBuffered()
+      expect(sessionRemove).toHaveBeenCalledTimes(2)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it("logs the session id when a delivery fails", async () => {
+    const spy = vi.spyOn(logger, "error").mockImplementation(() => {})
+    try {
+      const { manager, prompt } = createHarness()
+      prompt.mockRejectedValue(new Error("upstream refused"))
+
+      await manager.enqueue(group(100), { text: "第一条", files: [], atMe: false })
+      const line = spy.mock.calls
+        .map((call) => String(call[0]))
+        .find((text) => text.includes("投递消息失败"))
+      expect(line).toContain("session-1")
+    } finally {
+      spy.mockRestore()
     }
   })
 

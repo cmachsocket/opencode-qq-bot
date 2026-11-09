@@ -38,6 +38,8 @@ export const FAILURE_NOTICE = "⚠️ 暂时无法处理这条消息，请稍后
 export const INTERRUPTED_NOTICE = "⏹️ 已停止"
 /** 同一目标两次失败提示的最小间隔，连续失败不会刷屏。 */
 export const FAILURE_NOTICE_INTERVAL_MS = 5 * 60 * 1000
+/** 退役会话后的冷却时间：这段时间内不再重建，避免上游整体故障时反复重建会话。 */
+export const SESSION_RETIRE_COOLDOWN_MS = 10 * 60 * 1000
 
 /** 插件自己往聊天里补话的通道，失败兜底用。 */
 export type FailureNotifier = (target: ChatTarget, text: string) => Promise<void>
@@ -113,6 +115,8 @@ interface ChatState {
   historyDone?: boolean
   /** 会话是否是在本次运行中新建的。 */
   sessionCreated?: boolean
+  /** 最近一次自动退役会话的时间戳（毫秒）。 */
+  lastRetireAt: number
 }
 
 type SessionListCursor = NonNullable<Parameters<Plugin.Context["session"]["list"]>[0]>["cursor"]
@@ -388,6 +392,7 @@ export class SessionManager {
         awaitingSend: false,
         reminders: 0,
         lastUserMessageAt: this.activity[key] ?? Date.now(),
+        lastRetireAt: 0,
       }
       this.states.set(key, state)
     }
@@ -427,24 +432,7 @@ export class SessionManager {
    */
   async resetTarget(target: ChatTarget): Promise<{ sessionID?: string; interrupted: boolean }> {
     const state = this.state(target)
-    const sessionID = state.sessionID
-    let interrupted = false
-    if (sessionID && (await this.sessionRunning(sessionID))) {
-      try {
-        await this.ctx.session.interrupt({ sessionID })
-        interrupted = true
-      } catch (error) {
-        this.logger.warn(`${targetLabel(target)} 打断会话 ${sessionID} 失败`, error)
-      }
-    }
-    if (sessionID) {
-      this.sessions.delete(sessionID)
-      this.verifiedSessions.delete(sessionID)
-      await this.ctx.session.remove({ sessionID }).catch((error: unknown) => {
-        this.logger.warn(`${targetLabel(target)} 删除会话 ${sessionID} 失败`, error)
-      })
-      state.sessionID = undefined
-    }
+    const { sessionID, interrupted } = await this.detachSession(state)
     state.buffer = []
     state.pending = undefined
     state.pendingAttempts = 0
@@ -456,6 +444,59 @@ export class SessionManager {
     state.idleAt = Date.now()
     this.scheduleSave()
     return { sessionID, interrupted }
+  }
+
+  /**
+   * 退役绑定的会话：先打断，再删掉上游会话。
+   *
+   * 会话删掉后，下一条消息会新建会话并重新补历史。
+   */
+  private async detachSession(
+    state: ChatState,
+  ): Promise<{ sessionID?: string; interrupted: boolean }> {
+    const sessionID = state.sessionID
+    if (!sessionID) return { interrupted: false }
+    let interrupted = false
+    if (await this.sessionRunning(sessionID)) {
+      try {
+        await this.ctx.session.interrupt({ sessionID })
+        interrupted = true
+      } catch (error) {
+        this.logger.warn(`${targetLabel(state.target)} 打断会话 ${sessionID} 失败`, error)
+      }
+    }
+    this.clearBinding(state)
+    await this.ctx.session.remove({ sessionID }).catch((error: unknown) => {
+      this.logger.warn(`${targetLabel(state.target)} 删除会话 ${sessionID} 失败`, error)
+    })
+    return { sessionID, interrupted }
+  }
+
+  /**
+   * 连续投递失败后退役会话，让这个聊天重新能说话。
+   *
+   * 缓存里新到的消息保留：退役后由新会话接手，历史照常补齐。
+   * 冷却时间内的重复失败不再重建，避免上游整体故障时反复新建会话。
+   */
+  private async retireSession(state: ChatState): Promise<void> {
+    const sessionID = state.sessionID
+    if (!sessionID) return
+    const label = targetLabel(state.target)
+    const now = Date.now()
+    if (now - state.lastRetireAt < SESSION_RETIRE_COOLDOWN_MS) {
+      this.logger.warn(`${label} 会话 ${sessionID} 刚退役过，暂时不再重建`)
+      return
+    }
+    state.lastRetireAt = now
+    await this.detachSession(state)
+    state.current = undefined
+    state.awaitingSend = false
+    state.reminders = 0
+    // 新会话是空的，历史要重新补一次。
+    state.historyDone = false
+    state.sessionCreated = false
+    this.scheduleSave()
+    this.logger.warn(`${label} 会话 ${sessionID} 连续投递失败，已退役，下一条消息会新建会话`)
   }
 
   /** 各聊天当前状态的快照，供管理命令展示。 */
@@ -640,6 +681,8 @@ export class SessionManager {
         state.pendingAttempts = 0
         // 这批消息再也进不了会话，群里得有个交代。
         await this.notifyFailure(state, FAILURE_NOTICE)
+        // 连着几轮都收不下消息的会话已经废了，继续绑着只会让这个聊天一直不回话。
+        await this.retireSession(state)
       } else {
         state.pending = undefined
         state.pendingAttempts = 0
@@ -711,8 +754,9 @@ export class SessionManager {
     // 新的用户轮次重新给一份提醒预算，否则连续几轮不调工具就再也提醒不了。
     state.reminders = 0
     const label = targetLabel(state.target)
+    let sessionID: string | undefined
     try {
-      const sessionID = await this.ensureSession(state.target)
+      sessionID = await this.ensureSession(state.target)
       if (!sessionID) {
         state.current = undefined
         state.awaitingSend = false
@@ -747,7 +791,7 @@ export class SessionManager {
     } catch (error) {
       state.current = undefined
       state.awaitingSend = false
-      this.logger.error(`${label} 投递消息失败`, error)
+      this.logger.error(`${label} 投递消息失败${sessionID ? `（会话 ${sessionID}）` : ""}`, error)
       return false
     }
   }
@@ -1057,11 +1101,17 @@ export class SessionManager {
 
   private unbind(state: ChatState): void {
     if (!state.sessionID) return
+    this.clearBinding(state)
+    this.scheduleSave()
+  }
+
+  /** 清掉会话绑定，不动上游会话。 */
+  private clearBinding(state: ChatState): void {
+    if (!state.sessionID) return
     this.sessions.delete(state.sessionID)
     this.verifiedSessions.delete(state.sessionID)
     this.appliedOverrides.delete(state.sessionID)
     state.sessionID = undefined
-    this.scheduleSave()
   }
 
   /** 绑定会话到目标；一个会话只能绑定一个目标，已有绑定不能被覆盖。 */
