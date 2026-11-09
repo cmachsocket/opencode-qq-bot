@@ -1,6 +1,6 @@
 import type { Plugin } from "@opencode/plugin"
 import { isTargetAllowed } from "../access"
-import { type ChatTarget, targetLabel } from "../chat"
+import { type ChatTarget, targetKey, targetLabel } from "../chat"
 import type { QQBotConfig } from "../config"
 import {
   CUSTOM_FACE_SUB_TYPE,
@@ -17,6 +17,7 @@ import type { RateLimitVerdict, SendRateLimiter } from "../rate-limit"
 import { modelSendScope, pluginSendScope } from "../rate-limit"
 import type { SensitiveChecker } from "../sensitive"
 import type { SessionManager } from "../session/manager"
+import type { Tracer } from "../trace"
 
 /** 工具命名空间，最终工具名为 qq_send_message 等。 */
 export const TOOL_NAMESPACE = "qq"
@@ -37,6 +38,8 @@ export interface ToolDeps {
   sensitive: SensitiveChecker
   /** 出站媒体的路径与地址把关。 */
   outbound: OutboundMedia
+  /** 调用链追踪器；不传就不记追踪。 */
+  tracer?: Tracer
 }
 
 interface SendMessageInput {
@@ -176,6 +179,7 @@ export async function registerTools(deps: ToolDeps): Promise<{ dispose(): Promis
     limiter,
     sensitive,
     outbound,
+    tracer,
   } = deps
 
   const requireTarget = (sessionID: string): ChatTarget | undefined => {
@@ -195,6 +199,27 @@ export async function registerTools(deps: ToolDeps): Promise<{ dispose(): Promis
   // 同一次工具调用拆出的多段共用一个操作 id：段与段之间不再额外等间隔。
   let operationSeq = 0
   const nextOperation = (): string => `send-${++operationSeq}`
+
+  /** 当前轮次的追踪 id，用于把这次发送记进调用链。 */
+  const traceIdOf = (sessionID: string): string | undefined =>
+    manager.activeTurn(sessionID)?.turn.traceId
+
+  /** 日志里带上追踪 id，方便按一轮排查。 */
+  const traceMeta = (sessionID: string): Record<string, unknown> => {
+    const traceId = traceIdOf(sessionID)
+    return traceId ? { trace_id: traceId } : {}
+  }
+
+  /** 记一个“回复已发出”的追踪节点。 */
+  const traceSent = async (
+    sessionID: string,
+    target: ChatTarget,
+    attributes: Record<string, unknown>,
+  ): Promise<void> => {
+    const traceId = traceIdOf(sessionID)
+    if (!traceId) return
+    await tracer?.record("response_sent", traceId, attributes, targetKey(target))
+  }
 
   /**
    * 申请一次出站发送许可。
@@ -329,7 +354,8 @@ export async function registerTools(deps: ToolDeps): Promise<{ dispose(): Promis
           return text(`error: 消息只发送了 ${sent}/${chunks.length} 段`, { retryable: sent === 0 })
         }
         manager.markMessageSent(context.sessionID)
-        logger.info(`${label} 已发送 ${length} 字`)
+        logger.info(`${label} 已发送 ${length} 字`, traceMeta(context.sessionID))
+        await traceSent(context.sessionID, target, { chars: length, mode: "plain", segments: sent })
         return text("你已成功发送消息，可以选择结束对话")
       },
     })
@@ -512,6 +538,7 @@ export async function registerTools(deps: ToolDeps): Promise<{ dispose(): Promis
         const messageId = messageIdOf(response)
         if (messageId) manager.rememberOutgoing(target, messageId)
         manager.markMessageSent(context.sessionID)
+        await traceSent(context.sessionID, target, { mode: "forward", nodes: nodes.length })
         return text("你已成功发送合并转发消息，可以选择结束对话")
       },
     })

@@ -8,7 +8,7 @@ import { resolveConfig, type QQBotConfig } from "./config"
 import { resolveHome } from "./home"
 import { claimInstance } from "./instance"
 import { KeepAlive } from "./keepalive"
-import { createLogger, closeLogger, flushLogger } from "./logger"
+import { createLogger, closeLogger, defaultLogDir, flushLogger } from "./logger"
 import { defaultMediaDir, OutboundMedia } from "./media-path"
 import { formatModelMessage } from "./model-view"
 import { QQClient } from "./naplink/client"
@@ -30,6 +30,7 @@ import {
   wakeDecision,
   type WakeReason,
 } from "./overrides"
+import { Tracer } from "./trace"
 import { registerAskGuard } from "./tools/ask-guard"
 import { defaultToolProfilesPath, roleOf, ToolPolicy } from "./tools/policy"
 import { registerToolPolicy } from "./tools/policy-guard"
@@ -167,6 +168,17 @@ export default Plugin.define({
       config.chatOverridesPath || defaultChatOverridesPath(),
       logger,
     )
+    // 调用链追踪：一条入站消息拿一个 trace_id，事后能把这轮串起来。
+    // 追踪文件与日志放在一起，容量与保留天数都有上限。
+    const tracer = config.trace.enabled
+      ? new Tracer({
+          dir: config.trace.dir.trim() || config.log.dir.trim() || defaultLogDir(),
+          maxSizeMb: config.trace.maxSizeMb,
+          retentionDays: config.trace.retentionDays,
+          logger,
+        })
+      : undefined
+    await tracer?.prune()
     const manager = new SessionManager(
       ctx,
       config,
@@ -178,6 +190,7 @@ export default Plugin.define({
         await sendPlainMessage(client, target, text, { limiter })
       },
       overrides,
+      tracer,
     )
     await manager.load()
     // 保活心跳：OpenCode 长时间没有会话活动时会卸载 location，插件随之被卸载。
@@ -206,6 +219,7 @@ export default Plugin.define({
       limiter,
       sensitive,
       outbound,
+      tracer,
     })
     // 命令表：管理命令 + 表情标注，QQ 私聊与 TUI 共用同一套实现。
     const commands = [
@@ -259,6 +273,15 @@ export default Plugin.define({
       const active = manager.activeTurn(event.sessionID)
       const turn = active?.turn
       const destination = target.kind === "group" ? "群里" : "私聊里"
+      // 模型开始处理这一轮：记一个追踪节点。
+      if (turn?.traceId) {
+        await tracer?.record(
+          "handler_start",
+          turn.traceId,
+          { session_id: event.sessionID },
+          targetKey(target),
+        )
+      }
       event.system.push({
         type: "text",
         text: turn?.proactive
@@ -362,7 +385,12 @@ export default Plugin.define({
         ? { kind: "group", id: event.group_id }
         : { kind: "private", id: event.user_id }
 
-    const handleMessage = async (event: MessageEvent, target: ChatTarget, selfId: string) => {
+    const handleMessage = async (
+      event: MessageEvent,
+      target: ChatTarget,
+      selfId: string,
+      traceId?: string,
+    ) => {
       try {
         if (!isTargetAllowed(config.access, target, config.ownerQQ)) return
         const override = await overrides.for(target)
@@ -426,6 +454,7 @@ export default Plugin.define({
           atMe: decision.required,
           ...(decision.reason ? { wake: decision.reason } : {}),
           ...(decision.suppress ? { suppress: true } : {}),
+          ...(traceId ? { traceId } : {}),
           role: senderRole,
           source: { id: String(event.message_id), time: event.time },
         })
@@ -458,8 +487,19 @@ export default Plugin.define({
       }
       manager.touch(target)
 
+      // 一条入站消息一个追踪 id，后面各个节点都挂在它下面。
+      const traceId = tracer?.startTrace()
+      if (traceId) {
+        void tracer?.record(
+          "event_received",
+          traceId,
+          { message_id: String(event.message_id), user_id: String(event.user_id) },
+          targetKey(target),
+        )
+      }
+
       void processingMutex(targetKey(target))
-        .runExclusive(() => handleMessage(event, target, selfId))
+        .runExclusive(() => handleMessage(event, target, selfId, traceId))
         .catch((error: unknown) => logger.error(`处理 ${targetLabel(target)} 消息失败`, error))
     }
 

@@ -9,6 +9,7 @@ import type { BotHome } from "../home"
 import type { Logger } from "../logger"
 import type { HistoryPosition, HistoryProvider } from "../naplink/history"
 import type { ChatOverrides } from "../overrides"
+import type { Tracer } from "../trace"
 import { limitFiles, type PromptFile } from "../naplink/render"
 import type { WakeReason } from "../overrides"
 import type { Role } from "../tools/policy"
@@ -81,6 +82,8 @@ export interface Turn {
   source?: HistoryPosition
   /** 发送者角色；决定这一轮能用哪些工具，缺省按普通成员处理。 */
   role?: Role
+  /** 调用链追踪 id，用来把这一轮的各个节点串起来。 */
+  traceId?: string
   /** 这条消息明确不是在跟机器人说话，不要插话。 */
   suppress?: boolean
 }
@@ -125,6 +128,8 @@ export function mergeTurns(turns: readonly Turn[]): Turn {
   })
   // 必回原因跟着真正要求回复的那条消息走。
   const wake = unique.find((turn) => turn.atMe && turn.wake)?.wake
+  // 追踪 id 跟着这批消息里的第一条走。
+  const traceId = unique.find((turn) => turn.traceId)?.traceId
   // 只要有一条明确不是在跟机器人说话，就不要插话。
   const suppress = unique.some((turn) => turn.suppress)
   // 批次的位置取最后一条带位置的消息。
@@ -151,6 +156,7 @@ export function mergeTurns(turns: readonly Turn[]): Turn {
     ...(wake ? { wake } : {}),
     role,
     ...(unique.some((turn) => turn.proactive) ? { proactive: true } : {}),
+    ...(traceId ? { traceId } : {}),
     ...(suppress ? { suppress: true } : {}),
     ...(source ? { source } : {}),
   }
@@ -212,6 +218,8 @@ export class SessionManager {
     private readonly notify?: FailureNotifier,
     /** 按聊天覆盖 agent / 模型；不传就只用全局配置。 */
     private readonly overrides?: ChatOverrides,
+    /** 调用链追踪器；不传就不记追踪。 */
+    private readonly tracer?: Tracer,
   ) {}
 
   /** 会话统一落在机器人工作目录，避免接管后上下文散落到别的项目。 */
@@ -701,6 +709,15 @@ export class SessionManager {
         state.awaitingSend = false
         return false
       }
+      // 模型起跑：从这里开始计时，看这一轮花了多久。
+      if (turn.traceId) {
+        await this.tracer?.record(
+          "agent_start",
+          turn.traceId,
+          { session_id: sessionID, chars: turn.text.length },
+          targetKey(state.target),
+        )
+      }
       await this.ctx.session.prompt({
         sessionID,
         ...(turn.id ? { id: turn.id } : {}),
@@ -714,7 +731,9 @@ export class SessionManager {
         // restoredPositions 是启动时的快照，用来算重启期间的增量，不能被本轮的投递改写。
         this.scheduleSave()
       }
-      this.logger.debug(`${label} 已投递消息到会话 ${sessionID}`)
+      this.logger.debug(`${label} 已投递消息到会话 ${sessionID}`, {
+        ...(turn.traceId ? { trace_id: turn.traceId } : {}),
+      })
       return true
     } catch (error) {
       state.current = undefined
@@ -1084,10 +1103,17 @@ export class SessionManager {
     const state = this.state(target)
     await this.targetMutex(target).runExclusive(async () => {
       if (state.buffer.length > 0 || state.current) return
+      const traceId = this.tracer?.startTrace()
       // 先占位，避免用户消息或下一次心跳同时投递。
       state.idleAt = 0
       state.lastDispatchAt = Date.now()
-      state.current = { text, files: [], atMe: true, proactive: true }
+      state.current = {
+        text,
+        files: [],
+        atMe: true,
+        proactive: true,
+        ...(traceId ? { traceId } : {}),
+      }
       state.awaitingSend = true
       state.reminders = 0
       try {
@@ -1105,6 +1131,14 @@ export class SessionManager {
         state.lastUserMessageAt = Date.now()
         this.activity[targetKey(target)] = state.lastUserMessageAt
         this.scheduleSave()
+        if (traceId) {
+          await this.tracer?.record(
+            "agent_start",
+            traceId,
+            { session_id: sessionID, proactive: true },
+            targetKey(target),
+          )
+        }
         await this.ctx.session.synthetic({ sessionID, text })
       } catch (error) {
         state.awaitingSend = false

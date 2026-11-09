@@ -14,6 +14,7 @@ import type { QQClient } from "../src/naplink/client"
 import { SendRateLimiter } from "../src/rate-limit"
 import { SensitiveChecker } from "../src/sensitive"
 import type { SessionManager } from "../src/session/manager"
+import { Tracer } from "../src/trace"
 import { accessConfig } from "./fixtures"
 
 interface ToolDefinition {
@@ -32,6 +33,7 @@ interface Harness {
     rememberOutgoing: ReturnType<typeof vi.fn>
     isOutgoing: ReturnType<typeof vi.fn>
     isKnownMessage: ReturnType<typeof vi.fn>
+    activeTurn: ReturnType<typeof vi.fn>
   }
   logger: Record<keyof Logger, ReturnType<typeof vi.fn>>
   /** 临时工作目录，媒体文件都放在这里。 */
@@ -54,6 +56,7 @@ const stickerFaces: CustomFace[] = [
 async function createHarness(
   target: ChatTarget | null = group(100),
   configOverrides: Partial<QQBotConfig> = {},
+  tracer?: Tracer,
 ): Promise<Harness> {
   const tools = new Map<string, ToolDefinition>()
   const api = {
@@ -76,6 +79,7 @@ async function createHarness(
     rememberOutgoing: vi.fn(),
     isOutgoing: vi.fn(() => true),
     isKnownMessage: vi.fn(() => true),
+    activeTurn: vi.fn(() => undefined),
   }
   const logger = {
     debug: vi.fn(),
@@ -144,6 +148,7 @@ async function createHarness(
     limiter: new SendRateLimiter(config.rateLimit),
     sensitive: new SensitiveChecker({ enabled: config.sensitive.enabled }),
     outbound,
+    tracer,
   })
 
   return { tools, api, favorites, manager, logger, workspace }
@@ -652,6 +657,23 @@ describe("registerTools", () => {
         ?.execute({ content: "你好" }, context)
       expect(result?.content).toContain("error")
       expect(api["sendPrivateMessage"]).not.toHaveBeenCalled()
+    })
+  })
+  describe("调用链追踪", () => {
+    it("发送成功后记一个 response_sent 节点", async () => {
+      const dir = await mkdtemp(join(tmpdir(), "qq-bot-trace-"))
+      const tracer = new Tracer({ dir })
+      const { tools, manager } = await createHarness(group(100), {}, tracer)
+      manager.activeTurn.mockImplementation(() => ({
+        target: group(100),
+        turn: { text: "hi", files: [], atMe: true, traceId: "trace-1" },
+        role: "member",
+      }))
+      await tools.get(`${TOOL_NAMESPACE}_send_message`)?.execute({ content: "你好" }, context)
+      const spans = tracer.spans()
+      expect(spans.map((span) => span.name)).toEqual(["response_sent"])
+      expect(spans[0]?.traceId).toBe("trace-1")
+      expect(spans[0]?.target).toBe("group:100")
     })
   })
 })
