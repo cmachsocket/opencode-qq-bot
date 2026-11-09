@@ -668,6 +668,25 @@ describe("SessionManager", () => {
     expect(synthetics[0]?.text).toContain("qq_send_message")
   })
 
+  it("keeps the reason the current turn ended for diagnostics", async () => {
+    const { manager } = createHarness()
+    await manager.enqueue(group(100), { text: "你好", files: [], atMe: false })
+    expect(manager.hasActiveTurn("session-1")).toBe(true)
+
+    manager.markMessageSent("session-1")
+    await manager.handleIdle("session-1")
+    expect(manager.hasActiveTurn("session-1")).toBe(false)
+    expect(manager.describeTurn("session-1")["lastClear"]).toEqual(
+      expect.objectContaining({ reason: "handleIdle" }),
+    )
+
+    // 之后没有轮次时的清空不能覆盖上一次真正的原因。
+    await manager.flushBuffered("session-1")
+    expect(manager.describeTurn("session-1")["lastClear"]).toEqual(
+      expect.objectContaining({ reason: "handleIdle" }),
+    )
+  })
+
   it("stops reminding once the send tool was called", async () => {
     const { manager, synthetics } = createHarness()
     await manager.enqueue(group(100), { text: "你好", files: [], atMe: false })

@@ -307,6 +307,15 @@ export default Plugin.define({
       event.system.push({ type: "text", text: `当前时间：${currentTimeText()}` })
       const active = manager.activeTurn(event.sessionID)
       const turn = active?.turn
+      logger.debug(`上下文钩子：会话 ${event.sessionID}`, {
+        target: targetLabel(target),
+        role: active?.role,
+        proactive: turn?.proactive === true,
+        atMe: turn?.atMe,
+        suppress: turn?.suppress,
+        tools: Object.keys(event.tools).length,
+        ...(turn?.traceId ? { trace_id: turn.traceId } : {}),
+      })
       const destination = target.kind === "group" ? "群里" : "私聊里"
       // 模型开始处理这一轮：记一个追踪节点。
       if (turn?.traceId) {
@@ -338,14 +347,27 @@ export default Plugin.define({
       // 本轮发送者的角色决定工具档：owner / admin 全开，其他按聊天配置。
       if (active) {
         const allowed = await policy.allow(active.role, targetKey(target), Object.keys(event.tools))
+        const removed: string[] = []
         for (const name of Object.keys(event.tools)) {
-          if (!allowed.has(name)) delete event.tools[name]
+          if (!allowed.has(name)) {
+            removed.push(name)
+            delete event.tools[name]
+          }
         }
+        logger.debug(`上下文钩子：按角色收窄工具`, {
+          target: targetLabel(target),
+          role: active.role,
+          profile: await policy.profileOf(active.role, targetKey(target)),
+          removed,
+        })
       }
     })
 
     // 会话空闲：冲刷缓存消息，或提醒模型补一次发送。
     const idleRegistration = await ctx.session.hook("experimental.idle", async (event) => {
+      logger.debug(`experimental.idle 钩子：会话 ${event.sessionID}`, {
+        background: event.background.map((task) => task.sessionID),
+      })
       await manager.handleIdle(event.sessionID, event.background)
     })
 
@@ -366,6 +388,11 @@ export default Plugin.define({
             ],
             signal: idleAbort.signal,
           })) {
+            const sessionID = event.data.sessionID
+            logger.debug(`上游事件：${event.type}`, {
+              sessionID,
+              ...(event.type === "session.status" ? { status: event.data.status.type } : {}),
+            })
             if (event.type === "session.status") {
               if (event.data.status.type === "idle") {
                 await manager.flushBuffered(event.data.sessionID)

@@ -34,6 +34,12 @@ export async function registerToolPolicy(
       throw new Error("QQ 聊天会话里不能创建子代理：子会话不会继承按聊天的工具限制。")
     }
     const allowed = await policy.allow(active.role, targetKey(active.target), [event.tool])
+    logger.debug(`${targetLabel(active.target)} 工具策略检查`, {
+      role: active.role,
+      profile: await policy.profileOf(active.role, targetKey(active.target)),
+      tool: event.tool,
+      allowed: allowed.size > 0,
+    })
     if (allowed.size > 0) return
     logger.warn(
       `${targetLabel(active.target)} 会话里 ${active.role} 尝试调用工具 ${event.tool}，已被工具配置拒绝`,

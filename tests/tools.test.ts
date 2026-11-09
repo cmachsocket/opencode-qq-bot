@@ -30,6 +30,7 @@ interface Harness {
     targetForSession: ReturnType<typeof vi.fn>
     markMessageSent: ReturnType<typeof vi.fn>
     hasActiveTurn: ReturnType<typeof vi.fn>
+    describeTurn: ReturnType<typeof vi.fn>
     rememberOutgoing: ReturnType<typeof vi.fn>
     isOutgoing: ReturnType<typeof vi.fn>
     isKnownMessage: ReturnType<typeof vi.fn>
@@ -77,6 +78,7 @@ async function createHarness(
     targetForSession: vi.fn(() => target ?? undefined),
     markMessageSent: vi.fn(),
     hasActiveTurn: vi.fn(() => true),
+    describeTurn: vi.fn(() => ({ bound: true })),
     rememberOutgoing: vi.fn(),
     isOutgoing: vi.fn(() => true),
     isKnownMessage: vi.fn(() => true),

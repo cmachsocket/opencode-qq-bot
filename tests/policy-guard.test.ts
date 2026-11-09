@@ -35,6 +35,7 @@ async function createHarness(options: { allow?: string[]; role?: "member" | "adm
       async (_role: string, _key: string, names: string[]) =>
         new Set(names.filter((name) => (options.allow ?? []).includes(name))),
     ),
+    profileOf: vi.fn(async () => "test"),
   }
   let handler: ((event: BeforeEvent) => Promise<void>) | undefined
   const ctx = {

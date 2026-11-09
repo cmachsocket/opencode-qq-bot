@@ -119,6 +119,8 @@ interface ChatState {
   sessionCreated?: boolean
   /** 最近一次自动退役会话的时间戳（毫秒）。 */
   lastRetireAt: number
+  /** 最近一次清空当前轮次的原因与时间，仅供排查。 */
+  lastClear?: { reason: string; at: number; role?: Role; traceId?: string }
 }
 
 /** 实例交接时移交的会话状态。 */
@@ -577,7 +579,7 @@ export class SessionManager {
     state.buffer = []
     state.pending = undefined
     state.pendingAttempts = 0
-    state.current = undefined
+    this.endTurn(state, "resetTarget")
     state.awaitingSend = false
     state.reminders = 0
     state.historyDone = false
@@ -630,7 +632,7 @@ export class SessionManager {
     }
     state.lastRetireAt = now
     await this.detachSession(state)
-    state.current = undefined
+    this.endTurn(state, "retireSession")
     state.awaitingSend = false
     state.reminders = 0
     // 新会话是空的，历史要重新补一次。
@@ -659,9 +661,63 @@ export class SessionManager {
       .sort((left, right) => targetKey(left.target).localeCompare(targetKey(right.target)))
   }
 
+  /**
+   * 结束当前轮次，并记下是哪条路径清的。
+   *
+   * 所有清空 `current` 的地方都走这里，线上排查时能看出轮次是何时、被谁清掉的。
+   */
+  private endTurn(state: ChatState, reason: string): void {
+    if (!state.current) {
+      // 不清空也要保留上一次真正的原因，别让空跑覆盖掉关键证据。
+      this.logger.debug(`${targetLabel(state.target)} 清轮次时已经没有轮次：${reason}`)
+      return
+    }
+    const now = Date.now()
+    state.lastClear = {
+      reason,
+      at: now,
+      role: state.current.role ?? "member",
+      ...(state.current.traceId ? { traceId: state.current.traceId } : {}),
+    }
+    this.logger.debug(`${targetLabel(state.target)} 清空当前轮次：${reason}`, {
+      role: state.lastClear.role,
+      ...(state.lastClear.traceId ? { trace_id: state.lastClear.traceId } : {}),
+    })
+    state.current = undefined
+  }
+
   /** 当前是否有 QQ 消息轮次正在执行，用于阻止手动 prompt 调用 QQ 工具。 */
   hasActiveTurn(sessionID: string): boolean {
-    return this.sessions.get(sessionID)?.current !== undefined
+    const active = this.sessions.get(sessionID)?.current !== undefined
+    if (!active) {
+      this.logger.debug(`会话 ${sessionID} 没有在执行的 QQ 轮次`, this.describeTurn(sessionID))
+    }
+    return active
+  }
+
+  /** 当前轮次的状态快照，供拒绝工具调用时定位原因。 */
+  describeTurn(sessionID: string): Record<string, unknown> {
+    const state = this.sessions.get(sessionID)
+    if (!state) return { bound: false, now: Date.now() }
+    return {
+      bound: true,
+      target: targetLabel(state.target),
+      current: state.current
+        ? {
+            role: state.current.role ?? "member",
+            proactive: state.current.proactive === true,
+            ...(state.current.traceId ? { traceId: state.current.traceId } : {}),
+          }
+        : undefined,
+      awaitingSend: state.awaitingSend,
+      reminders: state.reminders,
+      buffer: state.buffer.length,
+      pending: state.pending !== undefined,
+      lastDispatchAt: state.lastDispatchAt,
+      idleAt: state.idleAt,
+      lastClear: state.lastClear,
+      now: Date.now(),
+    }
   }
 
   /** 标记模型已经调用过发送工具。 */
@@ -781,7 +837,13 @@ export class SessionManager {
       const info = await this.ctx.session.get({ sessionID: state.sessionID })
       const time = (info as { time?: { idle?: unknown } }).time
       const idleAt = toMillis(time?.idle)
-      return idleAt !== undefined && idleAt < state.lastDispatchAt
+      const stale = idleAt !== undefined && idleAt < state.lastDispatchAt
+      this.logger.debug(`${targetLabel(state.target)} 结束信号时间比对`, {
+        idleAt,
+        lastDispatchAt: state.lastDispatchAt,
+        stale,
+      })
+      return stale
     } catch (error) {
       this.logger.debug(`${targetLabel(state.target)} 查询会话结束时间失败`, error)
       return false
@@ -895,11 +957,18 @@ export class SessionManager {
     // 新的用户轮次重新给一份提醒预算，否则连续几轮不调工具就再也提醒不了。
     state.reminders = 0
     const label = targetLabel(state.target)
+    this.logger.debug(`${label} 开始投递一轮`, {
+      role: turn.role ?? "member",
+      proactive: turn.proactive === true,
+      atMe: turn.atMe,
+      ...(turn.traceId ? { trace_id: turn.traceId } : {}),
+      ...(turn.source ? { source: turn.source } : {}),
+    })
     let sessionID: string | undefined
     try {
       sessionID = await this.ensureSession(state.target)
       if (!sessionID) {
-        state.current = undefined
+        this.endTurn(state, "dispatch: 没有会话")
         state.awaitingSend = false
         return false
       }
@@ -930,7 +999,7 @@ export class SessionManager {
       })
       return true
     } catch (error) {
-      state.current = undefined
+      this.endTurn(state, "dispatch: 投递失败")
       state.awaitingSend = false
       this.logger.error(`${label} 投递消息失败${sessionID ? `（会话 ${sessionID}）` : ""}`, error)
       return false
@@ -950,6 +1019,7 @@ export class SessionManager {
     if (!state) return
     await this.targetMutex(state.target).runExclusive(async () => {
       const label = targetLabel(state.target)
+      this.logger.debug(`${label} 收到 idle 钩子`, this.describeTurn(sessionID))
 
       if (background.some((task) => task.sessionID === sessionID)) {
         this.logger.debug(`${label} 仍有后台任务，暂不投递缓存`)
@@ -970,13 +1040,18 @@ export class SessionManager {
 
       // 提醒沿用它正在提醒的那一轮的角色，别把 owner / 管理员降成普通成员。
       const reminderRole = state.current?.role
-      state.current = undefined
+      this.endTurn(state, "handleIdle")
 
       if (
         !state.awaitingSend ||
         !this.config.reminder.enabled ||
         state.reminders >= this.config.reminder.max
       ) {
+        this.logger.debug(`${label} 空闲结束，不再提醒`, {
+          awaitingSend: state.awaitingSend,
+          reminderEnabled: this.config.reminder.enabled,
+          reminders: state.reminders,
+        })
         state.idleAt = Date.now()
         return
       }
@@ -1033,6 +1108,10 @@ export class SessionManager {
     const state = this.sessions.get(sessionID)
     if (!state) return
     await this.targetMutex(state.target).runExclusive(async () => {
+      this.logger.debug(
+        `${targetLabel(state.target)} 收到执行结束事件（${reason}）`,
+        this.describeTurn(sessionID),
+      )
       if (await this.idleIsStale(state)) {
         this.logger.debug(`${targetLabel(state.target)} 忽略上一轮迟到的结束事件（${reason}）`)
         return
@@ -1044,7 +1123,7 @@ export class SessionManager {
       if (state.awaitingSend && !state.current?.proactive) {
         await this.notifyFailure(state, interrupted ? INTERRUPTED_NOTICE : FAILURE_NOTICE)
       }
-      state.current = undefined
+      this.endTurn(state, `handleExecutionEnd: ${reason}`)
       state.awaitingSend = false
       state.idleAt = Date.now()
       await this.drain(state, true)
@@ -1120,6 +1199,10 @@ export class SessionManager {
     const state = this.sessions.get(sessionID)
     if (!state) return
     await this.targetMutex(state.target).runExclusive(async () => {
+      this.logger.debug(
+        `${targetLabel(state.target)} 收到空闲状态事件`,
+        this.describeTurn(sessionID),
+      )
       if (await this.idleIsStale(state)) {
         this.logger.debug(`${targetLabel(state.target)} 忽略上一轮迟到的结束信号`)
         return
@@ -1128,7 +1211,7 @@ export class SessionManager {
         // 只有没有新轮次时，idle 时间才代表当前状态；投递缓存时若也写入，
         // 会与紧接着的 dispatch 落在同一毫秒，误判为新一轮已经结束。
         state.idleAt = Date.now()
-        state.current = undefined
+        this.endTurn(state, "flushBuffered: 空闲且无缓存")
         return
       }
       this.logger.debug(`${targetLabel(state.target)} 空闲，投递 ${state.buffer.length} 条缓存消息`)
@@ -1327,13 +1410,13 @@ export class SessionManager {
       state.reminders = 0
       try {
         if (state.sessionID && (await this.sessionRunning(state.sessionID))) {
-          state.current = undefined
+          this.endTurn(state, "proactive: 上游仍在执行")
           state.awaitingSend = false
           return
         }
         const sessionID = await this.ensureSession(target)
         if (!sessionID) {
-          state.current = undefined
+          this.endTurn(state, "proactive: 没有会话")
           state.awaitingSend = false
           return
         }
@@ -1351,7 +1434,7 @@ export class SessionManager {
         await this.ctx.session.synthetic({ sessionID, text })
       } catch (error) {
         state.awaitingSend = false
-        state.current = undefined
+        this.endTurn(state, "proactive: 投递失败")
         this.logger.error(`${targetLabel(target)} 主动说话失败`, error)
       }
     })
