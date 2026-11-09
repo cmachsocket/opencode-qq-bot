@@ -276,26 +276,30 @@ describe("wakeDecision", () => {
 })
 
 describe("proactiveAllowed", () => {
-  it("默认允许主动说话", () => {
-    expect(proactiveAllowed({}, group(100))).toBe(true)
+  it("白名单为空时默认拒绝", () => {
+    expect(proactiveAllowed({}, group(100), { allowGroups: [], allowUsers: [] })).toBe(false)
+    expect(proactiveAllowed({}, priv(200), { allowGroups: [100], allowUsers: [] })).toBe(false)
   })
 
   it("显式关掉后不主动说话", () => {
-    expect(proactiveAllowed({ proactive: false }, group(100))).toBe(false)
-    expect(proactiveAllowed({ proactive: true }, group(100))).toBe(true)
+    const scope = { allowGroups: [100], allowUsers: [] }
+    expect(proactiveAllowed({ proactive: false }, group(100), scope)).toBe(false)
   })
 
   it("静音的群也不主动说话", () => {
-    expect(proactiveAllowed({ wake: "none" }, group(100))).toBe(false)
-    expect(proactiveAllowed({ wake: "none" }, priv(200))).toBe(true)
+    expect(
+      proactiveAllowed({ wake: "none" }, group(100), { allowGroups: [100], allowUsers: [] }),
+    ).toBe(false)
+    expect(
+      proactiveAllowed({ wake: "none" }, priv(200), { allowGroups: [], allowUsers: [200] }),
+    ).toBe(true)
   })
 
   it("白名单只放行名单里的聊天", () => {
     const scope = { allowGroups: [100], allowUsers: [] }
     expect(proactiveAllowed({}, group(100), scope)).toBe(true)
     expect(proactiveAllowed({}, group(200), scope)).toBe(false)
-    // 名单为空表示这一类不限制。
-    expect(proactiveAllowed({}, group(200), { allowGroups: [], allowUsers: [] })).toBe(true)
+    expect(proactiveAllowed({}, group(200), { allowGroups: [], allowUsers: [] })).toBe(false)
     expect(proactiveAllowed({}, priv(200), { allowGroups: [], allowUsers: [300] })).toBe(false)
   })
 
@@ -309,9 +313,9 @@ describe("proactiveAllowed", () => {
 
 describe("describeOverride", () => {
   it("说明唤醒方式与主动说话", () => {
-    expect(describeOverride({})).toBe("唤醒 mention（默认），允许主动说话")
+    expect(describeOverride({})).toBe("唤醒 mention（默认），主动说话跟随白名单")
     expect(describeOverride({ wake: "prefix", prefix: "bot," })).toBe(
-      "唤醒 prefix，前缀 bot,，允许主动说话",
+      "唤醒 prefix，前缀 bot,，主动说话跟随白名单",
     )
     expect(describeOverride({ proactive: false })).toBe("唤醒 mention（默认），不主动说话")
   })
@@ -324,13 +328,13 @@ describe("describeOverride", () => {
         soul: "souls/reviewer.txt",
       }),
     ).toBe(
-      "唤醒 mention（默认），允许主动说话，agent reviewer，模型 anthropic/claude-sonnet-4，角色设定 souls/reviewer.txt",
+      "唤醒 mention（默认），主动说话跟随白名单，agent reviewer，模型 anthropic/claude-sonnet-4，角色设定 souls/reviewer.txt",
     )
   })
 
   it("说明主动说话概率", () => {
     expect(describeOverride({ proactiveProbability: 0.2 })).toBe(
-      "唤醒 mention（默认），允许主动说话，主动概率 0.2",
+      "唤醒 mention（默认），主动说话跟随白名单，主动概率 0.2",
     )
   })
 })

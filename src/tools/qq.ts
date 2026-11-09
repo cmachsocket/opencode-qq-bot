@@ -261,6 +261,23 @@ export async function registerTools(deps: ToolDeps): Promise<{ dispose(): Promis
   /** base64:// 载荷是二进制数据，按文本扫描既没意义也慢。 */
   const isInlineData = (value: string): boolean => value.startsWith("base64://")
 
+  /** 内联数据解码后的大小上限：5MB。 */
+  const MAX_INLINE_BYTES = 5 * 1024 * 1024
+
+  /** base64 每 4 个字符解出 3 字节，字符上限按这个比例算。 */
+  const MAX_INLINE_CHARS = Math.ceil((MAX_INLINE_BYTES * 4) / 3)
+
+  /**
+   * 内联数据的大小检查。
+   *
+   * 内联数据不经过路径与网络校验，超大载荷会把内存和对端一起撑爆，这里直接拒掉。
+   */
+  const checkInlineSize = (value: string, kind: string): string | undefined => {
+    if (!isInlineData(value)) return undefined
+    if (value.length <= MAX_INLINE_CHARS) return undefined
+    return `error: ${kind}数据过大，超过 ${Math.floor(MAX_INLINE_BYTES / 1024 / 1024)}MB 上限`
+  }
+
   const sendText = (target: ChatTarget, chunk: string) =>
     target.kind === "group"
       ? client.api.sendGroupMessage(target.id, chunk)
@@ -451,6 +468,8 @@ export async function registerTools(deps: ToolDeps): Promise<{ dispose(): Promis
         if (!target) return text("error: 当前会话没有绑定 QQ 群聊或私聊")
         const file = input.file ?? (input.base64 ? `base64://${input.base64}` : undefined)
         if (!file) return text("error: 缺少 file 或 base64")
+        const tooLarge = checkInlineSize(file, "图片")
+        if (tooLarge) return text(tooLarge)
         if (!isInlineData(file)) guardOutbound(target, file)
         // 路径白名单在这里就判定：不过就不占发送额度。内联数据不涉及路径与网络。
         const plan = isInlineData(file) ? undefined : await outbound.check(file)
@@ -511,10 +530,15 @@ export async function registerTools(deps: ToolDeps): Promise<{ dispose(): Promis
         const url = typeof row.face.url === "string" ? row.face.url : undefined
         if (!url) return text(`error: 编号 ${id} 的收藏表情缺少可用地址`)
         guardOutbound(target, url)
+        // 收藏表情的地址同样来自外部，要走和图片一致的路径与地址白名单。
+        const plan = await outbound.check(url)
         const verdict = await permit(target, nextOperation())
         if (!verdict.allowed) return refuse(context.sessionID, verdict)
         const response = await sendSegments(target, [
-          { type: "image", data: { file: url, sub_type: CUSTOM_FACE_SUB_TYPE } },
+          {
+            type: "image",
+            data: { file: outbound.materialize(plan), sub_type: CUSTOM_FACE_SUB_TYPE },
+          },
         ])
         const messageId = messageIdOf(response)
         if (messageId) manager.rememberOutgoing(target, messageId)
@@ -540,6 +564,8 @@ export async function registerTools(deps: ToolDeps): Promise<{ dispose(): Promis
         const target = requireTarget(context.sessionID)
         if (!target) return text("error: 当前会话没有绑定 QQ 群聊或私聊")
         if (!input.file) return text("error: 缺少 file")
+        const tooLarge = checkInlineSize(input.file, "语音")
+        if (tooLarge) return text(tooLarge)
         if (!isInlineData(input.file)) guardOutbound(target, input.file)
         const plan = isInlineData(input.file) ? undefined : await outbound.check(input.file)
         const verdict = await permit(target, nextOperation())

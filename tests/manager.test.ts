@@ -1055,10 +1055,10 @@ describe("SessionManager", () => {
     expect(synthetics).toHaveLength(0)
   })
 
-  it("主动说话按 owner 角色执行", async () => {
+  it("主动说话按最低权限角色执行", async () => {
     const { manager } = createHarness()
     await manager.proactive(group(100), "主动话题")
-    expect(manager.activeTurn("session-1")?.role).toBe("owner")
+    expect(manager.activeTurn("session-1")?.role).toBe("proactive")
   })
 
   it("drops the oldest buffered messages when the buffer is full", async () => {
@@ -1238,6 +1238,13 @@ describe("B1 冷启动补历史", () => {
         { text: "b", files: [], atMe: false, role: "owner" },
       ]).role,
     ).toBe("admin")
+    // 主动说话的权限比普通成员还低，混进同一批时以它为准。
+    expect(
+      mergeTurns([
+        { text: "a", files: [], atMe: false, role: "member" },
+        { text: "b", files: [], atMe: true, role: "proactive" },
+      ]).role,
+    ).toBe("proactive")
   })
 
   it("合并批次时保留必回原因", () => {

@@ -27,8 +27,13 @@ const CLEAN: SensitiveVerdict = { allowed: true, hits: [], reason: "" }
  */
 const PII_DETECTORS = new Set(["email", "obfuscated_email", "credit_card", "iban"])
 
-/** 默认关闭、但确实算凭证的检测器。 */
-const EXTRA_SECRET_DETECTORS = new Set(["seed_phrase"])
+/**
+ * 默认关闭、但确实算凭证的检测器。
+ *
+ * `internal_url` 会命中 localhost 与内网地址：本插件的威胁模型里，
+ * 内网地址泄漏到日志或出站消息同样算问题，所以显式打开。
+ */
+const EXTRA_SECRET_DETECTORS = new Set(["seed_phrase", "internal_url"])
 
 /**
  * 出站要跑的检测器。
@@ -75,7 +80,17 @@ const SENSITIVE_PATH_PARTS = [
   ".env",
   "id_rsa",
   "id_ed25519",
+  "id_ecdsa",
+  "id_dsa",
   ".pem",
+  ".p12",
+  ".pfx",
+  ".jks",
+  ".keystore",
+  ".pgpass",
+  ".my.cnf",
+  ".htpasswd",
+  "credentials.db",
 ]
 
 function escapeRegExp(value: string): string {
@@ -117,6 +132,51 @@ export function collectEnvSecrets(env: Record<string, string | undefined>): stri
   return secrets
 }
 
+/** URL 里可能带凭证的查询参数名。 */
+const SECRET_QUERY_KEYS =
+  /^(?:token|access[_-]?token|refresh[_-]?token|auth|authorization|secret|secret[_-]?key|key|api[_-]?key|pass(?:word)?|signature|sig|credential)s?$/i
+
+/**
+ * 把 URL 里的凭证抹掉，只留下能定位服务的部分。
+ *
+ * 日志里打印 NapCat 地址时用：token 常常就挂在查询串或 userinfo 上。
+ */
+export function redactUrl(url: string): string {
+  try {
+    const parsed = new URL(url)
+    parsed.username = ""
+    parsed.password = ""
+    parsed.search = ""
+    parsed.hash = ""
+    return parsed.toString()
+  } catch {
+    return "[无法解析的地址]"
+  }
+}
+
+/**
+ * 取出 URL 里可能带凭证的值。
+ *
+ * 这些值要加进已知凭证，日志里的同一段内容才会被逐行打码。
+ */
+export function secretsFromUrl(url: string): string[] {
+  const secrets: string[] = []
+  try {
+    const parsed = new URL(url)
+    for (const [name, value] of parsed.searchParams) {
+      if (!SECRET_QUERY_KEYS.test(name)) continue
+      if (!value || value.length < MIN_SECRET_LENGTH) continue
+      secrets.push(value)
+    }
+    for (const part of [parsed.username, parsed.password]) {
+      if (part && part.length >= MIN_SECRET_LENGTH) secrets.push(part)
+    }
+  } catch {
+    // 地址解析不了就没有凭证可取。
+  }
+  return secrets
+}
+
 /** 已知凭证明文写成的检测器。 */
 function knownSecretDetector(secrets: string[]): Detector | undefined {
   if (secrets.length === 0) return undefined
@@ -135,7 +195,7 @@ const SENSITIVE_PATH_DETECTOR: Detector = {
   label: "Sensitive path",
   why: "指向凭证文件的路径",
   pattern: new RegExp(
-    `(?:^|[\\s"'\`(=])[^\\s"'\`,;]*?(?:${SENSITIVE_PATH_PARTS.map(escapeRegExp).join("|")})(?:[/\\\\]|$)`,
+    `(?:^|[\\s"'\`(=])[^\\s"'\`,;]*?(?:${SENSITIVE_PATH_PARTS.map(escapeRegExp).join("|")})(?:[/\\\\]|\\b|$)`,
     "i",
   ),
   default: true,

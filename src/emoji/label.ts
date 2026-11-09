@@ -90,6 +90,22 @@ export class EmojiLabeler {
     return this.abort.signal
   }
 
+  /**
+   * 这个会话是不是表情标签会话。
+   *
+   * 标签会话不绑定任何 QQ 目标，拿不到按聊天的工具限制，而它的输入是一张图片：
+   * 图片里的文字同样可能是注入载荷，所以这个会话必须单独把工具全部摘掉。
+   */
+  async isLabelSession(sessionID: string): Promise<boolean> {
+    if (this.sessionID === sessionID) return true
+    try {
+      const info = await this.deps.ctx.session.get({ sessionID })
+      return info?.metadata?.[LABEL_SESSION_MARKER] === true
+    } catch {
+      return false
+    }
+  }
+
   /** 开始订阅文本事件。 */
   start(): void {
     this.listener ??= this.listen()

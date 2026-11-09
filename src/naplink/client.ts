@@ -8,6 +8,7 @@ import {
 } from "@naplink/naplink"
 import type { Logger } from "../logger"
 import type { NapcatConfig } from "../config"
+import { redactUrl } from "../sensitive"
 
 const MEDIA_SEGMENT_TYPES = ["image", "video", "record", "audio", "file"] as const
 
@@ -102,7 +103,11 @@ export class QQClient {
     // 每次（重）连成功都刷新机器人 QQ 号，自动重连后 selfId 依然可用。
     this.link.on("connect", () => {
       void this.refreshBotId().then(() => {
-        this.logger.info("NapCat 已连接", this.config.url, this.botId ? `bot=${this.botId}` : "")
+        this.logger.info(
+          "NapCat 已连接",
+          redactUrl(this.config.url),
+          this.botId ? `bot=${this.botId}` : "",
+        )
       })
     })
   }

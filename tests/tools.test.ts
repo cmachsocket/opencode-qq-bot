@@ -47,7 +47,8 @@ const stickerFaces: CustomFace[] = [
   {
     emoId: 0,
     resId: "res-0",
-    url: "https://example.com/sticker-0.png",
+    // 用字面量公网 IP：出站地址检查会解析域名，测试里不该依赖 DNS。
+    url: "https://93.184.216.34/sticker-0.png",
     md5: "md5-0",
     desc: "猫猫摊手",
   },
@@ -326,11 +327,12 @@ describe("registerTools", () => {
 
   it("refuses a remote address pointing at the intranet", async () => {
     const { tools, api } = await createHarness()
+    // 出站敏感扫描先于媒体地址校验，内网地址按 internal_url 拦下。
     await expect(
       tools
         .get(`${TOOL_NAMESPACE}_send_image`)
         ?.execute({ file: "http://127.0.0.1:8080/a.png" }, context),
-    ).rejects.toThrow("指向内网")
+    ).rejects.toThrow("internal_url")
     expect(api["sendGroupMessage"]).not.toHaveBeenCalled()
   })
 
@@ -343,6 +345,16 @@ describe("registerTools", () => {
     const call = api["sendGroupMessage"]?.mock.calls[0]
     const segments = (call?.[1] ?? []) as { data: { file: string } }[]
     expect(segments[0]?.data.file).toBe("base64://AAAA")
+  })
+
+  it("refuses an oversized inline image", async () => {
+    const { tools, api } = await createHarness()
+    const result = await tools
+      .get(`${TOOL_NAMESPACE}_send_image`)
+      ?.execute({ base64: "A".repeat(8 * 1024 * 1024) }, context)
+    expect(result?.content).toContain("error")
+    expect(result?.content).toContain("过大")
+    expect(api["sendGroupMessage"]).not.toHaveBeenCalled()
   })
 
   it("refuses an image outside the allowed directories", async () => {
@@ -372,9 +384,21 @@ describe("registerTools", () => {
     expect(api["sendGroupMessage"]).toHaveBeenCalledWith(100, [
       {
         type: "image",
-        data: { file: "https://example.com/sticker-0.png", sub_type: 1 },
+        data: { file: "https://93.184.216.34/sticker-0.png", sub_type: 1 },
       },
     ])
+  })
+
+  it("refuses a sticker pointing at a private address", async () => {
+    const { tools, api, favorites } = await createHarness()
+    favorites.list.mockResolvedValueOnce([
+      { emoId: 0, resId: "res-0", url: "http://127.0.0.1/sticker.png", md5: "md5-0" },
+    ])
+    // 出站敏感扫描先于媒体地址校验，内网地址按 internal_url 拦下。
+    await expect(
+      tools.get(`${TOOL_NAMESPACE}_send_sticker`)?.execute({ id: 1 }, context),
+    ).rejects.toThrow("internal_url")
+    expect(api["sendGroupMessage"]).not.toHaveBeenCalled()
   })
 
   it("rejects a sticker without an id", async () => {

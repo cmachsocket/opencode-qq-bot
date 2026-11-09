@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest"
-import { collectEnvSecrets, maskSecrets, SensitiveChecker } from "../src/sensitive"
+import {
+  collectEnvSecrets,
+  maskSecrets,
+  redactUrl,
+  secretsFromUrl,
+  SensitiveChecker,
+} from "../src/sensitive"
 
 const known = "sk-super-secret-token-value-1234567890"
 
@@ -49,6 +55,13 @@ describe("SensitiveChecker", () => {
   it("blocks paths that point at credential files", () => {
     expect(check("文件在 /home/user/.ssh/id_rsa 那里")).toBe(false)
     expect(check("读取 ~/.aws/credentials 看看")).toBe(false)
+    expect(check("备份在 ~/.pgpass 里")).toBe(false)
+    expect(check("证书是 server.id_ecdsa")).toBe(false)
+  })
+
+  it("blocks internal URLs", () => {
+    expect(check("接口在 http://localhost:3000/api 上")).toBe(false)
+    expect(check("去 http://192.168.1.10:8080/admin 看看")).toBe(false)
   })
 
   it("reports the detectors that matched", () => {
@@ -97,5 +110,44 @@ describe("collectEnvSecrets", () => {
         AUTH_JSON: '{"token":"abcdefghijklmnop"}',
       }),
     ).toEqual([])
+  })
+})
+
+describe("redactUrl", () => {
+  it("drops query, fragment and userinfo", () => {
+    expect(redactUrl("ws://127.0.0.1:3000/?access_token=abcdefghijklmnop#x")).toBe(
+      "ws://127.0.0.1:3000/",
+    )
+    expect(redactUrl("http://user:abcdefghijklmnop@example.com:8080/path?token=x")).toBe(
+      "http://example.com:8080/path",
+    )
+  })
+
+  it("keeps the address when there is nothing to redact", () => {
+    expect(redactUrl("ws://127.0.0.1:3000/ws")).toBe("ws://127.0.0.1:3000/ws")
+  })
+
+  it("replaces unparseable addresses", () => {
+    expect(redactUrl("not a url")).toBe("[无法解析的地址]")
+  })
+})
+
+describe("secretsFromUrl", () => {
+  it("collects long credential-looking query values", () => {
+    expect(
+      secretsFromUrl("ws://host:3000/ws?access_token=abcdefghijklmnop&page=2&secret=123456789012"),
+    ).toEqual(["abcdefghijklmnop", "123456789012"])
+  })
+
+  it("collects userinfo credentials", () => {
+    expect(secretsFromUrl("http://abc1234567890:def1234567890@example.com/")).toEqual([
+      "abc1234567890",
+      "def1234567890",
+    ])
+  })
+
+  it("ignores short values and unparseable addresses", () => {
+    expect(secretsFromUrl("ws://host:3000/ws?token=short")).toEqual([])
+    expect(secretsFromUrl("not a url")).toEqual([])
   })
 })

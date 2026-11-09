@@ -59,9 +59,9 @@ export interface WakeDecision {
 
 /** 主动说话的白名单。 */
 export interface ProactiveScope {
-  /** 只在这些群里主动说话；为空表示不限制。 */
+  /** 只在这些群里主动说话；为空表示一个都不放行。 */
   allowGroups: number[]
-  /** 只在这些私聊里主动说话；为空表示不限制。 */
+  /** 只在这些私聊里主动说话；为空表示一个都不放行。 */
   allowUsers: number[]
 }
 
@@ -279,20 +279,24 @@ export function wakeDecision(
   return { required: false }
 }
 
-/** 这个聊天允不允许主动说话。 */
+/**
+ * 这个聊天允不允许主动说话。
+ *
+ * 默认拒绝：白名单为空表示一个都不放行，必须显式配置才会主动开口。
+ * 聊天自己的覆盖里写了 `proactive: true` 才算显式打开，那一条不受白名单限制。
+ */
 export function proactiveAllowed(
   override: ChatOverride,
   target: ChatTarget,
-  scope?: ProactiveScope,
+  scope: ProactiveScope,
 ): boolean {
   if (override.proactive === false) return false
   if (chatMuted(override, target)) return false
   // 写死打开的聊天不受白名单限制。
   if (override.proactive === true) return true
-  if (!scope) return true
   const list = target.kind === "group" ? scope.allowGroups : scope.allowUsers
-  // 名单为空表示这一类不限制。
-  if (list.length === 0) return true
+  // 名单为空表示这一类一个都不放行。
+  if (list.length === 0) return false
   return list.includes(target.id)
 }
 
@@ -301,7 +305,13 @@ export function describeOverride(override: ChatOverride): string {
   const parts: string[] = []
   parts.push(override.wake ? `唤醒 ${override.wake}` : "唤醒 mention（默认）")
   if (override.wake === "prefix") parts.push(`前缀 ${override.prefix ?? "（未设置）"}`)
-  parts.push(override.proactive === false ? "不主动说话" : "允许主动说话")
+  parts.push(
+    override.proactive === true
+      ? "主动说话"
+      : override.proactive === false
+        ? "不主动说话"
+        : "主动说话跟随白名单",
+  )
   if (override.proactiveProbability !== undefined) {
     parts.push(`主动概率 ${override.proactiveProbability}`)
   }

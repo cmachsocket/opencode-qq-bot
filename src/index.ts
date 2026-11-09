@@ -16,7 +16,7 @@ import { createHistoryProvider } from "./naplink/history"
 import { createMediaStore } from "./naplink/media"
 import { describeMentions, renderMessage, resolveUserName, shouldProcess } from "./naplink/render"
 import { SendRateLimiter } from "./rate-limit"
-import { collectEnvSecrets, SensitiveChecker } from "./sensitive"
+import { collectEnvSecrets, redactUrl, secretsFromUrl, SensitiveChecker } from "./sensitive"
 import { SessionManager } from "./session/manager"
 import { currentTimeText, PROACTIVE_HINT } from "./session/prompt"
 import { proactiveProbability } from "./session/proactive"
@@ -61,6 +61,20 @@ function reportWarnings(warnings: readonly string[], logger: Logger): void {
   }
 }
 
+/**
+ * 已知凭证明文：日志逐行打码与出站拦截都靠它。
+ *
+ * 除了环境变量与 NapCat 令牌，地址查询串里挂着的 token 也要算进来，
+ * 否则它会原样落进日志文件。
+ */
+function knownSecrets(config: QQBotConfig): string[] {
+  return [
+    ...collectEnvSecrets(process.env),
+    config.napcat.token ?? "",
+    ...secretsFromUrl(config.napcat.url),
+  ].filter((secret) => secret.length > 0)
+}
+
 export default Plugin.define({
   id: "opencode-qq-bot",
   async setup(ctx) {
@@ -84,9 +98,7 @@ export default Plugin.define({
       dir: config.log.dir,
       maxSize: config.log.maxSize,
       maxFiles: config.log.maxFiles,
-      knownSecrets: [...collectEnvSecrets(process.env), config.napcat.token ?? ""].filter(
-        (secret) => secret.length > 0,
-      ),
+      knownSecrets: knownSecrets(config),
     })
     logger.info(`opencode-qq-bot v${version}`)
     reportWarnings(warnings, logger)
@@ -110,7 +122,7 @@ export default Plugin.define({
     // 新实例接管旧实例并让旧实例整体卸载，避免多条 NapCat 连接与重复投递。
     const { previous, occupied, lease } = claimInstance(
       home.directory,
-      `${ctx.location.directory}\n${config.napcat.url}`,
+      `${ctx.location.directory}\n${redactUrl(config.napcat.url)}`,
     )
     if (occupied) {
       logger.warn("本机机器人已绑定到其它工作目录，本实例不会运行", `工作目录：${occupied}`)
@@ -163,9 +175,7 @@ export default Plugin.define({
     // 出站敏感信息拦截：环境变量里的凭证与 NapCat 令牌都当作已知凭证。
     const sensitive = new SensitiveChecker({
       enabled: config.sensitive.enabled,
-      knownSecrets: [...collectEnvSecrets(process.env), config.napcat.token ?? ""].filter(
-        (secret) => secret.length > 0,
-      ),
+      knownSecrets: knownSecrets(config),
     })
     // 通知缓存：通知不自己起一轮，只在下一次该聊天的上下文里附带出现。
     const noticeStore = new NoticeStore()
@@ -272,7 +282,14 @@ export default Plugin.define({
     // 系统提示：角色设定、当前时间、本轮是否必须回复。
     const contextRegistration = await ctx.session.hook("context", async (event) => {
       const target = manager.targetForSession(event.sessionID)
-      if (target === undefined) return
+      if (target === undefined) {
+        // 表情标签会话不绑定 QQ 目标，拿不到按聊天的工具限制；
+        // 它的输入是一张图片，工具一律摘掉，只让模型输出标签。
+        if (await labeler.isLabelSession(event.sessionID)) {
+          for (const name of Object.keys(event.tools)) delete event.tools[name]
+        }
+        return
+      }
       // 角色设定可以按聊天覆盖：先看覆盖里写的路径，没有就用默认档。
       const override = await overrides.for(target)
       const soul = await souls.at(override.soul)
@@ -649,7 +666,7 @@ export default Plugin.define({
     logger.info("插件已加载", {
       allowGroups: config.access.allow.groups,
       allowUsers: config.access.allow.users,
-      napcat: config.napcat.url,
+      napcat: redactUrl(config.napcat.url),
       agent: config.agent ?? "(默认)",
     })
 

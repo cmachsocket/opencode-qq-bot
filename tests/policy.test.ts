@@ -88,6 +88,14 @@ describe("defaultToolPolicy", () => {
     ]
     expect(allowedTools(chat!, names).sort()).toEqual(["qq_send_message", "webfetch", "websearch"])
   })
+
+  it("gives proactive turns the same low privilege as members", () => {
+    const proactive = defaultToolPolicy().profiles.proactive
+    expect(proactive).toBeDefined()
+    expect(allowedTools(proactive!, ["shell", "write", "qq_send_message"]).sort()).toEqual([
+      "qq_send_message",
+    ])
+  })
 })
 
 describe("profileNameFor", () => {
@@ -108,6 +116,22 @@ describe("profileNameFor", () => {
   it("uses the per-chat profile for members", () => {
     expect(profileNameFor(file, "member", "group:100")).toBe("readonly")
     expect(profileNameFor(file, "member", "group:999")).toBe("chat")
+  })
+
+  it("never gives proactive turns the admin or per-chat profile", () => {
+    // 内置默认值里有 proactive 档：主动说话固定用它，而不是 chats 里映射的 readonly。
+    expect(profileNameFor(file, "proactive", "group:100")).toBe("proactive")
+    expect(profileNameFor(file, "proactive", "private:200")).toBe("proactive")
+    const withProactive = parseToolPolicy(
+      {
+        profiles: {
+          chat: { allow: ["*"], deny: [] },
+          proactive: { allow: ["qq_*"], deny: [] },
+        },
+      },
+      () => {},
+    )
+    expect(profileNameFor(withProactive, "proactive", "group:100")).toBe("proactive")
   })
 
   it("falls back when the chat points at an unknown profile", () => {

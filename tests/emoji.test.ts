@@ -17,7 +17,7 @@ import { join } from "node:path"
 import { faceName, QQ_FACE_NAMES, renderFace } from "../src/emoji/faces"
 import { type CustomFace, faceTag, type FavoriteRow, FavoriteStore } from "../src/emoji/favorites"
 import { FavoriteIndex, favoriteKey, type IndexStorage } from "../src/emoji/favorite-index"
-import { cleanTag, EmojiLabeler, MAX_TAG_LENGTH } from "../src/emoji/label"
+import { cleanTag, EmojiLabeler, LABEL_SESSION_MARKER, MAX_TAG_LENGTH } from "../src/emoji/label"
 import { DEFAULT_CONFIG, type QQBotConfig } from "../src/config"
 import type { ChatTarget } from "../src/chat"
 import type { Logger } from "../src/logger"
@@ -443,6 +443,21 @@ describe("EmojiLabeler", () => {
     )
   })
 
+  it("recognises a label session by its marker", async () => {
+    const harness = createLabelerHarness()
+    harness.sessionGet.mockResolvedValue({
+      id: "marked",
+      metadata: { [LABEL_SESSION_MARKER]: true },
+    })
+    await expect(harness.labeler.isLabelSession("marked")).resolves.toBe(true)
+
+    harness.sessionGet.mockResolvedValue({ id: "other", metadata: {} })
+    await expect(harness.labeler.isLabelSession("other")).resolves.toBe(false)
+
+    harness.sessionGet.mockRejectedValueOnce(new Error("not found"))
+    await expect(harness.labeler.isLabelSession("gone")).resolves.toBe(false)
+  })
+
   it("ignores a stored label session outside the bot workspace", async () => {
     const harness = createLabelerHarness()
     harness.storageGet.mockResolvedValue("other-session")
@@ -472,6 +487,38 @@ describe("EmojiLabeler", () => {
 
     await expect(pending).resolves.toBeUndefined()
     expect(harness.setTag).not.toHaveBeenCalled()
+  })
+
+  it("recognises its own label session", async () => {
+    const harness = createLabelerHarness()
+    const pending = harness.labeler.labelFace(face("猫猫"))
+    await vi.waitFor(() => expect(harness.prompt).toHaveBeenCalled())
+
+    await expect(harness.labeler.isLabelSession("label-session")).resolves.toBe(true)
+
+    harness.emit(textEvent("label-session", "猫猫"))
+    harness.emit(succeededEvent("label-session"))
+    await pending
+  })
+
+  it("recognises a label session by its metadata", async () => {
+    const harness = createLabelerHarness()
+    harness.sessionGet.mockResolvedValue({
+      id: "other",
+      metadata: { qqEmojiLabelSession: true },
+    })
+
+    await expect(harness.labeler.isLabelSession("other")).resolves.toBe(true)
+    expect(harness.sessionGet).toHaveBeenCalledWith({ sessionID: "other" })
+  })
+
+  it("does not treat other sessions as label sessions", async () => {
+    const harness = createLabelerHarness()
+    harness.sessionGet.mockResolvedValue({ id: "other" })
+    await expect(harness.labeler.isLabelSession("other")).resolves.toBe(false)
+
+    harness.sessionGet.mockRejectedValue(new Error("gone"))
+    await expect(harness.labeler.isLabelSession("missing")).resolves.toBe(false)
   })
 })
 

@@ -117,6 +117,14 @@ interface ChatState {
 
 type SessionListCursor = NonNullable<Parameters<Plugin.Context["session"]["list"]>[0]>["cursor"]
 
+/** 角色权限高低：数字越小权限越低。 */
+const ROLE_RANK: Record<Role, number> = {
+  proactive: 0,
+  member: 1,
+  admin: 2,
+  owner: 3,
+}
+
 export function mergeTurns(turns: readonly Turn[]): Turn {
   // 同一条消息重复投递时只留一份。
   const seen = new Set<string>()
@@ -139,12 +147,12 @@ export function mergeTurns(turns: readonly Turn[]): Turn {
     undefined,
   )
   // 一批消息可能来自不同的人：按最低权限执行，避免普通成员的话借到管理员的工具。
+  // 主动说话没有人参与，它带进来的上下文同样不可信，权限比普通成员还低。
   const roles = unique.map((turn) => turn.role ?? "member")
-  const role: Role = roles.includes("member")
-    ? "member"
-    : roles.includes("admin")
-      ? "admin"
-      : "owner"
+  const role = roles.reduce<Role>(
+    (lowest, current) => (ROLE_RANK[current] < ROLE_RANK[lowest] ? current : lowest),
+    "owner",
+  )
   return {
     // 合并后的批次沿用第一条消息的幂等键，重试时保持一致。
     ...(unique[0]?.id ? { id: unique[0].id } : {}),
@@ -1120,8 +1128,8 @@ export class SessionManager {
         files: [],
         atMe: true,
         proactive: true,
-        // 主动说话由配置放行的聊天自动触发，按 owner 的角色执行，不降级成普通成员。
-        role: "owner",
+        // 主动说话没有人参与，上下文完全来自聊天内容，权限按最低算。
+        role: "proactive",
         ...(traceId ? { traceId } : {}),
       }
       state.awaitingSend = true

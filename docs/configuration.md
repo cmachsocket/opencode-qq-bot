@@ -143,22 +143,22 @@ NapCat 连接断开后机器人就不再响应。
 
 ## 主动说话
 
-| 配置项                              | 默认值  | 含义                                             |
-| ----------------------------------- | ------- | ------------------------------------------------ |
-| `proactive.enabled`                 | `true`  | 是否启用主动说话心跳                             |
-| `proactive.silenceThresholdSeconds` | `10800` | 沉默多久后才开始计算主动说话概率                 |
-| `proactive.startProbability`        | `0.01`  | 刚跨过阈值时的概率                               |
-| `proactive.probabilityPerHour`      | `0.05`  | 每多沉默一小时概率的增量                         |
-| `proactive.tickSeconds`             | `3600`  | 心跳间隔（秒）                                   |
-| `proactive.allowGroups`             | `[]`    | 只在这些群里主动说话，逗号分隔；留空表示不限制   |
-| `proactive.allowUsers`              | `[]`    | 只在这些私聊里主动说话，逗号分隔；留空表示不限制 |
+| 配置项                              | 默认值  | 含义                                                   |
+| ----------------------------------- | ------- | ------------------------------------------------------ |
+| `proactive.enabled`                 | `true`  | 是否启用主动说话心跳                                   |
+| `proactive.silenceThresholdSeconds` | `10800` | 沉默多久后才开始计算主动说话概率                       |
+| `proactive.startProbability`        | `0.01`  | 刚跨过阈值时的概率                                     |
+| `proactive.probabilityPerHour`      | `0.05`  | 每多沉默一小时概率的增量                               |
+| `proactive.tickSeconds`             | `3600`  | 心跳间隔（秒）                                         |
+| `proactive.allowGroups`             | `[]`    | 只在这些群里主动说话，逗号分隔；留空表示都不主动说话   |
+| `proactive.allowUsers`              | `[]`    | 只在这些私聊里主动说话，逗号分隔；留空表示都不主动说话 |
 
-- 白名单按聊天的类型分别生效：群看 `allowGroups`，私聊看 `allowUsers`；两者都为空表示不限制。
+- 白名单按聊天的类型分别生效：群看 `allowGroups`，私聊看 `allowUsers`；**两者默认都为空，表示不主动说话**。
 - 会话覆盖里写死 `proactive: true` 的聊天不受白名单限制，写死 `false` 的一律不主动开口。
 - 会话覆盖里的 `proactiveProbability` 是这个聊天单次心跳的触发概率，写了就用它，
   不再随沉默时长增长；沉默阈值对所有聊天一视同仁。
-- 主动说话由配置放行的聊天自动触发，轮次按 `owner` 角色执行；因模型未发送而补的提醒
-  沿用被提醒那一轮的角色，不会把 owner / 管理员降成普通成员。
+- 主动说话由配置放行的聊天自动触发，轮次按最低权限的 `proactive` 角色执行（工具档与普通聊天一致，
+  不会拿到 `admin` 档的全工具）；因模型未发送而补的提醒沿用被提醒那一轮的角色。
 
 ## 出站限流
 

@@ -3,8 +3,13 @@ import { join } from "node:path"
 import type { QQBotConfig } from "../config"
 import type { Logger } from "../logger"
 
-/** 消息发送者的角色，决定用哪一档工具配置。 */
-export type Role = "owner" | "admin" | "member"
+/**
+ * 消息发送者的角色，决定用哪一档工具配置。
+ *
+ * `proactive` 是机器人主动发起话题时的角色：没有人参与这一轮，
+ * 它读到的上下文完全来自聊天内容，所以权限最低。
+ */
+export type Role = "owner" | "admin" | "member" | "proactive"
 
 /** 发送者角色：owner 最高，其次 admin，其余按普通成员处理。 */
 export function roleOf(config: QQBotConfig, senderQQ: string): Role {
@@ -37,6 +42,8 @@ export function defaultToolPolicy(): ToolPolicyFile {
     profiles: {
       chat: { allow: ["websearch", "webfetch", "qq_*"], deny: [] },
       readonly: { allow: ["read", "glob", "grep", "qq_*"], deny: [] },
+      // 主动说话没有人参与，权限不能跟着聊天内容走：与普通聊天同档。
+      proactive: { allow: ["websearch", "webfetch", "qq_*"], deny: [] },
       admin: { allow: ["*"], deny: [] },
     },
     chats: {},
@@ -141,9 +148,19 @@ export function parseToolPolicy(value: unknown, warn: (message: string) => void)
   }
 }
 
-/** 角色对应的配置档名字：owner 与 admin 用管理档，其他按聊天配置。 */
+/**
+ * 角色对应的配置档名字：owner 与 admin 用管理档，其他按聊天配置。
+ *
+ * 主动说话（`proactive`）固定用主动说话档：它没有人参与，
+ * 不能因为聊天里有 owner 或管理员说过话就借到管理档的全开权限。
+ */
 export function profileNameFor(file: ToolPolicyFile, role: Role, chatKey: string): string {
-  if (role !== "member") return file.profiles.admin ? "admin" : file.defaultProfile
+  if (role === "owner" || role === "admin") {
+    return file.profiles.admin ? "admin" : file.defaultProfile
+  }
+  if (role === "proactive") {
+    return file.profiles.proactive ? "proactive" : file.defaultProfile
+  }
   const named = file.chats[chatKey]
   if (named && file.profiles[named]) return named
   return file.defaultProfile
