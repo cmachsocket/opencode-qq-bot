@@ -22,6 +22,26 @@ import type { Tracer } from "../trace"
 /** 工具命名空间，最终工具名为 qq_send_message 等。 */
 export const TOOL_NAMESPACE = "qq"
 
+/**
+ * 暴露给模型的 QQ 工具名。
+ *
+ * 上游按 `namespace_工具名` 生成对外名字（点号换成下划线），模型只认这些名字；
+ * `qq_send_message` 是模型发消息的唯一入口。
+ */
+export const QQ_TOOL_NAMES = [
+  "qq_send_message",
+  "qq_send_image",
+  "qq_send_sticker",
+  "qq_send_record",
+  "qq_send_forward",
+  "qq_send_poke",
+  "qq_delete_message",
+  "qq_favorite_list",
+  "qq_get_group_member_info",
+  "qq_fetch_ptt_text",
+  "qq_get_login_info",
+] as const
+
 export interface ToolDeps {
   ctx: Plugin.Context
   config: QQBotConfig
@@ -352,6 +372,8 @@ export async function registerTools(deps: ToolDeps): Promise<{ dispose(): Promis
       description:
         "QQ 聊天工具：发送消息、图片、语音、合并转发，以及查询用户信息。仅在 QQ 群聊或私聊会话里可用，其他会话调用会返回错误。",
     })
+    // 模型按这些名字调用工具；名字对不上时模型只会说「找不到工具」。
+    logger.info("已注册 QQ 工具", { tools: [...QQ_TOOL_NAMES] })
 
     // QQ 工具必须作为独立工具暴露。Code Mode 只给模型一个 execute，
     // 按聊天配置的 qq_* 规则永远命不中，普通成员会连发消息的能力都没有。

@@ -36,7 +36,7 @@ import { registerAskGuard } from "./tools/ask-guard"
 import { defaultToolProfilesPath, roleOf, ToolPolicy } from "./tools/policy"
 import { registerToolPolicy } from "./tools/policy-guard"
 import { registerSendGuard } from "./tools/send-guard"
-import { createPlainSender, registerTools, sendPlainMessage } from "./tools/qq"
+import { createPlainSender, registerTools, sendPlainMessage, TOOL_NAMESPACE } from "./tools/qq"
 import { createEmojiRunner, emojiCommand } from "./emoji/command"
 import { describeNotice, noticeMatches, noticeTarget } from "./events/notice"
 import { NoticeStore } from "./events/store"
@@ -358,12 +358,25 @@ export default Plugin.define({
             delete event.tools[name]
           }
         }
+        const profile = await policy.profileOf(role, targetKey(target))
+        // 模型这一轮实际能用的 QQ 工具：模型只认这些名字，缺一个就发不出消息。
+        const qqTools = Object.keys(event.tools).filter((name) =>
+          name.startsWith(`${TOOL_NAMESPACE}_`),
+        )
         logger.debug(`上下文钩子：按角色收窄工具`, {
           target: targetLabel(target),
           role,
-          profile: await policy.profileOf(role, targetKey(target)),
+          profile,
           removed,
+          qqTools,
         })
+        if (!qqTools.includes("qq_send_message")) {
+          logger.warn(`${targetLabel(target)} 模型这一轮看不到 qq_send_message，发不出消息`, {
+            role,
+            profile,
+            removed,
+          })
+        }
       }
     })
 

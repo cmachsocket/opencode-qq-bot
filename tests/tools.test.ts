@@ -3,7 +3,7 @@ import { mkdtemp, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import type { Plugin } from "@opencode/plugin"
-import { registerTools, TOOL_NAMESPACE } from "../src/tools/qq"
+import { QQ_TOOL_NAMES, registerTools, TOOL_NAMESPACE } from "../src/tools/qq"
 import { DEFAULT_CONFIG, type QQBotConfig } from "../src/config"
 import type { ChatTarget } from "../src/chat"
 import type { CustomFace } from "../src/emoji/favorites"
@@ -177,6 +177,11 @@ describe("registerTools", () => {
   it("exposes every tool directly instead of through Code Mode", async () => {
     const { tools } = await createHarness()
     expect([...tools.values()].every((tool) => tool.options?.codemode === false)).toBe(true)
+  })
+
+  it("registers the tools under the names the model calls", async () => {
+    const { tools } = await createHarness()
+    expect([...tools.keys()].sort()).toEqual([...QQ_TOOL_NAMES].sort())
   })
 
   it("keeps the message formatting in one send", async () => {
