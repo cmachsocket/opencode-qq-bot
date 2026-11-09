@@ -6,6 +6,42 @@
 
 ### Added
 
+- 出站限流等待档（A1）：新增 `rateLimit.stall`（`QQ_RATE_STALL`，默认 `false`）与
+  `rateLimit.stallMaxWaitMs`（`QQ_RATE_STALL_MAX_WAIT_MS`，默认 60000）。
+  打开后，每分钟窗口满了不再直接拒绝，而是等到最早的记录滑出窗口再发；
+  **只作用在每分钟窗口**：每小时上限仍然直接拒绝，不会真的睡一小时。
+  等待总时长超过 `rateLimit.stallMaxWaitMs` 就放弃等待并把原因回给模型
+  （说明需要等多久、允许等多久），让模型自己决定停不停。
+  判定结果新增 `stalled` 字段，日志能看出这次发送是不是靠等待换来的。
+- 唤醒判定增强（A2）：新增全局唤醒策略 `wake.prefixes`（`QQ_WAKE_PREFIXES`，默认 `["/"]`）、
+  `wake.ignoreAtAll`（`QQ_WAKE_IGNORE_AT_ALL`，默认 `true`）、
+  `wake.replyToSelf`（`QQ_WAKE_REPLY_TO_SELF`，默认 `true`）、
+  `wake.ignoreAtOthers`（`QQ_WAKE_IGNORE_AT_OTHERS`，默认 `true`）。
+  判定顺序：私聊必回 → 会话覆盖里写死的 `all` / `none` / `prefix` 优先 →
+  被直接 @ 必回 → 群里第一个 @ 指向别人时不唤醒（并在提示词里说明"这条消息不是在跟你说话，不要回复。"）→
+  全局前缀命中 → @全体成员（默认忽略）→ 回复机器人自己（默认必回）。
+  每会话的 `all` / `mention` / `prefix` / `none` 覆盖保持原语义，优先级高于全局策略；
+  机器人自己的消息仍然忽略。新增唤醒原因 `at_all` 与 `reply`。
+- 分段回复节奏（B1）：新增 `reply.minDelayMs` / `reply.maxDelayMs`
+  （`QQ_REPLY_MIN_DELAY_MS` / `QQ_REPLY_MAX_DELAY_MS`，默认都是 `0`）、
+  `reply.segmentChars`（`QQ_REPLY_SEGMENT_CHARS`，默认 150）、
+  `reply.forwardThresholdChars`（`QQ_REPLY_FORWARD_THRESHOLD_CHARS`，默认 1500）。
+  段间隔在 `[minDelayMs, maxDelayMs]` 之间随机取值；两个都留 0 时沿用旧的 `sendDelayMs` 固定间隔。
+  单条消息按 `reply.segmentChars` 切分成多段发出；超过 `reply.forwardThresholdChars`
+  字的回复自动转成合并转发（复用已有的 `qq_send_forward` 通道），过长时拆成多个节点。
+- 主动说话策略（B3）：新增白名单 `proactive.allowGroups` / `proactive.allowUsers`
+  （`QQ_PROACTIVE_ALLOW_GROUPS` / `QQ_PROACTIVE_ALLOW_USERS`，默认空 = 不限制），
+  只在这些群 / 私聊里主动开口；会话覆盖里写死 `proactive: true` 的聊天不受白名单限制。
+  每会话还能单独写 `proactiveProbability`（0 到 1，写错只忽略该项并告警），
+  作为该会话单次心跳的触发概率，不再随沉默时长增长；没写就沿用全局概率公式。
+  沉默阈值对所有会话一视同仁。
+- 调用链追踪（C1）：新增 `src/trace.ts`。一条入站消息拿一个 `trace_id`，
+  事件接收 → 模型起跑 → 模型处理 → 出站回复各记一个 `span`，
+  日志里带上 `trace_id` 就能把这一轮串起来。
+  追踪记录按天写成 JSONL（`qq-bot-traces-YYYY-MM-DD.jsonl`），只记元数据不记消息正文；
+  新增 `trace.enabled`（`QQ_TRACE_ENABLED`，默认 `true`）、`trace.dir`（`QQ_TRACE_DIR`，
+  默认与日志同目录）、`trace.maxSizeMb`（`QQ_TRACE_MAX_SIZE_MB`，默认 80）、
+  `trace.retentionDays`（`QQ_TRACE_RETENTION_DAYS`，默认 7），超期与超容量的旧文件会被清掉。
 - 启动时第一行日志输出插件版本号，便于确认实际运行的版本。
 - 准入判定（C6）：`groups` / `users` 改成 `access.allow` 与 `access.deny` 双列表
   （`QQ_ALLOW_GROUPS` / `QQ_ALLOW_USERS` / `QQ_DENY_GROUPS` / `QQ_DENY_USERS` /

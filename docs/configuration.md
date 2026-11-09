@@ -21,7 +21,7 @@
   非正整数会被忽略并告警。
 - **模型**：`provider/model` 或 `provider/model/variant`。
   写错会回退到默认模型并输出告警。
-- **未知配置项**：顶层和 `napcat`、`proactive`、`reminder`、`keepAlive`、`history`、`rateLimit`、`sensitive`、`events`、`log`、`media` 下的未知键会输出告警，
+- **未知配置项**：顶层和 `napcat`、`proactive`、`wake`、`reply`、`trace`、`reminder`、`keepAlive`、`history`、`rateLimit`、`sensitive`、`events`、`log`、`media` 下的未知键会输出告警，
   不会被静默忽略。
 
 ## 数值范围
@@ -35,11 +35,18 @@
 | `proactive.startProbability`        | 0 到 1     |
 | `proactive.probabilityPerHour`      | 0 到 1     |
 | `proactive.tickSeconds`             | 大于 0     |
+| `reply.minDelayMs`                  | 大于等于 0 |
+| `reply.maxDelayMs`                  | 大于等于 0 |
+| `reply.segmentChars`                | 大于等于 1 |
+| `reply.forwardThresholdChars`       | 大于等于 0 |
+| `trace.maxSizeMb`                   | 大于等于 1 |
+| `trace.retentionDays`               | 大于等于 1 |
 | `keepAlive.seconds`                 | 大于 0     |
 | `history.count`                     | 大于等于 0 |
 | `rateLimit.maxPerMinute`            | 大于等于 0 |
 | `rateLimit.maxPerHour`              | 大于等于 0 |
 | `rateLimit.minGapMs`                | 大于等于 0 |
+| `rateLimit.stallMaxWaitMs`          | 大于等于 0 |
 | `sensitive.enabled`                 | 布尔值     |
 | `log.maxFiles`                      | 大于等于 1 |
 
@@ -88,21 +95,82 @@ NapCat 连接断开后机器人就不再响应。
 `history.count` 为 `0` 表示关闭历史补齐。补齐只在每个目标的第一次投递时做一次，
 失败不会留下“已经补过”的标记，下一轮会重试。本次运行里已经实时处理过的消息不会被重复补进来。
 
+## 唤醒判定
+
+群里什么时候必须回复由「全局唤醒策略 + 会话覆盖」一起决定，私聊永远回复。
+
+| 配置项                | 默认值  | 含义                                                 |
+| --------------------- | ------- | ---------------------------------------------------- |
+| `wake.prefixes`       | `["/"]` | 全局唤醒前缀，逗号分隔；消息以这些前缀开头就必须回复 |
+| `wake.ignoreAtAll`    | `true`  | 是否忽略 @全体成员                                   |
+| `wake.replyToSelf`    | `true`  | 回复机器人自己的消息是否必须回复                     |
+| `wake.ignoreAtOthers` | `true`  | 群里第一个 @ 指向别人时是否不唤醒机器人              |
+
+判定顺序：
+
+1. 私聊一律必回。
+2. 会话覆盖里的 `wake` 优先：`none` 完全不理，`all` 每条都必回。
+3. 消息里直接 @ 了机器人 → 必回（`mention`）。
+4. 群里第一个 @ 指向的是别人 → 这条消息不是跟机器人说的，不唤醒也不插话。
+5. 命中全局前缀 → 必回（`prefix`）；`wake: prefix` 的聊天只看自己写的前缀。
+6. @全体成员 → `wake.ignoreAtAll` 为 `false` 时必回（`at_all`），默认忽略。
+7. 回复了机器人自己 → `wake.replyToSelf` 为 `true` 时必回（`reply`）。
+8. 其余情况不强制回复，模型可以自行决定要不要说话。
+
+## 分段回复
+
+模型回复太长时按段发出去，段与段之间留一点随机间隔，看起来更像人在分条打字。
+
+| 配置项                        | 默认值 | 含义                                                 |
+| ----------------------------- | ------ | ---------------------------------------------------- |
+| `reply.minDelayMs`            | `0`    | 分段之间的随机等待下限（毫秒）                       |
+| `reply.maxDelayMs`            | `0`    | 分段之间的随机等待上限（毫秒），`0` 表示改用固定间隔 |
+| `reply.segmentChars`          | `150`  | 单段最多多少字，超出就拆成多段发送                   |
+| `reply.forwardThresholdChars` | `1500` | 超过多少字改用合并转发，`0` 表示不转换               |
+
+- 配了 `reply.maxDelayMs` 就在区间里随机等待；没配时沿用 `sendDelayMs` 的固定间隔，行为与旧版一致。
+- 超过 `reply.forwardThresholdChars` 的回复改用合并转发，一条消息占一条，不刷屏；
+  转发节点太长时再拆成多个节点。
+- 拆分与合并转发都只影响出站形式，不改变内容。
+
+## 主动说话
+
+| 配置项                              | 默认值  | 含义                                             |
+| ----------------------------------- | ------- | ------------------------------------------------ |
+| `proactive.enabled`                 | `true`  | 是否启用主动说话心跳                             |
+| `proactive.silenceThresholdSeconds` | `10800` | 沉默多久后才开始计算主动说话概率                 |
+| `proactive.startProbability`        | `0.01`  | 刚跨过阈值时的概率                               |
+| `proactive.probabilityPerHour`      | `0.05`  | 每多沉默一小时概率的增量                         |
+| `proactive.tickSeconds`             | `3600`  | 心跳间隔（秒）                                   |
+| `proactive.allowGroups`             | `[]`    | 只在这些群里主动说话，逗号分隔；留空表示不限制   |
+| `proactive.allowUsers`              | `[]`    | 只在这些私聊里主动说话，逗号分隔；留空表示不限制 |
+
+- 白名单按聊天的类型分别生效：群看 `allowGroups`，私聊看 `allowUsers`；两者都为空表示不限制。
+- 会话覆盖里写死 `proactive: true` 的聊天不受白名单限制，写死 `false` 的一律不主动开口。
+- 会话覆盖里的 `proactiveProbability` 是这个聊天单次心跳的触发概率，写了就用它，
+  不再随沉默时长增长；沉默阈值对所有聊天一视同仁。
+
 ## 出站限流
 
 出站消息按目标（群 / 私聊）单独计数，避免模型一轮连发把群刷爆，也降低账号风控风险。
 
-| 配置项                   | 默认值 | 含义                                               |
-| ------------------------ | ------ | -------------------------------------------------- |
-| `rateLimit.maxPerMinute` | `8`    | 每分钟最多发多少条，超出则拒绝这次发送             |
-| `rateLimit.maxPerHour`   | `60`   | 每小时最多发多少条，超出则拒绝这次发送             |
-| `rateLimit.minGapMs`     | `1500` | 相邻两次发送之间的最小间隔（毫秒），不足则先等一等 |
+| 配置项                     | 默认值  | 含义                                               |
+| -------------------------- | ------- | -------------------------------------------------- |
+| `rateLimit.maxPerMinute`   | `8`     | 每分钟最多发多少条，超出则拒绝这次发送             |
+| `rateLimit.maxPerHour`     | `60`    | 每小时最多发多少条，超出则拒绝这次发送             |
+| `rateLimit.minGapMs`       | `1500`  | 相邻两次发送之间的最小间隔（毫秒），不足则先等一等 |
+| `rateLimit.stall`          | `false` | 触顶时等窗口结束再发，而不是直接拒绝               |
+| `rateLimit.stallMaxWaitMs` | `60000` | 最多等多久（毫秒），超过就直接拒绝                 |
 
-- 三个值都是 `0` 表示不限制。
+- 三个计数相关的值都是 `0` 表示不限制。
 - 拒绝时工具返回错误说明，模型会收到「请停止发送并结束本轮」；本轮同样算已回复，不会再触发补发提醒。
 - 计数只在内存里，插件重启后重新开始；超长消息拆出的每一段都算一条。
-- 同一段消息内部的多段共用一个操作 id：段与段之间只按 `sendDelayMs` 等待，不再叠加限流间隔。
+- 同一段消息内部的多段共用一个操作 id：段与段之间只按发送间隔等待，不再叠加限流间隔。
 - 插件自己生成的消息（`/emoji-label` 的结果与进度）走另一个计数域：它们只受间隔约束，不会占用模型回复的额度。
+- `rateLimit.stall` 打开后，只有「每分钟」这一档会等窗口结束：等到最早的记录滑出窗口就立刻发，
+  等待总时长不超过 `rateLimit.stallMaxWaitMs`。
+- 「每小时」这一档始终直接拒绝，不会真的睡一小时——那等于把模型挂起一整小时。
+- 等待超过上限时按拒绝处理，原因里写明还要等多久、允许多少。
 
 ## 出站敏感信息拦截
 
@@ -141,6 +209,24 @@ NapCat 连接断开后机器人就不再响应。
   `[REDACTED:<检测器>]`，`message`、`meta` 里的 Error stack 一并覆盖。
 - 脱敏只打码不拦截：普通中文聊天、QQ 号、手机号、邮箱、URL、UUID 原样保留。
 - 插件卸载时会等文件流落盘，避免丢掉最后几行日志。
+
+## 调用链追踪
+
+一条入站消息拿一个 `trace_id`，事件接收、模型起跑、模型处理、出站回复各记一个节点，
+事后按 `trace_id` 就能把这一轮串起来。
+
+| 配置项                | 默认值       | 含义                     |
+| --------------------- | ------------ | ------------------------ |
+| `trace.enabled`       | `true`       | 是否记录调用链追踪       |
+| `trace.dir`           | 与日志同目录 | 追踪文件目录             |
+| `trace.maxSizeMb`     | `80`         | 追踪文件总容量上限（MB） |
+| `trace.retentionDays` | `7`          | 追踪文件保留天数         |
+
+- 节点按天写进 `qq-bot-traces-YYYY-MM-DD.jsonl`，一行一个 JSON。
+- 只记元数据（目标、消息号、字数、模式），不记消息正文。
+- 超过保留天数的文件在启动时删掉；总容量超了先删最旧的文件。
+- 相关日志会带上 `trace_id`，可以按它把日志与追踪文件对起来。
+- `trace.enabled` 设为 `false`（或 `QQ_TRACE_ENABLED=0`）可以完全关闭。
 
 ## 出站媒体路径
 
@@ -200,14 +286,15 @@ NapCat 连接断开后机器人就不再响应。
 
 ### 全局项与会话项对照
 
-| 会话字段    | 覆盖的全局项                | 取值                                  | 说明                                                     |
-| ----------- | --------------------------- | ------------------------------------- | -------------------------------------------------------- |
-| `wake`      | 无（内置默认：被 @ 才必回） | `all` / `mention` / `prefix` / `none` | 群聊的唤醒条件                                           |
-| `prefix`    | 无                          | 字符串                                | `wake` 为 `prefix` 时使用的前缀                          |
-| `proactive` | `proactive.enabled`         | 布尔                                  | `false` 关闭该聊天的主动说话；不写时跟随全局             |
-| `agent`     | `agent`                     | 字符串                                | 覆盖该聊天使用的 OpenCode agent                          |
-| `model`     | `model`                     | `provider/model[/variant]`            | 覆盖该聊天使用的模型                                     |
-| `soul`      | `soulPath` / `soulName`     | 文件路径                              | 覆盖该聊天使用的角色设定文件，相对路径按当前工作目录解析 |
+| 会话字段               | 覆盖的全局项                                                  | 取值                                  | 说明                                                     |
+| ---------------------- | ------------------------------------------------------------- | ------------------------------------- | -------------------------------------------------------- |
+| `wake`                 | `wake.*`                                                      | `all` / `mention` / `prefix` / `none` | 群聊的唤醒条件                                           |
+| `prefix`               | `wake.prefixes`                                               | 字符串                                | `wake` 为 `prefix` 时使用的前缀                          |
+| `proactive`            | `proactive.enabled`                                           | 布尔                                  | `false` 关闭该聊天的主动说话；不写时跟随全局             |
+| `proactiveProbability` | `proactive.startProbability` / `proactive.probabilityPerHour` | 0 到 1                                | 该聊天单次心跳的触发概率，不写时用全局公式               |
+| `agent`                | `agent`                                                       | 字符串                                | 覆盖该聊天使用的 OpenCode agent                          |
+| `model`                | `model`                                                       | `provider/model[/variant]`            | 覆盖该聊天使用的模型                                     |
+| `soul`                 | `soulPath` / `soulName`                                       | 文件路径                              | 覆盖该聊天使用的角色设定文件，相对路径按当前工作目录解析 |
 
 ### 覆盖行为
 
@@ -217,10 +304,13 @@ NapCat 连接断开后机器人就不再响应。
 - `proactive` 只能把该聊天的主动说话关小：`false` 一定不主动开口；不写时跟随
   `proactive.enabled`；全局 `proactive.enabled` 为 `false` 时心跳不运行，会话写 `true`
   也不会重新开启。`wake: none` 同样会关掉主动说话。
+- `proactiveProbability` 是这个聊天单次心跳的触发概率（0 到 1），写了就用它，
+  不再随沉默时长增长；没写就按全局公式算。沉默阈值两边一视同仁。
 - `agent` / `model` 覆盖优先于全局配置：会话首次建立时直接带上覆盖值，之后覆盖变化时
   对已有会话调用 `switchAgent` / `switchModel` 切换，值没变就不切。
 - `soul` 覆盖 `soulPath` / `soulName` 选出的默认文件，按 mtime 热加载，改完下一轮生效。
-- 必回与否写进提示词：命中时明确要求模型回复，没命中时允许它不回复。
+- 必回与否写进提示词：命中时明确要求模型回复，没命中时允许它不回复；
+  群里第一条 @ 的是别人时，提示词会明确说「这条消息不是在跟你说话，不要回复」。
 - 文件缺失按默认走；单个字段写错只忽略这一项并告警；整份文件解析失败沿用上一份配置。
 - `/status` 会列出每个聊天的唤醒方式与主动说话开关。
 

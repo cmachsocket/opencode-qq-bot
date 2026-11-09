@@ -53,14 +53,14 @@ AstrBot 自己充当 agent runtime（44 个 provider、工具循环、OS 沙箱�
 
 | #   | 条目                | 状态         | 落点                                           | 备注                                                                            |
 | --- | ------------------- | ------------ | ---------------------------------------------- | ------------------------------------------------------------------------------- |
-| A1  | 限流缺 `stall` 一档 | **待评审**   | `src/rate-limit.ts`                            | 我们只有「超出即拒绝」；是否补「睡到窗口结束再发」未定                          |
-| A2  | 唤醒判定过简        | **部分实现** | `src/overrides.ts`                             | 每会话可设 all / mention / prefix / none；仍缺忽略 @all、群内首段 @别人不唤醒   |
+| A1  | 限流缺 `stall` 一档 | **已实现**   | `src/rate-limit.ts`                            | `rateLimit.stall` 只让每分钟窗口睡到窗口结束再发，每小时上限仍然直接拒绝        |
+| A2  | 唤醒判定过简        | **已实现**   | `src/overrides.ts`、`src/naplink/render.ts`    | 全局 `wake.*` 策略 + 每会话覆盖；忽略 @all、群内首段 @别人不唤醒、回复自己必回  |
 | A3  | 白名单只有 allow    | **部分实现** | `src/access.ts`                                | 已有 allow / deny 双列表与 owner / 管理员角色；群管理员分级未做                 |
-| B1  | 分段回复节奏固定    | **待实现**   | `src/tools/qq.ts`                              | 只有恒定间隔；缺按长度递增的节奏与超长转合并转发                                |
+| B1  | 分段回复节奏固定    | **已实现**   | `src/tools/qq.ts`、`src/outbound.ts`           | `reply.*`：随机段间隔、单段 150 字、超 1500 字自动转合并转发                    |
 | B2  | 群消息历史不落库    | **待商讨**   | `src/naplink/history.ts`                       | 依赖 B2「分对象记忆存储」的结论；落库 = 新增一份数据留存面                      |
-| B3  | 主动回复策略简陋    | **部分实现** | `src/overrides.ts`、`src/session/proactive.ts` | 每会话可关掉主动说话；仍缺按会话的概率覆盖                                      |
+| B3  | 主动回复策略简陋    | **已实现**   | `src/overrides.ts`、`src/session/proactive.ts` | 白名单 `proactive.allowGroups` / `allowUsers` + 每会话 `proactiveProbability`   |
 | B4  | 失败文案不可配      | **待实现**   | `src/session/manager.ts`                       | 兜底已实现，文案硬编码                                                          |
-| C1  | 无调用链追踪        | **部分实现** | `src/logger.ts`                                | 日志文件与轮转已有；没有 trace / span 概念                                      |
+| C1  | 无调用链追踪        | **已实现**   | `src/trace.ts`                                 | `trace_id` / `span_id` 贯穿事件接收 → 模型起跑 → 模型处理 → 出站回复            |
 | C2  | 配置写入无原子性    | **待实现**   | `src/config.ts`                                | 配置文件只读，没有写入路径；运行状态走 `ctx.storage.set`，未做临时文件 + rename |
 | C3  | 面板 API 无契约真源 | **待实现**   | —                                              | 面板尚未开工，开工时的做法参照                                                  |
 
@@ -68,28 +68,44 @@ AstrBot 自己充当 agent runtime（44 个 provider、工具循环、OS 沙箱�
 
 ## 四、已实现条目的配置面
 
-| 配置项                     | 默认值                        | 环境变量                  | 对应条目 |
-| -------------------------- | ----------------------------- | ------------------------- | -------- |
-| `rateLimit.maxPerMinute`   | `8`                           | `QQ_RATE_MAX_PER_MINUTE`  | A1       |
-| `rateLimit.maxPerHour`     | `60`                          | `QQ_RATE_MAX_PER_HOUR`    | A1       |
-| `rateLimit.minGapMs`       | `1500`                        | `QQ_RATE_MIN_GAP_MS`      | A1       |
-| `sensitive.enabled`        | `true`                        | `QQ_SENSITIVE_ENABLED`    | A2       |
-| `media.allowedDirs`        | `[]`（不放行任何本地文件）    | `QQ_MEDIA_ALLOWED_DIRS`   | A6       |
-| `history.count`            | `20`                          | `QQ_HISTORY_COUNT`        | B1       |
-| `log.level`                | `"info"`                      | `QQ_LOG_LEVEL`            | C5       |
-| `log.dir`                  | `""`（默认目录）              | `QQ_LOG_DIR`              | C5       |
-| `log.maxSize`              | `"5m"`                        | `QQ_LOG_MAX_SIZE`         | C5       |
-| `log.maxFiles`             | `5`                           | `QQ_LOG_MAX_FILES`        | C5       |
-| `sendDelayMs`              | `1000`                        | `QQ_SEND_DELAY_MS`        | B1       |
-| `access.allow.groups`      | `[]`                          | `QQ_ALLOW_GROUPS`         | C6       |
-| `access.allow.users`       | `[]`                          | `QQ_ALLOW_USERS`          | C6       |
-| `access.deny.groups`       | `[]`                          | `QQ_DENY_GROUPS`          | C6       |
-| `access.deny.users`        | `[]`                          | `QQ_DENY_USERS`           | C6       |
-| `access.allowAllWhenEmpty` | `false`                       | `QQ_ALLOW_ALL_WHEN_EMPTY` | C6       |
-| `ownerQQ`                  | 未设置                        | `QQ_OWNER_QQ`             | C6       |
-| `admins`                   | `[]`                          | `QQ_ADMINS`               | C6       |
-| `toolProfilesPath`         | `""`（`tool-profiles.json`）  | `QQ_TOOL_PROFILES`        | A4       |
-| `chatOverridesPath`        | `""`（`chat-overrides.json`） | `QQ_CHAT_OVERRIDES`       | C6       |
+| 配置项                        | 默认值                        | 环境变量                           | 对应条目   |
+| ----------------------------- | ----------------------------- | ---------------------------------- | ---------- |
+| `rateLimit.maxPerMinute`      | `8`                           | `QQ_RATE_MAX_PER_MINUTE`           | A1         |
+| `rateLimit.maxPerHour`        | `60`                          | `QQ_RATE_MAX_PER_HOUR`             | A1         |
+| `rateLimit.minGapMs`          | `1500`                        | `QQ_RATE_MIN_GAP_MS`               | A1         |
+| `rateLimit.stall`             | `false`                       | `QQ_RATE_STALL`                    | AstrBot A1 |
+| `rateLimit.stallMaxWaitMs`    | `60000`                       | `QQ_RATE_STALL_MAX_WAIT_MS`        | AstrBot A1 |
+| `wake.prefixes`               | `["/"]`                       | `QQ_WAKE_PREFIXES`                 | AstrBot A2 |
+| `wake.ignoreAtAll`            | `true`                        | `QQ_WAKE_IGNORE_AT_ALL`            | AstrBot A2 |
+| `wake.replyToSelf`            | `true`                        | `QQ_WAKE_REPLY_TO_SELF`            | AstrBot A2 |
+| `wake.ignoreAtOthers`         | `true`                        | `QQ_WAKE_IGNORE_AT_OTHERS`         | AstrBot A2 |
+| `reply.minDelayMs`            | `0`                           | `QQ_REPLY_MIN_DELAY_MS`            | AstrBot B1 |
+| `reply.maxDelayMs`            | `0`                           | `QQ_REPLY_MAX_DELAY_MS`            | AstrBot B1 |
+| `reply.segmentChars`          | `150`                         | `QQ_REPLY_SEGMENT_CHARS`           | AstrBot B1 |
+| `reply.forwardThresholdChars` | `1500`                        | `QQ_REPLY_FORWARD_THRESHOLD_CHARS` | AstrBot B1 |
+| `proactive.allowGroups`       | `[]`（不限制）                | `QQ_PROACTIVE_ALLOW_GROUPS`        | AstrBot B3 |
+| `proactive.allowUsers`        | `[]`（不限制）                | `QQ_PROACTIVE_ALLOW_USERS`         | AstrBot B3 |
+| `trace.enabled`               | `true`                        | `QQ_TRACE_ENABLED`                 | AstrBot C1 |
+| `trace.dir`                   | `""`（与日志同目录）          | `QQ_TRACE_DIR`                     | AstrBot C1 |
+| `trace.maxSizeMb`             | `80`                          | `QQ_TRACE_MAX_SIZE_MB`             | AstrBot C1 |
+| `trace.retentionDays`         | `7`                           | `QQ_TRACE_RETENTION_DAYS`          | AstrBot C1 |
+| `sensitive.enabled`           | `true`                        | `QQ_SENSITIVE_ENABLED`             | A2         |
+| `media.allowedDirs`           | `[]`（不放行任何本地文件）    | `QQ_MEDIA_ALLOWED_DIRS`            | A6         |
+| `history.count`               | `20`                          | `QQ_HISTORY_COUNT`                 | B1         |
+| `log.level`                   | `"info"`                      | `QQ_LOG_LEVEL`                     | C5         |
+| `log.dir`                     | `""`（默认目录）              | `QQ_LOG_DIR`                       | C5         |
+| `log.maxSize`                 | `"5m"`                        | `QQ_LOG_MAX_SIZE`                  | C5         |
+| `log.maxFiles`                | `5`                           | `QQ_LOG_MAX_FILES`                 | C5         |
+| `sendDelayMs`                 | `1000`                        | `QQ_SEND_DELAY_MS`                 | B1         |
+| `access.allow.groups`         | `[]`                          | `QQ_ALLOW_GROUPS`                  | C6         |
+| `access.allow.users`          | `[]`                          | `QQ_ALLOW_USERS`                   | C6         |
+| `access.deny.groups`          | `[]`                          | `QQ_DENY_GROUPS`                   | C6         |
+| `access.deny.users`           | `[]`                          | `QQ_DENY_USERS`                    | C6         |
+| `access.allowAllWhenEmpty`    | `false`                       | `QQ_ALLOW_ALL_WHEN_EMPTY`          | C6         |
+| `ownerQQ`                     | 未设置                        | `QQ_OWNER_QQ`                      | C6         |
+| `admins`                      | `[]`                          | `QQ_ADMINS`                        | C6         |
+| `toolProfilesPath`            | `""`（`tool-profiles.json`）  | `QQ_TOOL_PROFILES`                 | A4         |
+| `chatOverridesPath`           | `""`（`chat-overrides.json`） | `QQ_CHAT_OVERRIDES`                | C6         |
 
 取值规则、限制与示例见 [`configuration.md`](./configuration.md)。
 
@@ -101,18 +117,15 @@ AstrBot 自己充当 agent runtime（44 个 provider、工具循环、OS 沙箱�
 
 ### 待实现
 
-| 来源    | #   | 条目          | 前置条件 / 说明                    |
-| ------- | --- | ------------- | ---------------------------------- |
-| AstrBot | B1  | 分段回复节奏  | 依赖 qq-bridge B5 已落地的切分能力 |
-| AstrBot | B4  | 失败文案可配  | 文案应走配置，不应走代码           |
-| AstrBot | C2  | 配置原子写    | 与面板开工绑定                     |
-| AstrBot | C3  | 面板 API 契约 | 与面板开工绑定                     |
+| 来源    | #   | 条目          | 前置条件 / 说明          |
+| ------- | --- | ------------- | ------------------------ |
+| AstrBot | B4  | 失败文案可配  | 文案应走配置，不应走代码 |
+| AstrBot | C2  | 配置原子写    | 与面板开工绑定           |
+| AstrBot | C3  | 面板 API 契约 | 与面板开工绑定           |
 
 ### 待评审
 
-| 来源    | #   | 条目            | 待定问题                                         |
-| ------- | --- | --------------- | ------------------------------------------------ |
-| AstrBot | A1  | 限流 `stall` 档 | 长等待是否会挤占会话队列；是否只用「拒绝」更可控 |
+当前没有待评审条目。
 
 ### 待商讨
 
