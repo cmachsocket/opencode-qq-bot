@@ -6,7 +6,7 @@ import { type ChatTarget, targetKey, targetLabel } from "./chat"
 import { allowedTargets, isTargetAllowed } from "./access"
 import { MIGRATION_WARNING_PREFIX, resolveConfig, type QQBotConfig } from "./config"
 import { resolveHome } from "./home"
-import { claimInstance, disposePrevious, takeHandover } from "./instance"
+import { claimInstance, takeHandover } from "./instance"
 import { KeepAlive } from "./keepalive"
 import { createLogger, closeLogger, defaultLogDir, flushLogger, type Logger } from "./logger"
 import { defaultMediaDir, OutboundMedia } from "./media-path"
@@ -101,10 +101,7 @@ export default Plugin.define({
       maxFiles: config.log.maxFiles,
       knownSecrets: knownSecrets(config),
     })
-    logger.info(`opencode-qq-bot v${version}`, {
-      pid: process.pid,
-      location: ctx.location.directory,
-    })
+    logger.info(`opencode-qq-bot v${version}`)
     reportWarnings(warnings, logger)
     // 正式日志器已经接管，兜底日志器只写控制台，用完就关掉。
     await closeLogger(bootstrap)
@@ -133,12 +130,10 @@ export default Plugin.define({
       await closeLogger(logger)
       return
     }
-    if (previous) {
+    if (previous?.dispose) {
       logger.info("接管已有的插件实例并卸载它", previous.label)
       try {
-        // 上一个实例可能还在初始化，清理函数还没注册：等它准备好再卸载。
-        const unloaded = await disposePrevious(previous)
-        if (!unloaded) logger.warn("上一个实例还没准备好，无法立刻卸载")
+        await previous.dispose()
       } catch (error) {
         logger.error("卸载旧插件实例失败", error)
       }
@@ -711,8 +706,6 @@ export default Plugin.define({
     }
 
     logger.info("插件已加载", {
-      pid: process.pid,
-      location: ctx.location.directory,
       allowGroups: config.access.allow.groups,
       allowUsers: config.access.allow.users,
       napcat: redactUrl(config.napcat.url),
@@ -779,12 +772,6 @@ export default Plugin.define({
       )
     }
     lease.setDispose(dispose)
-    // 初始化完成：接管方不必再等这个实例。
-    lease.markReady()
-    if (lease.superseded()) {
-      logger.info("本实例已被更新的实例接管，立即卸载")
-      await dispose()
-    }
     return dispose
   },
 })

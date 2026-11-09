@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { claimInstance, disposePrevious, takeHandover, type PluginInstance } from "../src/instance"
+import { claimInstance, takeHandover, type PluginInstance } from "../src/instance"
 import type { HandoverState } from "../src/session/manager"
 
 let sequence = 0
@@ -89,38 +89,6 @@ describe("claimInstance", () => {
     const second = claimInstance(home, nextLabel())
     expect(second.previous).toBeUndefined()
     second.lease.release()
-  })
-})
-
-describe("卸载上一个实例", () => {
-  it("等上一个实例初始化完再卸载", async () => {
-    let disposed = 0
-    const first = claimInstance(home, nextLabel())
-    const second = claimInstance(home, nextLabel())
-    const previous = second.previous as PluginInstance
-
-    // 上一个实例还没注册清理函数：接管方要等它的初始化信号。
-    const pending = disposePrevious(previous, 1000)
-    setTimeout(() => {
-      first.lease.setDispose(async () => {
-        disposed += 1
-      })
-      first.lease.markReady()
-    }, 10)
-
-    expect(await pending).toBe(true)
-    expect(disposed).toBe(1)
-    second.lease.release()
-  })
-
-  it("上一个实例一直不准备好就放弃卸载", async () => {
-    const first = claimInstance(home, nextLabel())
-    const second = claimInstance(home, nextLabel())
-    const previous = second.previous as PluginInstance
-
-    expect(await disposePrevious(previous, 10)).toBe(false)
-    second.lease.release()
-    first.lease.release()
   })
 })
 
