@@ -18,6 +18,8 @@ export interface PluginInstance {
   dispose?: () => Promise<void>
   /** 实例来源描述，仅用于日志。 */
   label?: string
+  /** 初始化完成的信号；初始化还没结束时，接管方靠它等待。 */
+  ready?: Promise<void>
 }
 
 export interface InstanceLease {
@@ -27,6 +29,8 @@ export interface InstanceLease {
   release(): void
   /** 本实例是否已经被更新的实例接管。 */
   superseded(): boolean
+  /** 标记初始化完成，接管方不必再等。 */
+  markReady(): void
   /**
    * 把在途状态留给接管本实例的新实例。
    *
@@ -73,6 +77,27 @@ export function takeHandover(): HandoverState[] {
 }
 
 /**
+ * 卸载上一个实例。
+ *
+ * 上一个实例可能还在初始化：它的清理函数要等初始化结束才注册，
+ * 这里先等它的初始化信号，再执行卸载。等不到就放弃，由它自己退出。
+ *
+ * @returns 是否真的卸载了。
+ */
+export async function disposePrevious(previous: PluginInstance, waitMs = 10_000): Promise<boolean> {
+  if (!previous.dispose) {
+    const timer = new Promise<undefined>((resolve) => {
+      const handle = setTimeout(resolve, waitMs)
+      handle.unref?.()
+    })
+    await Promise.race([previous.ready, timer])
+  }
+  if (!previous.dispose) return false
+  await previous.dispose()
+  return true
+}
+
+/**
  * 占用进程内唯一的实例槽位。
  *
  * @param directory 机器人固定服务的工作目录。
@@ -87,6 +112,7 @@ export function claimInstance(directory: string, label: string): InstanceClaim {
       lease: {
         setDispose() {},
         release() {},
+        markReady() {},
         superseded() {
           return false
         },
@@ -95,6 +121,11 @@ export function claimInstance(directory: string, label: string): InstanceClaim {
     }
   }
   const instance: PluginInstance = { label }
+  // 初始化完成的信号：新实例接管时，上一个实例可能还没准备好卸载函数。
+  let markReady!: () => void
+  instance.ready = new Promise<void>((resolve) => {
+    markReady = resolve
+  })
   state.active = { directory, instance }
   return {
     previous: active?.instance,
@@ -104,6 +135,9 @@ export function claimInstance(directory: string, label: string): InstanceClaim {
       },
       release() {
         if (state.active?.instance === instance) state.active = undefined
+      },
+      markReady() {
+        markReady()
       },
       superseded() {
         const active = state.active
