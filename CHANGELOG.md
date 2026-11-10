@@ -2,7 +2,7 @@
 
 本文件记录 opencode-qq-bot 的重要变更。
 
-## [Unreleased]
+## [0.6.8] - 2026-11-10
 
 ### Added
 
@@ -10,6 +10,13 @@
   `qq_request_reply` 说明为什么要回复，拿到权限后才能调用 `qq_send_message`；
   权限只在本轮有效，轮次结束就收回。这样模型得先想清楚该不该回复，而不是凭本能每条都回。
   私聊默认开放，不用申请；`reply.requirePermission` 可以关掉这个门槛。
+
+### Changed
+
+- 工具配置与会话覆盖也改放机器人工作目录（`tool-profiles.json` / `chat-overrides.json`）：
+  文件不存在时把随包的同名示例复制过去，升级插件与重启都不会覆盖用户改过的内容。
+  示例里的聊天号是占位，需要改成真实的群 / 私聊。
+  `toolProfilesPath` / `chatOverridesPath` 的相对路径改按工作目录解析。
 
 ## [0.6.7] - 2026-11-10
 
