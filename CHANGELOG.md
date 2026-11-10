@@ -2,6 +2,24 @@
 
 本文件记录 opencode-qq-bot 的重要变更。
 
+## [0.7.0] - 2026-11-10
+
+### Added
+
+- 日记：把聊天流水记成一篇篇 Markdown 日记，主人可以直接读，也能交给模型续写。
+  - 日记是文件不是数据库条目，默认放在机器人工作目录的 `diary/` 下，每个聊天一个子目录，
+    文件名是日期（`group-123/2026-11-10.md`）；成品不设条数上限，也不会自动清理。
+  - 命令 `/diary`（TUI 侧 `/qq-diary`）：`write` 写一篇、`list` 列出最近几篇、`show` 看某天的日记、
+    `auto` 立刻把今天的素材总结成一篇。
+  - 工具 `qq_diary_write` / `qq_diary_read` / `qq_diary_list` 与 `qq_send_file`；
+    日记以文件形式发出去，文件名形如 `日记-2026-11-10.md`。
+  - 每天 `diary.summaryTime`（默认 23:30）后由调度器自动总结一篇，推送给谁由 `diary.push`
+    决定（`owner` 默认 / `group` / `none`）。
+  - 只对 owner 与管理员开放：成员与主动说话档在 `tool-profiles.json` 里默认 `deny` 这些工具。
+  - 配置在 `diary` 一节：`path` / `enabled` / `retentionDays` / `summaryTime` / `tickSeconds` /
+    `summaryTargets` / `push` / `backfill` / `backfillMax` / `maxLineChars` / `maxLinesPerDay` /
+    `timeoutMs`，环境变量为 `QQ_DIARY_*`。详见 [docs/diary.md](docs/diary.md)。
+
 ## [0.6.8] - 2026-11-10
 
 ### Added
