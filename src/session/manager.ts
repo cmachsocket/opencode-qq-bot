@@ -1012,7 +1012,7 @@ export class SessionManager {
     if (state.buffer.length === 1 && bytes > MAX_BUFFER_BYTES) {
       this.logger.warn(`${targetLabel(state.target)} 单条消息超过缓存上限，仍保留该消息`)
     }
-    this.logger.debug(`${targetLabel(state.target)} 消息已入队（累计 ${state.buffer.length} 条）`)
+    this.logger.info(`${targetLabel(state.target)} 消息已入队（累计 ${state.buffer.length} 条）`)
   }
 
   /** 上游会话是否仍在执行。 */
@@ -1095,7 +1095,7 @@ export class SessionManager {
     if (state.buffer.length === 0) return
     if (!force && state.sessionID && this.verifiedSessions.has(state.sessionID)) {
       if (await this.sessionRunning(state.sessionID)) {
-        this.logger.debug(
+        this.logger.info(
           `${targetLabel(state.target)} 上游仍在执行，保留 ${state.buffer.length} 条消息`,
         )
         return
@@ -1200,7 +1200,7 @@ export class SessionManager {
         // restoredPositions 是启动时的快照，用来算重启期间的增量，不能被本轮的投递改写。
         this.scheduleSave()
       }
-      this.logger.debug(`${label} 已投递消息到会话 ${sessionID}`, {
+      this.logger.info(`${label} 已投递消息到会话 ${sessionID}`, {
         ...(turn.traceId ? { trace_id: turn.traceId } : {}),
       })
       return true

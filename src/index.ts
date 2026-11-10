@@ -657,6 +657,12 @@ export default Plugin.define({
             config.wake,
           )
 
+          logger.info(`${targetLabel(target)} 消息交给模型`, {
+            user: String(event.user_id),
+            role: senderRole,
+            required: decision.required,
+            ...(decision.reason ? { reason: decision.reason } : {}),
+          })
           await manager.enqueue(target, {
             text: formatModelMessage({
               sender: userName,
@@ -702,6 +708,10 @@ export default Plugin.define({
           return
         }
         manager.touch(target)
+        logger.info(`${targetLabel(target)} 收到 QQ 消息`, {
+          user: String(event.user_id),
+          message_id: String(event.message_id),
+        })
 
         // 一条入站消息一个追踪 id，后面各个节点都挂在它下面。
         const traceId = tracer?.startTrace()
