@@ -1,4 +1,5 @@
 import { DETECTORS, redact, scan, type Detector } from "flare-redact"
+import { ZERO_WIDTH } from "./text"
 
 /** 命中的敏感信息。 */
 export interface SensitiveHit {
@@ -57,9 +58,6 @@ const MIN_SECRET_LENGTH = 12
 
 /** 已知凭证的分片长度：够长不撞车，又短到能抓住被拆开的凭证。 */
 const FRAGMENT_LENGTH = 12
-
-/** 零宽字符：插在凭证中间用来骗过正则。 */
-const ZERO_WIDTH = /[\u200B-\u200F\u2060\uFEFF]/g
 
 /** 文本里像 base64 的片段。 */
 const BASE64_RUN = /[A-Za-z0-9+/_-]{20,}={0,2}/g
@@ -218,7 +216,7 @@ function looksLikeText(text: string): boolean {
 }
 
 /** 解一段 base64；解不出人话就返回 undefined。 */
-function decodeBase64(input: string): string | undefined {
+function decodeBase64Text(input: string): string | undefined {
   const standard = input.replace(/-/g, "+").replace(/_/g, "/")
   const padded = standard + "=".repeat((4 - (standard.length % 4)) % 4)
   const decoded = Buffer.from(padded, "base64").toString("utf8")
@@ -233,7 +231,7 @@ function base64Variants(text: string): string[] {
   const runs = text.match(BASE64_RUN) ?? []
   const variants: string[] = []
   for (const run of runs.slice(0, MAX_BASE64_RUNS)) {
-    const decoded = decodeBase64(run)
+    const decoded = decodeBase64Text(run)
     if (decoded) variants.push(decoded)
   }
   return variants

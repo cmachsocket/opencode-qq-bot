@@ -1,9 +1,9 @@
 import { allowedTargets, commandTarget, isTargetAllowed } from "./access"
-import { type ChatTarget, parseTargetKey, targetLabel } from "./chat"
+import { type ChatTarget, parseTargetKey, targetKey, targetLabel } from "./chat"
 import type { QQBotConfig } from "./config"
 import { type ChatOverrides, describeOverride } from "./overrides"
 import type { SessionManager } from "./session/manager"
-import { roleOf, type Role, type ToolPolicy } from "./tools/policy"
+import { roleForChat, type ToolPolicy } from "./tools/policy"
 
 /**
  * 管理命令只在 owner 与管理员自己的私聊里生效。
@@ -26,7 +26,7 @@ export function tuiCommandName(name: string): string {
 }
 
 /** QQ 侧同时接受带前缀的写法（/qq-reset），这里把前缀脱掉。 */
-export function stripCommandPrefix(name: string): string {
+function stripCommandPrefix(name: string): string {
   return name.startsWith(TUI_COMMAND_PREFIX) ? name.slice(TUI_COMMAND_PREFIX.length) : name
 }
 
@@ -106,11 +106,6 @@ function sessionLine(manager: SessionManager, target: ChatTarget): string {
   return `${targetLabel(target)}：${parts.join("，")}`
 }
 
-/** 私聊按主人身份取角色，群聊统一按普通成员。 */
-function roleForChat(config: QQBotConfig, target: ChatTarget): Role {
-  return target.kind === "private" ? roleOf(config, String(target.id)) : "member"
-}
-
 /** 列出配置里的目标与已建状态的聊天，只保留仍在放行名单里的项，去重后按 `kind:id` 排序。 */
 function allTargets(config: QQBotConfig, manager: SessionManager): ChatTarget[] {
   const seen = new Set<string>()
@@ -120,12 +115,12 @@ function allTargets(config: QQBotConfig, manager: SessionManager): ChatTarget[] 
   ]
     .filter((target) => {
       if (!isTargetAllowed(config.access, target, config.ownerQQ)) return false
-      const key = `${target.kind}:${target.id}`
+      const key = targetKey(target)
       if (seen.has(key)) return false
       seen.add(key)
       return true
     })
-    .sort((left, right) => `${left.kind}:${left.id}`.localeCompare(`${right.kind}:${right.id}`))
+    .sort((left, right) => targetKey(left).localeCompare(targetKey(right)))
 }
 
 /** `/help` 的内容直接从命令表生成，两边不会各写一份。 */
@@ -155,7 +150,7 @@ async function runReset(context: CommandContext, args: string[]): Promise<string
       ? [
           "要重置哪个聊天？把目标加在命令后面：",
           ...targets.map(
-            (target) => `/reset ${target.kind}:${target.id} — ${sessionLine(manager, target)}`,
+            (target) => `/reset ${targetKey(target)} — ${sessionLine(manager, target)}`,
           ),
         ].join("\n")
       : "没有配置任何群聊或私聊"
@@ -181,7 +176,7 @@ async function runTools(context: CommandContext, args: string[]): Promise<string
   if (requested) {
     const target = parseChatArg(requested)
     if (!target) return `无法识别聊天：${requested}（示例：/tools group:123）`
-    const key = `${target.kind}:${target.id}`
+    const key = targetKey(target)
     const role = roleForChat(config, target)
     const names = await toolNames()
     const allowed = [...(await policy.allow(role, key, names))].sort()
@@ -195,7 +190,7 @@ async function runTools(context: CommandContext, args: string[]): Promise<string
   const lines = [`默认配置档：${(await policy.current()).defaultProfile}`]
   for (const target of allowedTargets(config.access, config.ownerQQ)) {
     const role = roleForChat(config, target)
-    const key = `${target.kind}:${target.id}`
+    const key = targetKey(target)
     const profile = await policy.profileOf(role, key)
     const count = (await policy.allow(role, key, names)).size
     lines.push(`${targetLabel(target)}：${profile}（${count} 个工具）`)

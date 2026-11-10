@@ -1,4 +1,5 @@
 import { Mutex } from "async-mutex"
+import { delay } from "./async"
 import { type ChatTarget, targetKey } from "./chat"
 import type { RateLimitConfig } from "./config"
 
@@ -77,7 +78,7 @@ export class SendRateLimiter {
   }
 
   private get wait(): (ms: number) => Promise<void> {
-    return this.options.sleep ?? ((ms: number) => new Promise((resolve) => setTimeout(resolve, ms)))
+    return this.options.sleep ?? delay
   }
 
   private lock(scope: string): Mutex {

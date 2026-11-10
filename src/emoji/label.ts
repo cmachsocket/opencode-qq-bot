@@ -1,8 +1,10 @@
 import type { Plugin } from "@opencode/plugin"
 import type { Location } from "@opencode/schema"
+import { delay, unrefTimer } from "../async"
 import type { QQBotConfig } from "../config"
 import type { BotHome } from "../home"
 import type { Logger } from "../logger"
+import { findSession } from "../session/find"
 import type { MediaStore } from "../naplink/media"
 import type { CustomFace, FavoriteStore } from "./favorites"
 
@@ -21,10 +23,6 @@ export const LABEL_PROMPT = [
   `要求：只输出名字本身，一行，最多 ${MAX_TAG_LENGTH} 个字，不要标点、引号、解释或其它文字。`,
   "不要调用任何工具。",
 ].join("\n")
-
-function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms))
-}
 
 /**
  * 清理模型给出的标签。
@@ -197,6 +195,7 @@ export class EmojiLabeler {
         )
         resolve(undefined)
       }, timeoutMs)
+      unrefTimer(timer)
       const waiters = this.waiters.get(sessionID) ?? []
       waiters.push(onText)
       this.waiters.set(sessionID, waiters)
@@ -264,24 +263,13 @@ export class EmojiLabeler {
 
   /** 查找带标签标记的历史会话。 */
   private async findLabelSession(): Promise<string | undefined> {
-    let cursor: string | undefined
-    try {
-      for (let page = 0; page < 5; page += 1) {
-        const result = await this.deps.ctx.session.list({
-          directory: this.location.directory,
-          limit: 100,
-          order: "desc",
-          ...(cursor ? { cursor } : {}),
-        })
-        const hit = result.data.find((session) => session.metadata?.[LABEL_SESSION_MARKER] === true)
-        if (hit) return hit.id
-        cursor = result.cursor.next ?? undefined
-        if (!cursor) break
-      }
-    } catch (error) {
-      this.deps.logger.warn("查找收藏表情标签会话失败", error)
-    }
-    return undefined
+    return await findSession(
+      this.deps.ctx,
+      this.location.directory,
+      (session) => session.metadata?.[LABEL_SESSION_MARKER] === true,
+      this.deps.logger,
+      "查找收藏表情标签会话失败",
+    )
   }
 
   /**

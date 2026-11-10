@@ -2,6 +2,7 @@ import http from "node:http"
 import https from "node:https"
 import { useAgent } from "request-filtering-agent"
 import type { Logger } from "./logger"
+import { truncateForLog } from "./text"
 
 /** 允许的出站端口：只放行常见的网页端口，其余一律拒绝。 */
 export const ALLOWED_PORTS: readonly number[] = [80, 443, 8080, 8443]
@@ -35,11 +36,6 @@ export type SafeFetcher = (
   url: URL,
   options: SafeFetchOptions,
 ) => Promise<SafeFetchResult | undefined>
-
-/** 截断过长的地址，避免日志被超长 URL 淹没。 */
-function truncateForLog(value: string, max = 120): string {
-  return value.length > max ? `${value.slice(0, max)}…` : value
-}
 
 /**
  * 下载一个远端文件，挡住指向内网的请求。

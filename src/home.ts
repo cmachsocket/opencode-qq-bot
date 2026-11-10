@@ -30,13 +30,15 @@ export async function resolveHome(
   return { directory }
 }
 
+/** 展开路径开头的 `~` 或 `~/`，其余原样返回。 */
+export function expandTilde(value: string): string {
+  if (value === "~") return homedir()
+  if (value.startsWith("~/")) return join(homedir(), value.slice(2))
+  return value
+}
+
 function expand(configured: string, logger: Logger): string {
-  const expanded =
-    configured === "~"
-      ? homedir()
-      : configured.startsWith("~/")
-        ? join(homedir(), configured.slice(2))
-        : configured
+  const expanded = expandTilde(configured)
   if (!isAbsolute(expanded)) {
     logger.warn("机器人工作目录必须是绝对路径，已回退到默认目录", configured)
     return defaultHome()

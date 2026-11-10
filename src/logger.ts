@@ -4,6 +4,7 @@ import { isAbsolute, join } from "node:path"
 import { inspect } from "node:util"
 import winston from "winston"
 import DailyRotateFile from "winston-daily-rotate-file"
+import { unrefTimer } from "./async"
 import { maskSecrets } from "./sensitive"
 
 /** 日志级别。 */
@@ -240,7 +241,7 @@ export function createLogger(prefix: string, options: LoggerOptions | LogLevel =
 function waitFinish(transport: DailyRotateFile): Promise<void> {
   return new Promise<void>((resolve) => {
     const timer = setTimeout(() => resolve(), CLOSE_TIMEOUT_MS)
-    timer.unref?.()
+    unrefTimer(timer)
     transport.once("finish", () => {
       clearTimeout(timer)
       resolve()

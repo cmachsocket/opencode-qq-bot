@@ -1,6 +1,8 @@
 import type { Plugin } from "@opencode/plugin"
+import { unrefTimer } from "./async"
 import type { QQBotConfig } from "./config"
 import type { Logger } from "./logger"
+import { findSession } from "./session/find"
 
 /** 插件存储里保存保活会话 ID 的键。 */
 export const KEEP_ALIVE_SESSION_KEY = "keepalive-session"
@@ -8,8 +10,6 @@ export const KEEP_ALIVE_SESSION_KEY = "keepalive-session"
 export const KEEP_ALIVE_SESSION_MARKER = "qqKeepAliveSession"
 /** 保活会话标题。 */
 export const KEEP_ALIVE_TITLE = "QQ 保活"
-
-type SessionListCursor = NonNullable<Parameters<Plugin.Context["session"]["list"]>[0]>["cursor"]
 
 /**
  * 保活心跳：让 OpenCode 不要因为长时间没有会话活动而卸载插件。
@@ -38,8 +38,7 @@ export class KeepAlive {
     this.timer = setInterval(() => {
       void this.ping()
     }, this.config.keepAlive.seconds * 1000)
-    const handle = this.timer as { unref?: () => void }
-    handle.unref?.()
+    unrefTimer(this.timer)
   }
 
   /**
@@ -179,26 +178,13 @@ export class KeepAlive {
 
   /** 查找带保活标记的历史会话。 */
   private async findKeepAliveSession(): Promise<string | undefined> {
-    let cursor: SessionListCursor | undefined
-    try {
-      for (let page = 0; page < 5; page += 1) {
-        const result = await this.ctx.session.list({
-          directory: this.ctx.location.directory,
-          limit: 100,
-          order: "desc",
-          ...(cursor ? { cursor } : {}),
-        })
-        const hit = result.data.find(
-          (session) => session.metadata?.[KEEP_ALIVE_SESSION_MARKER] === true,
-        )
-        if (hit) return hit.id
-        cursor = result.cursor.next ?? undefined
-        if (!cursor) break
-      }
-    } catch (error) {
-      this.logger.warn("查找保活会话失败", error)
-    }
-    return undefined
+    return await findSession(
+      this.ctx,
+      this.ctx.location.directory,
+      (session) => session.metadata?.[KEEP_ALIVE_SESSION_MARKER] === true,
+      this.logger,
+      "查找保活会话失败",
+    )
   }
 
   private async writeStoredSession(sessionID: string): Promise<void> {

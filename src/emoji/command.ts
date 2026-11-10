@@ -9,8 +9,6 @@ import { type CustomFace, faceTag, type FavoriteStore, formatFavoriteList } from
 import { type FavoriteIndex, favoriteKey } from "./favorite-index"
 import type { EmojiLabeler } from "./label"
 
-export { formatFavoriteList } from "./favorites"
-
 /** `/emoji-label` 支持的动作。 */
 export type EmojiLabelAction = "all" | "inc" | "list" | "usage"
 

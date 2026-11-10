@@ -1,5 +1,6 @@
 import type { Plugin } from "@opencode/plugin"
 import { isTargetAllowed } from "../access"
+import { delay } from "../async"
 import { type ChatTarget, targetKey, targetLabel } from "../chat"
 import type { QQBotConfig } from "../config"
 import {
@@ -101,9 +102,6 @@ interface MessageIdInput {
   message_id?: number | string
 }
 
-/** QQ 单条消息的保守长度上限，超过时按段发送。 */
-export { MAX_MESSAGE_CHARS } from "../outbound"
-
 /** 合并转发里单个节点的字数上限，留出余量避免被 NapCat 截断。 */
 const FORWARD_NODE_CHARS = 3000
 
@@ -113,8 +111,14 @@ function text(value: string, metadata?: Record<string, unknown>) {
   return { content: value, ...(Object.keys(marks).length > 0 ? { metadata: marks } : {}) }
 }
 
-function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms))
+/** 工具返回值：content 是给模型看的文本，metadata 带失败标记。 */
+type ToolResult = ReturnType<typeof text>
+
+/** 按目标类型把消息投递出去：群聊与私聊走不同的 API。 */
+function sendPayload(client: QQClient, target: ChatTarget, payload: string | unknown[]) {
+  return target.kind === "group"
+    ? client.api.sendGroupMessage(target.id, payload)
+    : client.api.sendPrivateMessage(target.id, payload)
 }
 
 /** 从 OneBot 发送结果里取出 message_id。 */
@@ -147,11 +151,7 @@ export async function sendPlainMessage(
   let sent = 0
   for (const [index, chunk] of chunks.entries()) {
     await options.limiter.pace(pluginSendScope(target), operation)
-    if (target.kind === "group") {
-      await client.api.sendGroupMessage(target.id, chunk)
-    } else {
-      await client.api.sendPrivateMessage(target.id, chunk)
-    }
+    await sendPayload(client, target, chunk)
     sent += 1
     if (index < chunks.length - 1 && (options.delayMs ?? 0) > 0) {
       await delay(options.delayMs ?? 0)
@@ -267,6 +267,42 @@ export async function registerTools(deps: ToolDeps): Promise<{ dispose(): Promis
   }
 
   /**
+   * 发送类工具的统一前置：解析目标，并确认本实例可以发送。
+   *
+   * 返回 `error` 时调用方直接把它交给模型；否则 `target` 一定存在。
+   */
+  const prepareSend = async (
+    sessionID: string,
+  ): Promise<
+    { target: ChatTarget; error?: undefined } | { target?: undefined; error: ToolResult }
+  > => {
+    const target = requireTarget(sessionID)
+    if (!target) return { error: text("error: 当前会话没有绑定 QQ 群聊或私聊") }
+    const blocked = await checkSendable()
+    if (blocked) return { error: text(blocked) }
+    return { target }
+  }
+
+  /**
+   * 只读类工具的统一前置：只解析目标，不要求连接可用。
+   *
+   * 查资料不需要发消息，连接断着也能回答。
+   */
+  const prepareQuery = (
+    sessionID: string,
+  ): { target: ChatTarget; error?: undefined } | { target?: undefined; error: ToolResult } => {
+    const target = requireTarget(sessionID)
+    if (!target) return { error: text("error: 当前会话没有绑定 QQ 群聊或私聊") }
+    return { target }
+  }
+
+  /** 记下机器人自己发出的消息 ID，供撤回与重复检测使用。 */
+  const trackSent = (target: ChatTarget, response: unknown): void => {
+    const messageId = messageIdOf(response)
+    if (messageId) manager.rememberOutgoing(target, messageId)
+  }
+
+  /**
    * 申请一次出站发送许可。
    *
    * 超出每分钟 / 每小时上限时拒绝这次发送，并把原因回给模型，
@@ -320,15 +356,8 @@ export async function registerTools(deps: ToolDeps): Promise<{ dispose(): Promis
     return `error: ${kind}数据过大，超过 ${Math.floor(MAX_INLINE_BYTES / 1024 / 1024)}MB 上限`
   }
 
-  const sendText = (target: ChatTarget, chunk: string) =>
-    target.kind === "group"
-      ? client.api.sendGroupMessage(target.id, chunk)
-      : client.api.sendPrivateMessage(target.id, chunk)
-
-  const sendSegments = (target: ChatTarget, segments: unknown[]) =>
-    target.kind === "group"
-      ? client.api.sendGroupMessage(target.id, segments)
-      : client.api.sendPrivateMessage(target.id, segments)
+  const send = (target: ChatTarget, payload: string | unknown[]) =>
+    sendPayload(client, target, payload)
 
   const sendForward = (target: ChatTarget, nodes: unknown[]) =>
     target.kind === "group"
@@ -377,8 +406,7 @@ export async function registerTools(deps: ToolDeps): Promise<{ dispose(): Promis
       const verdict = await permit(target, operation)
       if (!verdict.allowed) return refuse(sessionID, verdict, 0, nodes.length)
       const response = await sendForward(target, nodes)
-      const messageId = messageIdOf(response)
-      if (messageId) manager.rememberOutgoing(target, messageId)
+      trackSent(target, response)
       manager.markMessageSent(sessionID)
       logger.info(
         `${label} 已发送 ${length} 字（合并转发 ${nodes.length} 个节点）`,
@@ -420,10 +448,9 @@ export async function registerTools(deps: ToolDeps): Promise<{ dispose(): Promis
       options: { namespace: TOOL_NAMESPACE, codemode: false },
       execute: async (raw, context) => {
         const input = (raw ?? {}) as SendMessageInput
-        const target = requireTarget(context.sessionID)
-        if (!target) return text("error: 当前会话没有绑定 QQ 群聊或私聊")
-        const blocked = await checkSendable()
-        if (blocked) return text(blocked)
+        const prepared = await prepareSend(context.sessionID)
+        if (prepared.error) return prepared.error
+        const target = prepared.target
         const label = targetLabel(target)
 
         if (input.reply === false) {
@@ -477,9 +504,8 @@ export async function registerTools(deps: ToolDeps): Promise<{ dispose(): Promis
           for (const [index, chunk] of chunks.entries()) {
             const verdict = await permit(target, operation)
             if (!verdict.allowed) return refuse(context.sessionID, verdict, sent, chunks.length)
-            const response = await sendText(target, chunk)
-            const messageId = messageIdOf(response)
-            if (messageId) manager.rememberOutgoing(target, messageId)
+            const response = await send(target, chunk)
+            trackSent(target, response)
             sent += 1
             if (index < chunks.length - 1 && wait > 0) {
               await delay(wait)
@@ -513,10 +539,9 @@ export async function registerTools(deps: ToolDeps): Promise<{ dispose(): Promis
       options: { namespace: TOOL_NAMESPACE, codemode: false },
       execute: async (raw, context) => {
         const input = (raw ?? {}) as MediaInput
-        const target = requireTarget(context.sessionID)
-        if (!target) return text("error: 当前会话没有绑定 QQ 群聊或私聊")
-        const blocked = await checkSendable()
-        if (blocked) return text(blocked)
+        const prepared = await prepareSend(context.sessionID)
+        if (prepared.error) return prepared.error
+        const target = prepared.target
         const file = input.file ?? (input.base64 ? `base64://${input.base64}` : undefined)
         if (!file) return text("error: 缺少 file 或 base64")
         const tooLarge = checkInlineSize(file, "图片")
@@ -527,9 +552,8 @@ export async function registerTools(deps: ToolDeps): Promise<{ dispose(): Promis
         const verdict = await permit(target, nextOperation())
         if (!verdict.allowed) return refuse(context.sessionID, verdict)
         const media = plan ? outbound.materialize(plan) : file
-        const response = await sendSegments(target, [{ type: "image", data: { file: media } }])
-        const messageId = messageIdOf(response)
-        if (messageId) manager.rememberOutgoing(target, messageId)
+        const response = await send(target, [{ type: "image", data: { file: media } }])
+        trackSent(target, response)
         manager.markMessageSent(context.sessionID)
         return text("你已成功发送图片，可以选择结束对话")
       },
@@ -566,10 +590,9 @@ export async function registerTools(deps: ToolDeps): Promise<{ dispose(): Promis
       options: { namespace: TOOL_NAMESPACE, codemode: false },
       execute: async (raw, context) => {
         const input = (raw ?? {}) as StickerInput
-        const target = requireTarget(context.sessionID)
-        if (!target) return text("error: 当前会话没有绑定 QQ 群聊或私聊")
-        const blocked = await checkSendable()
-        if (blocked) return text(blocked)
+        const prepared = await prepareSend(context.sessionID)
+        if (prepared.error) return prepared.error
+        const target = prepared.target
         const id = input.id
         if (typeof id !== "number" || !Number.isInteger(id)) {
           return text("error: 缺少 id（收藏表情编号）")
@@ -587,14 +610,13 @@ export async function registerTools(deps: ToolDeps): Promise<{ dispose(): Promis
         const plan = await outbound.check(url)
         const verdict = await permit(target, nextOperation())
         if (!verdict.allowed) return refuse(context.sessionID, verdict)
-        const response = await sendSegments(target, [
+        const response = await send(target, [
           {
             type: "image",
             data: { file: outbound.materialize(plan), sub_type: CUSTOM_FACE_SUB_TYPE },
           },
         ])
-        const messageId = messageIdOf(response)
-        if (messageId) manager.rememberOutgoing(target, messageId)
+        trackSent(target, response)
         manager.markMessageSent(context.sessionID)
         return text(`你已成功发送收藏表情 ${id}「${row.tag || "未标注"}」，可以选择结束对话`)
       },
@@ -614,10 +636,9 @@ export async function registerTools(deps: ToolDeps): Promise<{ dispose(): Promis
       options: { namespace: TOOL_NAMESPACE, codemode: false },
       execute: async (raw, context) => {
         const input = (raw ?? {}) as MediaInput
-        const target = requireTarget(context.sessionID)
-        if (!target) return text("error: 当前会话没有绑定 QQ 群聊或私聊")
-        const blocked = await checkSendable()
-        if (blocked) return text(blocked)
+        const prepared = await prepareSend(context.sessionID)
+        if (prepared.error) return prepared.error
+        const target = prepared.target
         if (!input.file) return text("error: 缺少 file")
         const tooLarge = checkInlineSize(input.file, "语音")
         if (tooLarge) return text(tooLarge)
@@ -626,9 +647,8 @@ export async function registerTools(deps: ToolDeps): Promise<{ dispose(): Promis
         const verdict = await permit(target, nextOperation())
         if (!verdict.allowed) return refuse(context.sessionID, verdict)
         const media = plan ? outbound.materialize(plan) : input.file
-        const response = await sendSegments(target, [{ type: "record", data: { file: media } }])
-        const messageId = messageIdOf(response)
-        if (messageId) manager.rememberOutgoing(target, messageId)
+        const response = await send(target, [{ type: "record", data: { file: media } }])
+        trackSent(target, response)
         manager.markMessageSent(context.sessionID)
         return text("你已成功发送语音，可以选择结束对话")
       },
@@ -662,10 +682,9 @@ export async function registerTools(deps: ToolDeps): Promise<{ dispose(): Promis
       options: { namespace: TOOL_NAMESPACE, codemode: false },
       execute: async (raw, context) => {
         const input = (raw ?? {}) as ForwardInput
-        const target = requireTarget(context.sessionID)
-        if (!target) return text("error: 当前会话没有绑定 QQ 群聊或私聊")
-        const blocked = await checkSendable()
-        if (blocked) return text(blocked)
+        const prepared = await prepareSend(context.sessionID)
+        if (prepared.error) return prepared.error
+        const target = prepared.target
         const nodes: {
           user_id: number
           nickname: string
@@ -690,8 +709,7 @@ export async function registerTools(deps: ToolDeps): Promise<{ dispose(): Promis
         const verdict = await permit(target, nextOperation())
         if (!verdict.allowed) return refuse(context.sessionID, verdict)
         const response = await sendForward(target, nodes)
-        const messageId = messageIdOf(response)
-        if (messageId) manager.rememberOutgoing(target, messageId)
+        trackSent(target, response)
         manager.markMessageSent(context.sessionID)
         await traceSent(context.sessionID, target, { mode: "forward", nodes: nodes.length })
         return text("你已成功发送合并转发消息，可以选择结束对话")
@@ -712,10 +730,9 @@ export async function registerTools(deps: ToolDeps): Promise<{ dispose(): Promis
       options: { namespace: TOOL_NAMESPACE, codemode: false },
       execute: async (raw, context) => {
         const input = (raw ?? {}) as UserInput
-        const target = requireTarget(context.sessionID)
-        if (!target) return text("error: 当前会话没有绑定 QQ 群聊或私聊")
-        const blocked = await checkSendable()
-        if (blocked) return text(blocked)
+        const prepared = await prepareSend(context.sessionID)
+        if (prepared.error) return prepared.error
+        const target = prepared.target
         if (!input.user_id) return text("error: 缺少 user_id")
         const verdict = await permit(target, nextOperation())
         if (!verdict.allowed) return refuse(context.sessionID, verdict)
@@ -739,10 +756,9 @@ export async function registerTools(deps: ToolDeps): Promise<{ dispose(): Promis
       options: { namespace: TOOL_NAMESPACE, codemode: false },
       execute: async (raw, context) => {
         const input = (raw ?? {}) as MessageIdInput
-        const target = requireTarget(context.sessionID)
-        if (!target) return text("error: 当前会话没有绑定 QQ 群聊或私聊")
-        const blocked = await checkSendable()
-        if (blocked) return text(blocked)
+        const prepared = await prepareSend(context.sessionID)
+        if (prepared.error) return prepared.error
+        const target = prepared.target
         if (input.message_id === undefined) return text("error: 缺少 message_id")
         if (!manager.isOutgoing(target, String(input.message_id))) {
           return text("error: 只能撤回机器人自己发送过的消息")
@@ -766,8 +782,9 @@ export async function registerTools(deps: ToolDeps): Promise<{ dispose(): Promis
       options: { namespace: TOOL_NAMESPACE, codemode: false },
       execute: async (raw, context) => {
         const input = (raw ?? {}) as UserInput
-        const target = requireTarget(context.sessionID)
-        if (!target) return text("error: 当前会话没有绑定 QQ 群聊或私聊")
+        const prepared = prepareQuery(context.sessionID)
+        if (prepared.error) return prepared.error
+        const target = prepared.target
         if (!input.user_id) return text("error: 缺少 user_id")
         const info =
           target.kind === "group"
@@ -791,8 +808,9 @@ export async function registerTools(deps: ToolDeps): Promise<{ dispose(): Promis
       options: { namespace: TOOL_NAMESPACE, codemode: false },
       execute: async (raw, context) => {
         const input = (raw ?? {}) as MessageIdInput
-        const target = requireTarget(context.sessionID)
-        if (!target) return text("error: 当前会话没有绑定 QQ 群聊或私聊")
+        const prepared = prepareQuery(context.sessionID)
+        if (prepared.error) return prepared.error
+        const target = prepared.target
         if (input.message_id === undefined) return text("error: 缺少 message_id")
         if (!manager.isKnownMessage(target, String(input.message_id))) {
           return text("error: 只能转写当前会话最近收到的消息")

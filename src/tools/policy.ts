@@ -1,5 +1,6 @@
 import { readFile, stat } from "node:fs/promises"
 import { join } from "node:path"
+import type { ChatTarget } from "../chat"
 import type { QQBotConfig } from "../config"
 import type { Logger } from "../logger"
 
@@ -17,6 +18,11 @@ export function roleOf(config: QQBotConfig, senderQQ: string): Role {
   if (config.ownerQQ !== undefined && id === config.ownerQQ) return "owner"
   if (config.admins.includes(id)) return "admin"
   return "member"
+}
+
+/** 聊天本身对应的角色：私聊按主人身份，群聊统一按普通成员。 */
+export function roleForChat(config: QQBotConfig, target: ChatTarget): Role {
+  return target.kind === "private" ? roleOf(config, String(target.id)) : "member"
 }
 
 /** 一档工具配置：allow 命中且 deny 不命中的工具才放行。 */

@@ -1,6 +1,7 @@
 import { Plugin } from "@opencode/plugin"
 import type { GroupMessageEvent, MessageEvent, NoticeEvent } from "@naplink/naplink"
 import { Mutex } from "async-mutex"
+import { delay, unrefTimer } from "./async"
 import { acquireBotLock, type BotLock, botLockPath } from "./bot-lock"
 import { type ChatTarget, targetKey, targetLabel } from "./chat"
 import { allowedTargets, isTargetAllowed } from "./access"
@@ -50,10 +51,6 @@ const RETRY_DELAY_MS = 1000
 /** 机器人连接被别的实例占用时，多久重试一次接管。 */
 const CLAIM_RETRY_MS = 30_000
 
-function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms))
-}
-
 /** 迁移类告警用 error 级别输出，其余保持 warn。 */
 function reportWarnings(warnings: readonly string[], logger: Logger): void {
   for (const warning of warnings) {
@@ -74,6 +71,43 @@ function knownSecrets(config: QQBotConfig): string[] {
     config.napcat.token ?? "",
     ...secretsFromUrl(config.napcat.url),
   ].filter((secret) => secret.length > 0)
+}
+
+const isGroupEvent = (event: MessageEvent): event is GroupMessageEvent =>
+  event.message_type === "group"
+
+/** 只取消息里的文本段，用于识别管理命令。 */
+function messageText(event: MessageEvent): string {
+  return (event.message ?? [])
+    .filter((segment) => segment.type === "text")
+    .map((segment) => String((segment.data as { text?: unknown }).text ?? ""))
+    .join(" ")
+}
+
+/** 必回原因对应给模型的一句话。 */
+function wakeHint(reason: WakeReason | undefined): string {
+  switch (reason) {
+    case "private":
+      return "这是一条私聊消息，必须回复。"
+    case "all":
+      return "这个群要求每条消息都回复，必须回复。"
+    case "mention":
+      return "你被 @ 了，必须回复。"
+    case "prefix":
+      return "这条消息命中了唤醒前缀，必须回复。"
+    case "at_all":
+      return "这条消息 @ 了全体成员，必须回复。"
+    case "reply":
+      return "这条消息回复了你，必须回复。"
+    default:
+      return "这条消息没有要求你回复，可以选择不回复。"
+  }
+}
+
+function eventTarget(event: MessageEvent): ChatTarget {
+  return isGroupEvent(event)
+    ? { kind: "group", id: event.group_id }
+    : { kind: "private", id: event.user_id }
 }
 
 export default Plugin.define({
@@ -259,6 +293,15 @@ export default Plugin.define({
         allowedDirs: [home.directory, mediaDir, ...config.media.allowedDirs],
       })
       const nameCache = new Map<string, { name: string; expires: number }>()
+      /** 渲染上下文：上游 API、媒体存储与昵称缓存都在这里一次性绑定。 */
+      const renderContext = (target: ChatTarget, selfId?: string) => ({
+        api: client.api,
+        target,
+        logger,
+        media,
+        names: nameCache,
+        ...(selfId ? { selfId } : {}),
+      })
       const history = createHistoryProvider({
         api: client.api,
         logger,
@@ -335,8 +378,7 @@ export default Plugin.define({
         },
         60 * 60 * 1000,
       )
-      const mediaHandle = mediaCleanup as { unref?: () => void }
-      mediaHandle.unref?.()
+      unrefTimer(mediaCleanup)
       cleanup.add("停止媒体清理定时器", () => clearInterval(mediaCleanup), CleanupOrder.events)
       // 收藏表情：标签只存在 NapCat 侧，插件不保存副本；编号由插件自己维护。
       const favorites = new FavoriteStore(
@@ -538,22 +580,25 @@ export default Plugin.define({
               ],
               signal: idleAbort.signal,
             })) {
-              const sessionID = event.data.sessionID
-              logger.debug(`上游事件：${event.type}`, {
-                sessionID,
-                ...(event.type === "session.status" ? { status: event.data.status.type } : {}),
-              })
-              if (event.type === "session.status") {
-                if (event.data.status.type === "idle") {
-                  await manager.flushBuffered(event.data.sessionID)
+              // 单条事件处理失败只记日志：连带把订阅循环拆掉会让缓存消息再也发不出去。
+              try {
+                const sessionID = event.data.sessionID
+                logger.debug(`上游事件：${event.type}`, {
+                  sessionID,
+                  ...(event.type === "session.status" ? { status: event.data.status.type } : {}),
+                })
+                if (event.type === "session.status") {
+                  if (event.data.status.type === "idle") await manager.flushBuffered(sessionID)
+                } else if (event.type === "session.execution.succeeded") {
+                  await manager.flushBuffered(sessionID)
+                } else {
+                  // 失败事件带上游错误信息，只进日志（logger 会脱敏），不进聊天。
+                  const detail =
+                    event.type === "session.execution.failed" ? event.data.error.message : undefined
+                  await manager.handleExecutionEnd(sessionID, event.type, detail)
                 }
-              } else if (event.type === "session.execution.succeeded") {
-                await manager.flushBuffered(event.data.sessionID)
-              } else {
-                // 失败事件带上游错误信息，只进日志（logger 会脱敏），不进聊天。
-                const detail =
-                  event.type === "session.execution.failed" ? event.data.error.message : undefined
-                await manager.handleExecutionEnd(event.data.sessionID, event.type, detail)
+              } catch (error) {
+                logger.warn("处理会话事件失败", error)
               }
             }
           } catch (error) {
@@ -563,41 +608,6 @@ export default Plugin.define({
           if (!idleAbort.signal.aborted) await delay(RETRY_DELAY_MS)
         }
       })()
-
-      const isGroupEvent = (event: MessageEvent): event is GroupMessageEvent =>
-        event.message_type === "group"
-
-      /** 只取消息里的文本段，用于识别管理命令。 */
-      const messageText = (event: MessageEvent): string =>
-        (event.message ?? [])
-          .filter((segment) => segment.type === "text")
-          .map((segment) => String((segment.data as { text?: unknown }).text ?? ""))
-          .join(" ")
-
-      /** 必回原因对应给模型的一句话。 */
-      const wakeHint = (reason: WakeReason | undefined): string => {
-        switch (reason) {
-          case "private":
-            return "这是一条私聊消息，必须回复。"
-          case "all":
-            return "这个群要求每条消息都回复，必须回复。"
-          case "mention":
-            return "你被 @ 了，必须回复。"
-          case "prefix":
-            return "这条消息命中了唤醒前缀，必须回复。"
-          case "at_all":
-            return "这条消息 @ 了全体成员，必须回复。"
-          case "reply":
-            return "这条消息回复了你，必须回复。"
-          default:
-            return "这条消息没有要求你回复，可以选择不回复。"
-        }
-      }
-
-      const eventTarget = (event: MessageEvent): ChatTarget =>
-        isGroupEvent(event)
-          ? { kind: "group", id: event.group_id }
-          : { kind: "private", id: event.user_id }
 
       const handleMessage = async (
         event: MessageEvent,
@@ -629,14 +639,7 @@ export default Plugin.define({
           }
           if (!shouldProcess(event.message, selfId)) return
 
-          const renderCtx = {
-            api: client.api,
-            target,
-            logger,
-            media,
-            names: nameCache,
-            selfId,
-          }
+          const renderCtx = renderContext(target, selfId)
           const rendered = await renderMessage(renderCtx, event)
           if (!rendered.text.trim()) return
 
@@ -741,9 +744,9 @@ export default Plugin.define({
         if (!target || !isTargetAllowed(config.access, target, config.ownerQQ)) return
         void (async () => {
           try {
-            const renderCtx = { api: client.api, target, logger, media, names: nameCache }
             const text = await describeNotice(event, {
-              nameOf: async (userId) => await resolveUserName(renderCtx, String(userId)),
+              nameOf: async (userId) =>
+                await resolveUserName(renderContext(target), String(userId)),
             })
             if (!text) return
             logger.info(`${targetLabel(target)} 收到通知：${text}`)
@@ -803,8 +806,7 @@ export default Plugin.define({
         proactiveTimer = setInterval(() => {
           void tick().catch((error: unknown) => logger.error("主动说话心跳失败", error))
         }, config.proactive.tickSeconds * 1000)
-        const handle = proactiveTimer as { unref?: () => void }
-        handle.unref?.()
+        unrefTimer(proactiveTimer)
       }
 
       // 工具先注册，模型这一轮就能看到 qq_*；再连 NapCat 开始消费。
@@ -837,8 +839,7 @@ export default Plugin.define({
         })
         .catch((error: unknown) => logger.error("接管机器人连接失败", error))
     }, CLAIM_RETRY_MS)
-    const claimHandle = claimTimer as { unref?: () => void }
-    claimHandle.unref?.()
+    unrefTimer(claimTimer)
     cleanup.add(
       "停止接管重试定时器",
       () => {

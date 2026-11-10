@@ -1,19 +1,19 @@
 import type { ProactiveConfig } from "../config"
 import type { ChatOverride } from "../overrides"
 
+/** 概率换算需要的配置项。 */
+export type ProactiveRate = Pick<
+  ProactiveConfig,
+  "startProbability" | "probabilityPerHour" | "silenceThresholdSeconds" | "tickSeconds"
+>
+
 /**
  * 把“每小时目标概率”换算成单次心跳的触发概率。
  *
  * 直接在每个 tick 上抽 `startProbability + probabilityPerHour * hours` 会让实际频率
  * 随 tickSeconds 放大；这里按 tick 占一小时的比例做指数换算。
  */
-export function proactiveTickProbability(
-  config: Pick<
-    ProactiveConfig,
-    "startProbability" | "probabilityPerHour" | "silenceThresholdSeconds" | "tickSeconds"
-  >,
-  silenceSeconds: number,
-): number {
+export function proactiveTickProbability(config: ProactiveRate, silenceSeconds: number): number {
   const silenceHours = (silenceSeconds - config.silenceThresholdSeconds) / 3600
   if (silenceHours <= 0) return 0
   const target = Math.min(1, config.startProbability + config.probabilityPerHour * silenceHours)
@@ -30,10 +30,7 @@ export function proactiveTickProbability(
  */
 export function proactiveProbability(
   override: ChatOverride,
-  config: Pick<
-    ProactiveConfig,
-    "startProbability" | "probabilityPerHour" | "silenceThresholdSeconds" | "tickSeconds"
-  >,
+  config: ProactiveRate,
   silenceSeconds: number,
 ): number {
   const silenceHours = (silenceSeconds - config.silenceThresholdSeconds) / 3600

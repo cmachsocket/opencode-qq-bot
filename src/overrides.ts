@@ -1,7 +1,7 @@
 import { readFile, stat } from "node:fs/promises"
 import { join } from "node:path"
 import { type ChatTarget, targetKey } from "./chat"
-import { parseModelRef, type ModelRef } from "./config"
+import { DEFAULT_CONFIG, parseModelRef, type ModelRef, type WakeConfig } from "./config"
 import type { Logger } from "./logger"
 
 /** 唤醒方式：决定群里的消息要不要让模型必须回复。 */
@@ -27,24 +27,13 @@ export interface WakeContext {
   text: string
 }
 
-/** 全局唤醒策略。 */
-export interface WakePolicy {
-  /** 全局唤醒前缀，命中即必回。 */
-  prefixes: string[]
-  /** 是否忽略 @全体成员。 */
-  ignoreAtAll: boolean
-  /** 回复机器人自己的消息是否必回。 */
-  replyToSelf: boolean
-  /** 群里第一个 @ 指向别人时是否不唤醒机器人。 */
-  ignoreAtOthers: boolean
-}
+/** 全局唤醒策略：与配置项 `wake` 同构。 */
+export type WakePolicy = WakeConfig
 
-/** 内置的全局唤醒策略。 */
+/** 内置的全局唤醒策略，取自配置默认值。 */
 export const DEFAULT_WAKE_POLICY: WakePolicy = {
-  prefixes: ["/"],
-  ignoreAtAll: true,
-  replyToSelf: true,
-  ignoreAtOthers: true,
+  ...DEFAULT_CONFIG.wake,
+  prefixes: [...DEFAULT_CONFIG.wake.prefixes],
 }
 
 /** 唤醒判定的结果。 */

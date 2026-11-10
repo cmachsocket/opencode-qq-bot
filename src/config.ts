@@ -17,7 +17,7 @@ const BOOLEAN_SPELLINGS = ["1", "0", "true", "false", "yes", "no", "on", "off"] 
 /** 合法的日志级别。 */
 const LOG_LEVELS: readonly string[] = ["debug", "info", "warn", "error"]
 /** 可订阅的事件类别。 */
-export const EVENT_CATEGORIES: readonly string[] = ["message", "notice"]
+const EVENT_CATEGORIES: readonly string[] = ["message", "notice"]
 
 export interface NapcatConfig {
   /** NapCat 正向 WebSocket 地址，必填。 */
@@ -268,6 +268,12 @@ function present(value: unknown): boolean {
   return value !== undefined && value !== null && value !== ""
 }
 
+/** 把「数组或逗号分隔字符串」统一成数组；其它类型返回 undefined。 */
+function toSource(value: unknown): unknown[] | undefined {
+  if (Array.isArray(value)) return value
+  return typeof value === "string" ? value.split(",") : undefined
+}
+
 /** 把数字数组或逗号分隔字符串整理成去重后的正整数列表。 */
 function toIds(
   value: unknown,
@@ -275,11 +281,7 @@ function toIds(
   label: string,
   noun: string,
 ): number[] | undefined {
-  const source = Array.isArray(value)
-    ? value
-    : typeof value === "string"
-      ? value.split(",")
-      : undefined
+  const source = toSource(value)
   if (!source) return undefined
   const ids: number[] = []
   const seen = new Set<number>()
@@ -365,26 +367,13 @@ function createConfigSchema(
       })
       .default(fallback)
 
-  const text = (path: string, fallback: string | undefined) =>
-    z
-      .unknown()
-      .optional()
-      .transform((value) => {
-        if (!present(value)) return fallback
-        if (typeof value !== "string") {
-          warn(`${label(path)} 必须是字符串：${String(value)}`)
-          return fallback
-        }
-        const trimmed = value.trim()
-        if (!trimmed) {
-          warn(`${label(path)} 不能为空，已回退到默认值`)
-          return fallback
-        }
-        return trimmed
-      })
-
-  /** 必填的字符串：空值或非法值都回退到默认值。 */
-  const requiredText = (path: string, fallback: string) =>
+  /**
+   * 字符串：空值或非法值都回退到默认值。
+   *
+   * 返回类型跟随 fallback：给 `undefined` 表示可以不配置（如 napcat.url），
+   * 给实串就是必填（如 log.maxSize）。
+   */
+  const text = <T extends string | undefined>(path: string, fallback: T) =>
     z
       .unknown()
       .optional()
@@ -479,11 +468,7 @@ function createConfigSchema(
       .optional()
       .transform((value) => {
         if (value === undefined || value === null) return [...fallback]
-        const source = Array.isArray(value)
-          ? value
-          : typeof value === "string"
-            ? value.split(",")
-            : undefined
+        const source = toSource(value)
         if (!source) {
           if (present(value)) {
             warn(`${label(path)} 必须是字符串或字符串数组：${String(value)}`)
@@ -500,32 +485,22 @@ function createConfigSchema(
         return items
       })
 
-  /** 允许发送媒体的目录：数组或逗号分隔字符串。 */
-  const mediaDirs = z
-    .unknown()
-    .optional()
-    .transform((value) => {
-      if (value === undefined || value === null) return [...defaults.media.allowedDirs]
-      const source = Array.isArray(value)
-        ? value
-        : typeof value === "string"
-          ? value.split(",")
-          : undefined
-      if (!source) {
-        if (present(value)) {
-          warn(`${label("media.allowedDirs")} 必须是字符串或字符串数组：${String(value)}`)
+  /** 允许发送媒体的目录。 */
+  const mediaDirs = stringList("media.allowedDirs", defaults.media.allowedDirs)
+
+  /** 可选目录：空串有意义（由调用方解释为默认位置），非字符串回退到默认值。 */
+  const optionalDir = (path: string, fallback: string) =>
+    z
+      .unknown()
+      .optional()
+      .transform((value) => {
+        if (value === undefined || value === null) return fallback
+        if (typeof value !== "string") {
+          warn(`${label(path)} 必须是字符串：${String(value)}`)
+          return fallback
         }
-        return [...defaults.media.allowedDirs]
-      }
-      const dirs: string[] = []
-      for (const entry of source) {
-        const raw = typeof entry === "string" ? entry.trim() : ""
-        if (!raw) continue
-        if (dirs.includes(raw)) continue
-        dirs.push(raw)
-      }
-      return dirs
-    })
+        return value.trim()
+      })
 
   return z.object({
     napcat: z
@@ -634,18 +609,7 @@ function createConfigSchema(
     trace: z
       .object({
         enabled: boolean("trace.enabled", defaults.trace.enabled),
-        dir: z
-          .unknown()
-          .optional()
-          .transform((value) => {
-            if (value === undefined || value === null) return defaults.trace.dir
-            if (typeof value !== "string") {
-              warn(`${label("trace.dir")} 必须是字符串：${String(value)}`)
-              return defaults.trace.dir
-            }
-            // 空目录是有意义的：表示与日志同目录。
-            return value.trim()
-          }),
+        dir: optionalDir("trace.dir", defaults.trace.dir),
         maxSizeMb: positive("trace.maxSizeMb", defaults.trace.maxSizeMb),
         retentionDays: integer("trace.retentionDays", defaults.trace.retentionDays, 1),
       })
@@ -701,19 +665,8 @@ function createConfigSchema(
     log: z
       .object({
         level: logLevel("log.level", defaults.log.level),
-        dir: z
-          .unknown()
-          .optional()
-          .transform((value) => {
-            if (value === undefined || value === null) return defaults.log.dir
-            if (typeof value !== "string") {
-              warn(`${label("log.dir")} 必须是字符串：${String(value)}`)
-              return defaults.log.dir
-            }
-            // 空目录是有意义的：表示用 XDG 状态目录。
-            return value.trim()
-          }),
-        maxSize: requiredText("log.maxSize", defaults.log.maxSize),
+        dir: optionalDir("log.dir", defaults.log.dir),
+        maxSize: text("log.maxSize", defaults.log.maxSize),
         maxFiles: integer("log.maxFiles", defaults.log.maxFiles, 1),
       })
       .prefault({})

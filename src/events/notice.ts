@@ -19,25 +19,6 @@ export interface NoticePayload {
   file?: { name?: string; size?: number }
 }
 
-/** 插件认识的全部通知类型。 */
-export const NOTICE_TYPES = [
-  "group_recall",
-  "friend_recall",
-  "group_upload",
-  "group_admin",
-  "group_decrease",
-  "group_increase",
-  "friend_add",
-  "notify",
-] as const
-
-export type NoticeType = (typeof NOTICE_TYPES)[number]
-
-/** 通知类型是否受支持。 */
-export function isNoticeType(value: string): value is NoticeType {
-  return (NOTICE_TYPES as readonly string[]).includes(value)
-}
-
 /**
  * 通知对应的聊天目标。
  *

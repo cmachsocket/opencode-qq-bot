@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises"
 import { existsSync, statSync, watch, type FSWatcher } from "node:fs"
 import { dirname, isAbsolute, join, resolve } from "node:path"
+import { unrefTimer } from "../async"
 import type { Logger } from "../logger"
 import { buildSystemPrompt } from "./prompt"
 
@@ -42,7 +43,7 @@ export function findSoulFile(
 }
 
 /** 找不到文件时给出预期路径，文件补齐后可被监听器捡到。 */
-export function expectedSoulPath(startDir: string, name: string, maxDepth = 5): string {
+function expectedSoulPath(startDir: string, name: string, maxDepth = 5): string {
   let current = resolve(startDir)
   for (let depth = 0; depth <= maxDepth; depth += 1) {
     const directory = join(current, SOUL_DIR)
@@ -154,8 +155,7 @@ export class SoulStore {
       this.#logger.warn("角色设定监听失败，改动后需要重载插件", error)
       return
     }
-    const handle = this.#watcher as { unref?: () => void }
-    handle.unref?.()
+    unrefTimer(this.#watcher)
   }
 
   #matches(filename: string, directory: string): boolean {
@@ -169,8 +169,7 @@ export class SoulStore {
       this.#timer = undefined
       void this.reload()
     }, RELOAD_DEBOUNCE_MS)
-    const handle = this.#timer as { unref?: () => void }
-    handle.unref?.()
+    unrefTimer(this.#timer)
   }
 }
 

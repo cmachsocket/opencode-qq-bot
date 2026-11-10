@@ -4,7 +4,6 @@ import {
   createEmojiRunner,
   EMOJI_LABEL_USAGE,
   emojiCommand,
-  formatFavoriteList,
   parseEmojiLabelArgs,
   selectFacesToLabel,
 } from "../src/emoji/command"
@@ -15,7 +14,13 @@ import { tuiCommandName } from "../src/tui-commands"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { faceName, QQ_FACE_NAMES, renderFace } from "../src/emoji/faces"
-import { type CustomFace, faceTag, type FavoriteRow, FavoriteStore } from "../src/emoji/favorites"
+import {
+  type CustomFace,
+  faceTag,
+  type FavoriteRow,
+  FavoriteStore,
+  formatFavoriteList,
+} from "../src/emoji/favorites"
 import { FavoriteIndex, favoriteKey, type IndexStorage } from "../src/emoji/favorite-index"
 import { cleanTag, EmojiLabeler, LABEL_SESSION_MARKER, MAX_TAG_LENGTH } from "../src/emoji/label"
 import { DEFAULT_CONFIG, type QQBotConfig } from "../src/config"

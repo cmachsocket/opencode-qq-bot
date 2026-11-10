@@ -20,7 +20,6 @@ import {
   type StoredImage,
 } from "./media"
 
-export { MAX_IMAGE_BYTES, inlineImageBytes }
 export type { PromptFile } from "./media"
 
 /** 合并转发的解析上限，避免撑爆上下文。 */
@@ -227,6 +226,36 @@ function createForwardBudget(): ForwardBudget {
   return { nodes: MAX_FORWARD_TOTAL_NODES, chars: MAX_FORWARD_TOTAL_CHARS }
 }
 
+/**
+ * 只产出文字、不涉及媒体与上游的消息段描述。
+ *
+ * 转发内容与普通消息共用，保证两边对同一种段落的措辞一致。
+ *
+ * @returns 段落文本；需要特殊处理（@、图片、语音、引用、转发）时返回 `undefined`。
+ */
+function describeSegment(segment: Segment): string | undefined {
+  switch (segment.type) {
+    case "text":
+      return sanitizeUntrustedText(segment.data.text)
+    case "video":
+      return "[视频]"
+    case "audio":
+      return "[音频]"
+    case "file":
+      return `[文件]${sanitizeUntrustedText(segment.data.name || segment.data.file)}`
+    case "face":
+      return renderFace(segment.data.id)
+    case "json":
+      return "[卡片消息]"
+    case "xml":
+      return "[XML消息]"
+    case "markdown":
+      return "[Markdown消息]"
+    default:
+      return undefined
+  }
+}
+
 async function renderForwardSegments(
   ctx: RenderContext,
   message: readonly MessageSegment[],
@@ -239,10 +268,12 @@ async function renderForwardSegments(
   const images: StoredImage[] = []
   for (const segment of segments(message)) {
     try {
+      const described = describeSegment(segment)
+      if (described !== undefined) {
+        parts.push(described)
+        continue
+      }
       switch (segment.type) {
-        case "text":
-          parts.push(sanitizeUntrustedText(segment.data.text))
-          break
         case "at":
           parts.push(`@${segment.data.qq} `)
           break
@@ -259,27 +290,6 @@ async function renderForwardSegments(
         }
         case "record":
           parts.push("[语音]")
-          break
-        case "video":
-          parts.push("[视频]")
-          break
-        case "audio":
-          parts.push("[音频]")
-          break
-        case "file":
-          parts.push(`[文件]${sanitizeUntrustedText(segment.data.name || segment.data.file)}`)
-          break
-        case "face":
-          parts.push(renderFace(segment.data.id))
-          break
-        case "json":
-          parts.push("[卡片消息]")
-          break
-        case "xml":
-          parts.push("[XML消息]")
-          break
-        case "markdown":
-          parts.push("[Markdown消息]")
           break
         case "reply":
           // 转发节点里的引用没有上下文，跳过
@@ -387,10 +397,7 @@ export async function renderForward(
 }
 
 /** 把语音消息转成文字，转写失败时返回空字符串。 */
-export async function fetchVoiceText(
-  ctx: RenderContext,
-  messageId: number | undefined,
-): Promise<string> {
+async function fetchVoiceText(ctx: RenderContext, messageId: number | undefined): Promise<string> {
   if (messageId === undefined) return ""
   try {
     const result = await ctx.api.fetchPttText(messageId)
@@ -461,10 +468,12 @@ export async function renderMessage(
 
   for (const segment of message) {
     try {
+      const described = describeSegment(segment)
+      if (described !== undefined) {
+        textBuffer.push(described)
+        continue
+      }
       switch (segment.type) {
-        case "text":
-          textBuffer.push(sanitizeUntrustedText(segment.data.text))
-          break
         case "at":
           textBuffer.push(
             `@${sanitizeSenderName(await resolveUserName(ctx, String(segment.data.qq)))} `,
@@ -516,27 +525,6 @@ export async function renderMessage(
           }
           break
         }
-        case "video":
-          textBuffer.push("[视频]")
-          break
-        case "audio":
-          textBuffer.push("[音频]")
-          break
-        case "file":
-          textBuffer.push(`[文件]${sanitizeUntrustedText(segment.data.name || segment.data.file)}`)
-          break
-        case "face":
-          textBuffer.push(renderFace(segment.data.id))
-          break
-        case "json":
-          textBuffer.push("[卡片消息]")
-          break
-        case "xml":
-          textBuffer.push("[XML消息]")
-          break
-        case "markdown":
-          textBuffer.push("[Markdown消息]")
-          break
         default:
           ctx.logger.debug(`跳过未知消息段 type=${(segment as { type: string }).type}`)
           break

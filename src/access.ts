@@ -18,11 +18,6 @@ export interface AccessConfig {
   allowAllWhenEmpty: boolean
 }
 
-/** 空名单。 */
-export function emptyTargetList(): TargetList {
-  return { groups: [], users: [] }
-}
-
 /** 取某一类目标的名单。 */
 function listFor(list: TargetList, kind: ChatTarget["kind"]): number[] {
   return kind === "group" ? list.groups : list.users

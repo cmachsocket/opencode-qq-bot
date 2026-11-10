@@ -5,6 +5,7 @@ import { pathToFileURL } from "node:url"
 import type { Logger } from "../logger"
 import { defaultMediaDir } from "../media-path"
 import { type SafeFetcher, safeFetchBytes } from "../safe-fetch"
+import { truncateForLog } from "../text"
 
 /** 单张图片下载与落盘的字节上限。 */
 export const MAX_IMAGE_BYTES = 5 * 1024 * 1024
@@ -84,12 +85,7 @@ function truncateCodePoints(text: string, max: number): string {
   return Array.from(text).slice(0, max).join("")
 }
 
-/** 截断过长的地址，避免日志被超长 URL 淹没。 */
-function truncateForLog(value: string, max = 120): string {
-  return value.length > max ? `${value.slice(0, max)}…` : value
-}
-
-function decodeBase64(value: string): Uint8Array | undefined {
+function decodeBase64Bytes(value: string): Uint8Array | undefined {
   if (!/^[A-Za-z0-9+/]*={0,2}$/u.test(value)) return undefined
   const bytes = Buffer.from(value, "base64")
   return bytes.byteLength > MAX_IMAGE_BYTES ? undefined : new Uint8Array(bytes)
@@ -98,7 +94,7 @@ function decodeBase64(value: string): Uint8Array | undefined {
 function parseDataUrl(uri: string, logger: Logger): ImageBytes | undefined {
   const match = /^data:([^;,]+)?(?:;[^,]*)*;base64,(.*)$/s.exec(uri)
   if (!match) return undefined
-  const bytes = decodeBase64(match[2] ?? "")
+  const bytes = decodeBase64Bytes(match[2] ?? "")
   if (!bytes) return undefined
   // 以魔数嗅探为准：URI 里声明的类型由消息发送方控制，不能直接信任。
   const mime = mimeFromBytes(bytes)
@@ -143,7 +139,7 @@ export class MediaStore {
 
   private async readImage(url: string): Promise<ImageBytes | undefined> {
     if (url.startsWith("base64://")) {
-      const bytes = decodeBase64(url.slice("base64://".length))
+      const bytes = decodeBase64Bytes(url.slice("base64://".length))
       if (!bytes) {
         this.logger.warn("base64 图片无效或超过大小上限")
         return undefined

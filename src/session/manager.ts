@@ -3,6 +3,7 @@ import type { Location } from "@opencode/schema"
 import { SessionMessage } from "@opencode/schema"
 import { Mutex } from "async-mutex"
 import { isTargetAllowed } from "../access"
+import { unrefTimer } from "../async"
 import { type ChatTarget, parseTargetKey, targetKey, targetLabel } from "../chat"
 import type { ModelRef, QQBotConfig } from "../config"
 import type { BotHome } from "../home"
@@ -12,7 +13,8 @@ import type { ChatOverrides } from "../overrides"
 import type { Tracer } from "../trace"
 import { limitFiles, type PromptFile } from "../naplink/render"
 import type { WakeReason } from "../overrides"
-import { roleOf, type Role } from "../tools/policy"
+import { roleForChat, roleOf, type Role } from "../tools/policy"
+import { findSession } from "./find"
 
 /** 插件存储里保存会话与目标绑定的键。 */
 const BINDINGS_KEY = "bindings"
@@ -25,7 +27,7 @@ const INFLIGHT_KEY = "inflight"
 /** 单个目标最多缓存的消息条数。 */
 export const MAX_BUFFER_TURNS = 100
 /** 单个目标最多缓存的文本与附件字节数。 */
-export const MAX_BUFFER_BYTES = 32 * 1024 * 1024
+const MAX_BUFFER_BYTES = 32 * 1024 * 1024
 /** 每个目标最多记录的消息 ID 数量。 */
 const MAX_TRACKED_MESSAGES = 200
 /** 刚投递的一轮还没在上游体现出忙碌状态，先跳过对账避免重复投递。 */
@@ -216,8 +218,6 @@ export interface HandoverState {
   /** 当前失败批次已经重试的次数。 */
   pendingAttempts: number
 }
-
-type SessionListCursor = NonNullable<Parameters<Plugin.Context["session"]["list"]>[0]>["cursor"]
 
 /** 角色权限高低：数字越小权限越低。 */
 const ROLE_RANK: Record<Role, number> = {
@@ -496,33 +496,30 @@ export class SessionManager {
     await this.writeInflight()
   }
 
+  /** 写插件存储；失败只记日志，不影响主流程。 */
+  private async store(key: string, value: StoredJson, failure: string): Promise<void> {
+    try {
+      await this.ctx.storage.set(key, value)
+    } catch (error) {
+      this.logger.error(failure, error)
+    }
+  }
+
   private async writeBindings(): Promise<void> {
     const bindings: Record<string, string> = {}
     for (const state of this.states.values()) {
       if (state.sessionID) bindings[targetKey(state.target)] = state.sessionID
     }
-    try {
-      await this.ctx.storage.set(BINDINGS_KEY, bindings)
-    } catch (error) {
-      this.logger.error("保存会话绑定失败", error)
-    }
+    await this.store(BINDINGS_KEY, bindings, "保存会话绑定失败")
   }
 
   private async writeActivity(): Promise<void> {
-    try {
-      await this.ctx.storage.set(ACTIVITY_KEY, { ...this.activity })
-    } catch (error) {
-      this.logger.error("保存目标活跃时间失败", error)
-    }
+    await this.store(ACTIVITY_KEY, { ...this.activity }, "保存目标活跃时间失败")
   }
 
   private async writePositions(): Promise<void> {
-    try {
-      const data: Record<string, { id: string; time: number }> = Object.fromEntries(this.positions)
-      await this.ctx.storage.set(POSITIONS_KEY, data)
-    } catch (error) {
-      this.logger.error("保存消息位置失败", error)
-    }
+    const data: Record<string, { id: string; time: number }> = Object.fromEntries(this.positions)
+    await this.store(POSITIONS_KEY, data, "保存消息位置失败")
   }
 
   /** 把正在执行的轮次写回存储，重启后据此恢复工具权限。 */
@@ -549,11 +546,7 @@ export class SessionManager {
         at: now,
       }
     }
-    try {
-      await this.ctx.storage.set(INFLIGHT_KEY, inflight as unknown as StoredJson)
-    } catch (error) {
-      this.logger.error("保存在途轮次失败", error)
-    }
+    await this.store(INFLIGHT_KEY, inflight as unknown as StoredJson, "保存在途轮次失败")
   }
 
   /** 等待所有待写入的绑定落盘。 */
@@ -561,25 +554,24 @@ export class SessionManager {
     await this.saveMutex.runExclusive(() => this.persist())
   }
 
-  /** 取目标对应的互斥锁，保证同一目标的状态变更与投递串行执行。 */
-  private targetMutex(target: ChatTarget): Mutex {
-    const key = targetKey(target)
-    let mutex = this.targetMutexes.get(key)
+  /** 取（必要时创建）某个键对应的互斥锁。 */
+  private mutexFor(map: Map<string, Mutex>, key: string): Mutex {
+    let mutex = map.get(key)
     if (!mutex) {
       mutex = new Mutex()
-      this.targetMutexes.set(key, mutex)
+      map.set(key, mutex)
     }
     return mutex
   }
 
+  /** 取目标对应的互斥锁，保证同一目标的状态变更与投递串行执行。 */
+  private targetMutex(target: ChatTarget): Mutex {
+    return this.mutexFor(this.targetMutexes, targetKey(target))
+  }
+
+  /** 建会话专用的锁，不能和投递锁共用：`Mutex` 不可重入，投递中建会话会死锁。 */
   private ensureMutex(target: ChatTarget): Mutex {
-    const key = targetKey(target)
-    let mutex = this.ensureMutexes.get(key)
-    if (!mutex) {
-      mutex = new Mutex()
-      this.ensureMutexes.set(key, mutex)
-    }
-    return mutex
+    return this.mutexFor(this.ensureMutexes, targetKey(target))
   }
 
   /**
@@ -589,10 +581,7 @@ export class SessionManager {
    * 能拿到发送者时用 `roleFor` 精确判定。
    */
   private defaultRole(target: ChatTarget): Role {
-    if (target.kind !== "private") return "member"
-    if (target.id === this.config.ownerQQ) return "owner"
-    if (this.config.admins.includes(target.id)) return "admin"
-    return "member"
+    return roleForChat(this.config, target)
   }
 
   /** 按发送者 QQ 号还原角色；没有发送者时回退到聊天本身。 */
@@ -694,7 +683,7 @@ export class SessionManager {
     let timer: ReturnType<typeof setTimeout> | undefined
     const timeout = new Promise<void>((resolve) => {
       timer = setTimeout(resolve, HANDOVER_WAIT_MS)
-      timer.unref?.()
+      unrefTimer(timer)
     })
     try {
       await Promise.race([this.targetMutex(target).runExclusive(async () => {}), timeout])
@@ -777,14 +766,23 @@ export class SessionManager {
     state.buffer = []
     state.pending = undefined
     state.pendingAttempts = 0
-    this.endTurn(state, "resetTarget")
+    state.idleAt = Date.now()
+    this.resetTurnState(state, "resetTarget")
+    return { sessionID, interrupted }
+  }
+
+  /**
+   * 清掉一个聊天的轮次运行时状态并落盘。
+   *
+   * 排队消息与待重试批次由调用方决定是否一起清掉。
+   */
+  private resetTurnState(state: ChatState, reason: string): void {
+    this.endTurn(state, reason)
     state.awaitingSend = false
     state.reminders = 0
     state.historyDone = false
     state.sessionCreated = false
-    state.idleAt = Date.now()
     this.scheduleSave()
-    return { sessionID, interrupted }
   }
 
   /**
@@ -830,13 +828,8 @@ export class SessionManager {
     }
     state.lastRetireAt = now
     await this.detachSession(state)
-    this.endTurn(state, "retireSession")
-    state.awaitingSend = false
-    state.reminders = 0
     // 新会话是空的，历史要重新补一次。
-    state.historyDone = false
-    state.sessionCreated = false
-    this.scheduleSave()
+    this.resetTurnState(state, "retireSession")
     this.logger.warn(`${label} 会话 ${sessionID} 连续投递失败，已退役，下一条消息会新建会话`)
   }
 
@@ -931,15 +924,7 @@ export class SessionManager {
 
   /** 记录一条机器人发出的消息，撤回工具只能操作这些消息。 */
   rememberOutgoing(target: ChatTarget, messageId: string): void {
-    const key = targetKey(target)
-    const ids = this.outgoing.get(key) ?? new Set<string>()
-    ids.add(messageId)
-    while (ids.size > MAX_TRACKED_MESSAGES) {
-      const oldest = ids.values().next().value
-      if (oldest === undefined) break
-      ids.delete(oldest)
-    }
-    this.outgoing.set(key, ids)
+    this.track(this.outgoing, target, messageId)
   }
 
   /** 判断消息是否是机器人发出的。 */
@@ -953,8 +938,17 @@ export class SessionManager {
    * 返回该 ID 是否首次出现，用于忽略 NapCat 重连后重放的同一条消息。
    */
   rememberIncoming(target: ChatTarget, messageId: string): boolean {
+    return this.track(this.incoming, target, messageId)
+  }
+
+  /**
+   * 把消息 ID 记进目标的集合，超出上限时丢弃最旧的一条。
+   *
+   * @returns 该 ID 是否是首次记录。
+   */
+  private track(map: Map<string, Set<string>>, target: ChatTarget, messageId: string): boolean {
     const key = targetKey(target)
-    const ids = this.incoming.get(key) ?? new Set<string>()
+    const ids = map.get(key) ?? new Set<string>()
     const isNew = !ids.has(messageId)
     ids.add(messageId)
     while (ids.size > MAX_TRACKED_MESSAGES) {
@@ -962,7 +956,7 @@ export class SessionManager {
       if (oldest === undefined) break
       ids.delete(oldest)
     }
-    this.incoming.set(key, ids)
+    map.set(key, ids)
     return isNew
   }
 
@@ -1375,8 +1369,7 @@ export class SessionManager {
       this.watchdog = undefined
       void this.runWatchdog()
     }, RESUME_INTERVAL_MS)
-    const handle = this.watchdog as { unref?: () => void }
-    handle.unref?.()
+    unrefTimer(this.watchdog)
   }
 
   /** 兜底轮询一轮：按上游会话状态把缓存的消息放出去。 */
@@ -1566,32 +1559,16 @@ export class SessionManager {
 
   /** 查找带相同目标标记的历史会话，按最近优先分页查找。 */
   private async findExistingSession(target: ChatTarget): Promise<string | undefined> {
-    let cursor: SessionListCursor | undefined
-    try {
-      for (let page = 0; page < 5; page += 1) {
-        const result = await this.ctx.session.list({
-          directory: this.location.directory,
-          limit: 100,
-          order: "desc",
-          ...(cursor ? { cursor } : {}),
-        })
-        const hit = result.data.find((session) => {
-          const metadata = session.metadata
-          return metadata?.["qqTargetKind"] === target.kind && metadata["qqTargetId"] === target.id
-        })
-        if (hit) return hit.id
-        cursor = result.cursor.next ?? undefined
-        if (!cursor) break
-      }
-    } catch (error) {
-      this.logger.warn(`查找历史会话失败 ${targetLabel(target)}`, error)
-    }
-    return undefined
-  }
-
-  /** 该目标是否已经建立过会话。 */
-  hasSession(target: ChatTarget): boolean {
-    return this.states.get(targetKey(target))?.sessionID !== undefined
+    return await findSession(
+      this.ctx,
+      this.location.directory,
+      (session) => {
+        const metadata = session.metadata
+        return metadata?.["qqTargetKind"] === target.kind && metadata["qqTargetId"] === target.id
+      },
+      this.logger,
+      `查找历史会话失败 ${targetLabel(target)}`,
+    )
   }
 
   /** 主动说话：向目标对应的会话投递一条合成消息。 */

@@ -9,7 +9,7 @@ import type { SessionManager } from "./session/manager"
 import type { ToolPolicy } from "./tools/policy"
 import { createPlainSender } from "./tools/qq"
 
-export { TUI_COMMAND_PREFIX, tuiCommandName } from "./commands"
+export { tuiCommandName } from "./commands"
 
 export interface TuiCommandDeps {
   ctx: Plugin.Context

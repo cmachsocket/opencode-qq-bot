@@ -3,6 +3,7 @@ import { realpath, stat } from "node:fs/promises"
 import { homedir } from "node:os"
 import { isAbsolute, join, resolve, sep } from "node:path"
 import ipaddr from "ipaddr.js"
+import { expandTilde } from "./home"
 import { ALLOWED_PORTS } from "./safe-fetch"
 
 /**
@@ -32,10 +33,7 @@ export type MediaPlan = { kind: "local"; path: string } | { kind: "remote"; url:
 
 /** 展开 `~` 并去掉首尾空白。 */
 function expand(value: string): string {
-  const trimmed = value.trim()
-  if (trimmed === "~") return homedir()
-  if (trimmed.startsWith("~/")) return join(homedir(), trimmed.slice(2))
-  return trimmed
+  return expandTilde(value.trim())
 }
 
 /**
