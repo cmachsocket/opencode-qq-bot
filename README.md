@@ -11,7 +11,7 @@
 - 收藏表情（表情包）可以用 `/emoji-label`（QQ 私聊）或 `/qq-emoji-label`（TUI）生成中文标签，模型按收藏表情编号把表情发回聊天
 - 模型失败或中断时往聊天里补一条固定提示（同一目标 5 分钟内最多一条），不会只剩日志里的一行错误
 - 工具按角色与聊天分配：owner / 管理员全开，普通成员默认只有联网搜索、网页抓取与发消息工具；管理命令只在 owner 与管理员自己的私聊生效
-- 角色设定放在 `souls/` 目录，可放多份，按文件名切换，改动后下一轮立即生效
+- 角色设定放在机器人工作目录的 `souls/` 里，可放多份，按文件名切换，改动后下一轮立即生效
 
 ## 环境要求
 
@@ -84,8 +84,8 @@ bun install
 | `admins`                            | `QQ_ADMINS`                        | `[]`                  | 管理员 QQ 号：拥有全部工具权限，私聊还需在放行名单  |
 | `toolProfilesPath`                  | `QQ_TOOL_PROFILES`                 | `tool-profiles.json`  | 工具配置文件路径（相对当前工作目录）                |
 | `chatOverridesPath`                 | `QQ_CHAT_OVERRIDES`                | `chat-overrides.json` | 会话行为覆盖文件路径（相对当前工作目录）            |
-| `soulPath`                          | `QQ_BOT_SOUL_PATH`                 | 包内 `souls/`         | 角色设定文件或目录路径                              |
-| `soulName`                          | `QQ_BOT_SOUL_NAME`                 | `default.txt`         | `souls` 目录里的角色设定文件名                      |
+| `soulPath`                          | `QQ_BOT_SOUL_PATH`                 | 工作目录 `souls/`     | 角色设定文件或目录路径，相对工作目录                |
+| `soulName`                          | `QQ_BOT_SOUL_NAME`                 | `default.txt`         | 工作目录 `souls` 里的角色设定文件名                 |
 | `home`                              | `QQ_BOT_HOME`                      | XDG 工作区            | 机器人会话的工作目录，必须是绝对路径或 `~/`         |
 | `agent`                             | `QQ_BOT_AGENT`                     | OpenCode 默认         | 会话使用的 agent                                    |
 | `model`                             | `QQ_BOT_MODEL`                     | OpenCode 默认         | 会话使用的模型，格式 `provider/model[/variant]`     |
@@ -192,13 +192,17 @@ OpenCode 按 location 统计会话活动，默认空闲 60 分钟后卸载该 lo
 
 ### 角色设定
 
-角色设定文件放在 `souls/` 目录，一个目录里可以放多份，用 `soulName` 选生效的那份：
+角色设定文件放在机器人工作目录的 `souls/` 里（默认 `~/.local/share/opencode-qq-bot/workspace/souls/`），
+一个目录里可以放多份，用 `soulName` 选生效的那份：
 
 ```
-souls/
+<工作目录>/souls/
   default.txt     默认角色
   白羽桃.txt      另一份角色
 ```
+
+首次启动时插件把随包分发的默认档复制到这里；之后只读工作目录里的副本，
+升级插件不会覆盖你改过的设定。目录与文件也可以自己新建，插件会直接使用。
 
 ```jsonc
 {
@@ -213,8 +217,8 @@ souls/
 }
 ```
 
-- `soulName` 填 `souls` 目录里的文件名，默认 `default.txt`。
-- `soulPath` 可以直接给文件路径（相对路径按进程工作目录解析），也可以给目录，目录时同样用 `soulName` 选文件。
+- `soulName` 填工作目录 `souls` 里的文件名，默认 `default.txt`。
+- `soulPath` 可以直接给文件路径（相对路径按工作目录解析，与项目目录无关），也可以给目录，目录时同样用 `soulName` 选文件。
 - 生效文件的内容改动会被监听，下一轮就用新设定，不需要重启插件。
 - 改 `soulName` 换角色：写进 `opencode.json(c)` 保存后 OpenCode 会重载插件，随即生效。
 
@@ -482,7 +486,7 @@ GitHub Release。版本号策略、发布清单与回滚步骤见 [docs/release.
 ## 目录
 
 ```
-souls/               角色设定文件（可多份，按文件名切换）
+souls/               随包分发的初始角色设定，首次启动复制到机器人工作目录
 tool-profiles.json   工具权限配置档（模板：tool-profiles.example.json）
 chat-overrides.json  每会话的行为覆盖（模板：chat-overrides.example.json）
 src/

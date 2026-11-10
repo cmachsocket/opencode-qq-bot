@@ -300,15 +300,15 @@ NapCat 连接断开后机器人就不再响应。
 
 ### 全局项与会话项对照
 
-| 会话字段               | 覆盖的全局项                                                  | 取值                                  | 说明                                                     |
-| ---------------------- | ------------------------------------------------------------- | ------------------------------------- | -------------------------------------------------------- |
-| `wake`                 | `wake.*`                                                      | `all` / `mention` / `prefix` / `none` | 群聊的唤醒条件                                           |
-| `prefix`               | `wake.prefixes`                                               | 字符串                                | `wake` 为 `prefix` 时使用的前缀                          |
-| `proactive`            | `proactive.enabled`                                           | 布尔                                  | `false` 关闭该聊天的主动说话；不写时跟随全局             |
-| `proactiveProbability` | `proactive.startProbability` / `proactive.probabilityPerHour` | 0 到 1                                | 该聊天单次心跳的触发概率，不写时用全局公式               |
-| `agent`                | `agent`                                                       | 字符串                                | 覆盖该聊天使用的 OpenCode agent                          |
-| `model`                | `model`                                                       | `provider/model[/variant]`            | 覆盖该聊天使用的模型                                     |
-| `soul`                 | `soulPath` / `soulName`                                       | 文件路径                              | 覆盖该聊天使用的角色设定文件，相对路径按当前工作目录解析 |
+| 会话字段               | 覆盖的全局项                                                  | 取值                                  | 说明                                                       |
+| ---------------------- | ------------------------------------------------------------- | ------------------------------------- | ---------------------------------------------------------- |
+| `wake`                 | `wake.*`                                                      | `all` / `mention` / `prefix` / `none` | 群聊的唤醒条件                                             |
+| `prefix`               | `wake.prefixes`                                               | 字符串                                | `wake` 为 `prefix` 时使用的前缀                            |
+| `proactive`            | `proactive.enabled`                                           | 布尔                                  | `false` 关闭该聊天的主动说话；不写时跟随全局               |
+| `proactiveProbability` | `proactive.startProbability` / `proactive.probabilityPerHour` | 0 到 1                                | 该聊天单次心跳的触发概率，不写时用全局公式                 |
+| `agent`                | `agent`                                                       | 字符串                                | 覆盖该聊天使用的 OpenCode agent                            |
+| `model`                | `model`                                                       | `provider/model[/variant]`            | 覆盖该聊天使用的模型                                       |
+| `soul`                 | `soulPath` / `soulName`                                       | 文件路径                              | 覆盖该聊天使用的角色设定文件，相对路径按机器人工作目录解析 |
 
 ### 覆盖行为
 
@@ -363,16 +363,19 @@ TUI 侧执行时结果发到该会话绑定的 QQ 聊天，没有绑定就发第
 
 ## 角色设定
 
-`souls/` 目录里可以放多份角色设定，`soulName` 选生效的那份，`soulPath` 可以覆盖成任意文件或目录。
+角色设定放在机器人工作目录的 `souls/` 里，可以放多份，`soulName` 选生效的那份，
+`soulPath` 可以覆盖成任意文件或目录。工作目录见 `home`（默认 XDG 工作区）。
 
 | 情况            | 生效文件                                          |
 | --------------- | ------------------------------------------------- |
-| 只配 `soulName` | `souls/<soulName>`（从插件目录向上找 `souls/`）   |
+| 只配 `soulName` | `<工作目录>/souls/<soulName>`                     |
 | 只配 `soulPath` | 该路径指向的文件；指向目录时取目录下的 `soulName` |
 | 两个都配        | `soulPath` 优先                                   |
-| 都没配          | `souls/default.txt`                               |
+| 都没配          | `<工作目录>/souls/default.txt`                    |
 
 - `soulName` 默认 `default.txt`。
+- 首次启动时把随包分发的初始文件复制到工作目录；已有的同名文件不会被覆盖，升级插件不影响改过的设定。
+- `soulPath` 与 `soul` 的相对路径都按机器人工作目录解析，与加载插件的项目目录无关。
 - 文件内容改动会被监听，下一轮立即用新设定；文件稍后创建也会被捡到。
 - 换角色改 `soulName`：写进 `opencode.json(c)` 保存后 OpenCode 重载插件后生效。
 

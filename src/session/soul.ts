@@ -1,4 +1,4 @@
-import { readFile } from "node:fs/promises"
+import { copyFile, mkdir, readdir, readFile } from "node:fs/promises"
 import { existsSync, statSync, watch, type FSWatcher } from "node:fs"
 import { dirname, isAbsolute, join, resolve } from "node:path"
 import { unrefTimer } from "../async"
@@ -19,21 +19,22 @@ export interface SoulOptions {
   soulPath?: string
   /** souls 目录里的文件名。 */
   soulName?: string
-  /** 插件所在目录，用于向上查找包内 souls 目录。 */
+  /** 机器人工作目录：角色设定放这里，升级插件不会覆盖。 */
+  home: string
+  /** 插件所在目录，用于查找随包分发的初始角色设定。 */
   moduleDir: string
-  /** 相对路径的基准目录。 */
-  cwd: string
 }
 
-/** 从 startDir 向上逐级查找 souls/<name>。 */
-export function findSoulFile(
-  startDir: string,
-  name: string = DEFAULT_SOUL_NAME,
-  maxDepth = 5,
-): string | undefined {
+/** 工作目录里的角色设定目录。 */
+export function soulsDirectory(home: string): string {
+  return join(home, SOUL_DIR)
+}
+
+/** 从 startDir 向上逐级查找随包分发的 souls 目录。 */
+export function findSoulsDirectory(startDir: string, maxDepth = 5): string | undefined {
   let current = resolve(startDir)
   for (let depth = 0; depth <= maxDepth; depth += 1) {
-    const candidate = join(current, SOUL_DIR, name)
+    const candidate = join(current, SOUL_DIR)
     if (existsSync(candidate)) return candidate
     const parent = dirname(current)
     if (parent === current) break
@@ -42,28 +43,51 @@ export function findSoulFile(
   return undefined
 }
 
-/** 找不到文件时给出预期路径，文件补齐后可被监听器捡到。 */
-function expectedSoulPath(startDir: string, name: string, maxDepth = 5): string {
-  let current = resolve(startDir)
-  for (let depth = 0; depth <= maxDepth; depth += 1) {
-    const directory = join(current, SOUL_DIR)
-    if (existsSync(directory)) return join(directory, name)
-    const parent = dirname(current)
-    if (parent === current) break
-    current = parent
+/**
+ * 把随包分发的角色设定补进工作目录。
+ *
+ * 只补缺失的文件：插件升级不会覆盖用户改过的设定，首次启动则拿到一份能直接用的默认档。
+ */
+export async function seedSouls(
+  options: Pick<SoulOptions, "home" | "moduleDir">,
+  logger: Logger,
+): Promise<void> {
+  const target = soulsDirectory(options.home)
+  await mkdir(target, { recursive: true, mode: 0o700 })
+  const template = findSoulsDirectory(options.moduleDir)
+  if (!template || resolve(template) === resolve(target)) return
+  let entries
+  try {
+    entries = await readdir(template, { withFileTypes: true })
+  } catch (error) {
+    logger.debug("读取随包角色设定失败", error)
+    return
   }
-  return join(resolve(startDir), SOUL_DIR, name)
+  for (const entry of entries) {
+    if (!entry.isFile()) continue
+    const destination = join(target, entry.name)
+    // 已有同名文件说明用户改过或换过，别动。
+    if (existsSync(destination)) continue
+    try {
+      await copyFile(join(template, entry.name), destination)
+      logger.info(`角色设定已就位：${destination}`)
+    } catch (error) {
+      logger.warn(`复制角色设定失败：${entry.name}`, error)
+    }
+  }
 }
 
-/** 定位角色设定文件：显式路径优先，其次 souls 目录里的指定文件。 */
+/**
+ * 定位角色设定文件：显式路径优先，否则取工作目录 `souls/` 里的指定文件。
+ *
+ * 相对路径按工作目录解析，与项目目录无关。
+ */
 export function resolveSoulPath(options: SoulOptions): string {
   const name = options.soulName?.trim() || DEFAULT_SOUL_NAME
   const explicit = options.soulPath?.trim()
-  if (!explicit) {
-    return findSoulFile(options.moduleDir, name) ?? expectedSoulPath(options.moduleDir, name)
-  }
+  if (!explicit) return join(soulsDirectory(options.home), name)
 
-  const target = isAbsolute(explicit) ? explicit : resolve(options.cwd, explicit)
+  const target = isAbsolute(explicit) ? explicit : resolve(options.home, explicit)
   if (existsSync(target) && statSync(target).isDirectory()) return join(target, name)
   return target
 }
@@ -208,7 +232,7 @@ export class SoulLibrary {
   async at(path: string | undefined): Promise<SoulStore> {
     const explicit = path?.trim()
     if (!explicit) return this.loadDefault()
-    const absolute = isAbsolute(explicit) ? explicit : resolve(this.options.cwd, explicit)
+    const absolute = isAbsolute(explicit) ? explicit : resolve(this.options.home, explicit)
     const cached = this.#stores.get(absolute)
     if (cached) return cached
     const store = new SoulStore({ ...this.options, soulPath: absolute }, this.logger)

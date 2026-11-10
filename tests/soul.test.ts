@@ -1,12 +1,14 @@
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises"
+import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, describe, expect, it } from "vitest"
 import {
-  findSoulFile,
+  findSoulsDirectory,
   resolveSoulPath,
+  seedSouls,
   SoulLibrary,
   SoulStore,
+  soulsDirectory,
   type SoulOptions,
 } from "../src/session/soul"
 import type { Logger } from "../src/logger"
@@ -40,33 +42,64 @@ async function waitFor(check: () => boolean, timeoutMs = 3000): Promise<void> {
 }
 
 function options(overrides: Partial<SoulOptions> = {}): SoulOptions {
-  return { moduleDir: "/nonexistent", cwd: "/nonexistent", ...overrides }
+  return { home: "/nonexistent", moduleDir: "/nonexistent", ...overrides }
 }
 
-describe("findSoulFile", () => {
-  it("向上查找 souls 目录里的指定文件", async () => {
+describe("findSoulsDirectory", () => {
+  it("向上查找 souls 目录", async () => {
     const root = await makeDir("soul-find")
     await mkdir(join(root, "souls"))
-    await writeFile(join(root, "souls", "白羽桃.txt"), "设定", "utf-8")
     await mkdir(join(root, "src", "session"), { recursive: true })
 
-    expect(findSoulFile(join(root, "src", "session"), "白羽桃.txt")).toBe(
-      join(root, "souls", "白羽桃.txt"),
-    )
+    expect(findSoulsDirectory(join(root, "src", "session"))).toBe(join(root, "souls"))
   })
 
   it("找不到时返回 undefined", () => {
-    expect(findSoulFile("/")).toBeUndefined()
+    expect(findSoulsDirectory("/")).toBeUndefined()
+  })
+})
+
+describe("seedSouls", () => {
+  it("把随包分发的角色设定复制到工作目录", async () => {
+    const pkg = await makeDir("soul-seed-pkg")
+    const home = await makeDir("soul-seed-home")
+    await mkdir(join(pkg, "souls"))
+    await writeFile(join(pkg, "souls", "default.txt"), "默认设定", "utf-8")
+
+    await seedSouls({ home, moduleDir: join(pkg, "src", "session") }, logger)
+
+    expect(await readFile(join(home, "souls", "default.txt"), "utf-8")).toBe("默认设定")
+  })
+
+  it("不覆盖工作目录里已有的设定", async () => {
+    const pkg = await makeDir("soul-seed-keep-pkg")
+    const home = await makeDir("soul-seed-keep-home")
+    await mkdir(join(pkg, "souls"))
+    await writeFile(join(pkg, "souls", "default.txt"), "包内版本", "utf-8")
+    await mkdir(join(home, "souls"))
+    await writeFile(join(home, "souls", "default.txt"), "用户改过的版本", "utf-8")
+
+    await seedSouls({ home, moduleDir: pkg }, logger)
+
+    expect(await readFile(join(home, "souls", "default.txt"), "utf-8")).toBe("用户改过的版本")
+  })
+
+  it("没有随包设定时也建好目录，供监听器盯住", async () => {
+    const home = await makeDir("soul-seed-empty")
+
+    await seedSouls({ home, moduleDir: "/nonexistent" }, logger)
+
+    await expect(readFile(join(soulsDirectory(home), "default.txt"), "utf-8")).rejects.toThrow()
   })
 })
 
 describe("resolveSoulPath", () => {
-  it("显式路径优先，相对路径按 cwd 解析", async () => {
-    const root = await makeDir("soul-explicit")
-    const file = join(root, "custom.txt")
+  it("显式路径优先，相对路径按工作目录解析", async () => {
+    const home = await makeDir("soul-explicit")
+    const file = join(home, "custom.txt")
     await writeFile(file, "设定", "utf-8")
 
-    expect(resolveSoulPath(options({ soulPath: "custom.txt", cwd: root }))).toBe(file)
+    expect(resolveSoulPath(options({ soulPath: "custom.txt", home }))).toBe(file)
     expect(resolveSoulPath(options({ soulPath: file }))).toBe(file)
   })
 
@@ -79,20 +112,20 @@ describe("resolveSoulPath", () => {
     )
   })
 
-  it("未配置 soulPath 时按 soulName 查找包内 souls 目录", async () => {
-    const root = await makeDir("soul-default")
-    await mkdir(join(root, "souls"))
-    await writeFile(join(root, "souls", "default.txt"), "默认设定", "utf-8")
+  it("未配置 soulPath 时取工作目录 souls 下的 soulName", async () => {
+    const home = await makeDir("soul-default")
 
-    expect(resolveSoulPath(options({ moduleDir: root }))).toBe(join(root, "souls", "default.txt"))
+    expect(resolveSoulPath(options({ home }))).toBe(join(home, "souls", "default.txt"))
+    expect(resolveSoulPath(options({ home, soulName: "白羽桃.txt" }))).toBe(
+      join(home, "souls", "白羽桃.txt"),
+    )
   })
 
   it("文件不存在时给出预期路径，便于稍后补齐", async () => {
-    const root = await makeDir("soul-expected")
-    await mkdir(join(root, "souls"))
+    const home = await makeDir("soul-expected")
 
-    expect(resolveSoulPath(options({ moduleDir: root, soulName: "later.txt" }))).toBe(
-      join(root, "souls", "later.txt"),
+    expect(resolveSoulPath(options({ home, soulName: "later.txt" }))).toBe(
+      join(home, "souls", "later.txt"),
     )
   })
 })
@@ -129,14 +162,14 @@ describe("SoulStore", () => {
   })
 
   it("文件稍后出现时也能加载", async () => {
-    const root = await makeDir("soul-late")
-    await mkdir(join(root, "souls"))
+    const home = await makeDir("soul-late")
+    await mkdir(soulsDirectory(home))
 
-    const store = new SoulStore(options({ moduleDir: root, soulName: "later.txt" }), logger)
+    const store = new SoulStore(options({ home, soulName: "later.txt" }), logger)
     await store.load()
     expect(store.text).toBe("")
 
-    await writeFile(join(root, "souls", "later.txt"), "迟到的设定", "utf-8")
+    await writeFile(join(soulsDirectory(home), "later.txt"), "迟到的设定", "utf-8")
     await waitFor(() => store.text === "迟到的设定")
     store.dispose()
   })
@@ -184,13 +217,14 @@ describe("SoulLibrary", () => {
     library.dispose()
   })
 
-  it("相对路径按 cwd 解析", async () => {
-    const root = await makeDir("soul-library-relative")
-    await writeFile(join(root, "rel.txt"), "相对设定", "utf-8")
+  it("相对路径按工作目录解析", async () => {
+    const home = await makeDir("soul-library-relative")
+    await mkdir(soulsDirectory(home))
+    await writeFile(join(soulsDirectory(home), "rel.txt"), "相对设定", "utf-8")
 
-    const library = new SoulLibrary(options({ cwd: root }), logger)
-    const store = await library.at("rel.txt")
-    expect(store.path).toBe(join(root, "rel.txt"))
+    const library = new SoulLibrary(options({ home }), logger)
+    const store = await library.at(join("souls", "rel.txt"))
+    expect(store.path).toBe(join(soulsDirectory(home), "rel.txt"))
     expect(store.text).toBe("相对设定")
 
     library.dispose()

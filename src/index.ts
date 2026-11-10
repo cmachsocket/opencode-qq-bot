@@ -21,7 +21,7 @@ import { collectEnvSecrets, redactUrl, secretsFromUrl, SensitiveChecker } from "
 import { SessionManager } from "./session/manager"
 import { currentTimeText, PROACTIVE_HINT } from "./session/prompt"
 import { proactiveProbability } from "./session/proactive"
-import { packageDirectory, SoulLibrary } from "./session/soul"
+import { packageDirectory, seedSouls, SoulLibrary } from "./session/soul"
 import { COMMANDS, handleCommand, isCommandChat } from "./commands"
 import {
   chatMuted,
@@ -270,16 +270,16 @@ export default Plugin.define({
       if (disposed) return
       runtimeStarted = true
 
-      // 角色设定：默认档加上按聊天覆盖的其它文件，改完下一轮即生效。
-      const souls = new SoulLibrary(
-        {
-          soulPath: config.soulPath,
-          soulName: config.soulName,
-          moduleDir: packageDirectory(),
-          cwd: process.cwd(),
-        },
-        logger,
-      )
+      // 角色设定：先把随包分发的初始文件补进工作目录，之后一直读工作目录里的副本，
+      // 升级插件不会覆盖掉用户改过的设定。默认档之外还能按聊天覆盖，改完下一轮即生效。
+      const soulOptions = {
+        soulPath: config.soulPath,
+        soulName: config.soulName,
+        home: home.directory,
+        moduleDir: packageDirectory(),
+      }
+      await seedSouls(soulOptions, logger)
+      const souls = new SoulLibrary(soulOptions, logger)
       cleanup.add("停止角色设定热重载", () => souls.dispose(), CleanupOrder.souls)
       await souls.loadDefault()
 

@@ -162,9 +162,9 @@ export interface QQBotConfig {
   toolProfilesPath?: string
   /** 会话行为覆盖文件路径，空表示当前工作目录下的 `chat-overrides.json`。 */
   chatOverridesPath?: string
-  /** 角色设定文件路径，默认使用插件包内的 souls 目录。 */
+  /** 角色设定文件路径；相对路径按机器人工作目录解析，默认取工作目录里的 souls/。 */
   soulPath?: string
-  /** souls 目录里的角色设定文件名，默认 default.txt。 */
+  /** 工作目录 souls 里的角色设定文件名，默认 default.txt。 */
   soulName?: string
   /** 机器人会话统一使用的工作目录，默认使用 XDG 数据目录下的工作区。 */
   home?: string
