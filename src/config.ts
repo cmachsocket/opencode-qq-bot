@@ -160,9 +160,9 @@ export interface QQBotConfig {
   ownerQQ?: number
   /** 管理员 QQ 号：拥有全部工具权限。 */
   admins: number[]
-  /** 工具配置文件路径，空表示当前工作目录下的 `tool-profiles.json`。 */
+  /** 工具配置文件路径；相对路径按机器人工作目录解析，空表示工作目录下的 `tool-profiles.json`。 */
   toolProfilesPath?: string
-  /** 会话行为覆盖文件路径，空表示当前工作目录下的 `chat-overrides.json`。 */
+  /** 会话行为覆盖文件路径；相对路径按机器人工作目录解析，空表示工作目录下的 `chat-overrides.json`。 */
   chatOverridesPath?: string
   /** 角色设定文件路径；相对路径按机器人工作目录解析，默认取工作目录里的 souls/。 */
   soulPath?: string

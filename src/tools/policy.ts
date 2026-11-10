@@ -56,9 +56,9 @@ export function defaultToolPolicy(): ToolPolicyFile {
   }
 }
 
-/** 默认的配置文件位置：当前工作目录下的 `tool-profiles.json`。 */
-export function defaultToolProfilesPath(): string {
-  return join(process.cwd(), "tool-profiles.json")
+/** 默认的配置文件位置：工作目录下的 `tool-profiles.json`。 */
+export function defaultToolProfilesPath(home: string): string {
+  return join(home, "tool-profiles.json")
 }
 
 /**

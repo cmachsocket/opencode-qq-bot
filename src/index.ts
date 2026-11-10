@@ -1,3 +1,4 @@
+import { join, resolve } from "node:path"
 import { Plugin } from "@opencode/plugin"
 import type { GroupMessageEvent, MessageEvent, NoticeEvent } from "@naplink/naplink"
 import { Mutex } from "async-mutex"
@@ -17,6 +18,7 @@ import { createHistoryProvider } from "./naplink/history"
 import { createMediaStore } from "./naplink/media"
 import { describeMentions, renderMessage, resolveUserName, shouldProcess } from "./naplink/render"
 import { SendRateLimiter } from "./rate-limit"
+import { packageRoot, seedFile } from "./seed"
 import { collectEnvSecrets, redactUrl, secretsFromUrl, SensitiveChecker } from "./sensitive"
 import { SessionManager } from "./session/manager"
 import { currentTimeText, PROACTIVE_HINT } from "./session/prompt"
@@ -325,12 +327,22 @@ export default Plugin.define({
       // 通知缓存：通知不自己起一轮，只在下一次该聊天的上下文里附带出现。
       const noticeStore = new NoticeStore()
       // 工具配置：按聊天与角色决定模型能看到、能调用哪些工具。
-      const policy = new ToolPolicy(config.toolProfilesPath || defaultToolProfilesPath(), logger)
+      // 走默认位置时把随包的示例复制过去，占位目标得自己改成真实的群 / 私聊。
+      const profilesPath = config.toolProfilesPath
+        ? resolve(home.directory, config.toolProfilesPath)
+        : defaultToolProfilesPath(home.directory)
+      if (!config.toolProfilesPath) {
+        await seedFile(join(packageRoot, "tool-profiles.example.json"), profilesPath, logger)
+      }
+      const policy = new ToolPolicy(profilesPath, logger)
       // 会话行为覆盖：按聊天决定怎么唤醒、要不要主动说话。
-      const overrides = new ChatOverrides(
-        config.chatOverridesPath || defaultChatOverridesPath(),
-        logger,
-      )
+      const overridesPath = config.chatOverridesPath
+        ? resolve(home.directory, config.chatOverridesPath)
+        : defaultChatOverridesPath(home.directory)
+      if (!config.chatOverridesPath) {
+        await seedFile(join(packageRoot, "chat-overrides.example.json"), overridesPath, logger)
+      }
+      const overrides = new ChatOverrides(overridesPath, logger)
       // 调用链追踪：一条入站消息拿一个 trace_id，事后能把这轮串起来。
       // 追踪文件与日志放在一起，容量与保留天数都有上限。
       const tracer = config.trace.enabled

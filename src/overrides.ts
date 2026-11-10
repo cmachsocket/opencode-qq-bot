@@ -83,9 +83,9 @@ export function defaultChatOverrides(): ChatOverridesFile {
   return { chats: {} }
 }
 
-/** 默认的配置文件位置：当前工作目录下的 `chat-overrides.json`。 */
-export function defaultChatOverridesPath(): string {
-  return join(process.cwd(), "chat-overrides.json")
+/** 默认的配置文件位置：工作目录下的 `chat-overrides.json`。 */
+export function defaultChatOverridesPath(home: string): string {
+  return join(home, "chat-overrides.json")
 }
 
 /**

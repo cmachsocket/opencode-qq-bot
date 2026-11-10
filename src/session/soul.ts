@@ -1,7 +1,8 @@
-import { copyFile, mkdir, readdir, readFile } from "node:fs/promises"
+import { mkdir, readdir, readFile } from "node:fs/promises"
 import { existsSync, statSync, watch, type FSWatcher } from "node:fs"
 import { dirname, isAbsolute, join, resolve } from "node:path"
 import { unrefTimer } from "../async"
+import { seedFile } from "../seed"
 import type { Logger } from "../logger"
 import { buildSystemPrompt } from "./prompt"
 
@@ -65,15 +66,8 @@ export async function seedSouls(
   }
   for (const entry of entries) {
     if (!entry.isFile()) continue
-    const destination = join(target, entry.name)
-    // 已有同名文件说明用户改过或换过，别动。
-    if (existsSync(destination)) continue
-    try {
-      await copyFile(join(template, entry.name), destination)
-      logger.info(`角色设定已就位：${destination}`)
-    } catch (error) {
-      logger.warn(`复制角色设定失败：${entry.name}`, error)
-    }
+    // 已有同名文件说明用户改过或换过，seedFile 不会动它。
+    await seedFile(join(template, entry.name), join(target, entry.name), logger)
   }
 }
 
