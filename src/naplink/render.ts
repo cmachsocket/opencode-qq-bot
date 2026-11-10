@@ -108,6 +108,48 @@ export function shouldProcess(message: readonly MessageSegment[], userId?: strin
   })
 }
 
+/**
+ * 轻量提取一条消息的文本。
+ *
+ * 日记素材用：只出占位文本，不下载图片、不转写语音，
+ * 因此不需要任何 API 调用，可以在入站链路上同步跑完。
+ */
+export function extractDiaryText(message: readonly MessageSegment[]): string {
+  const parts: string[] = []
+  for (const segment of segments(message)) {
+    switch (segment.type) {
+      case "text": {
+        const content = sanitizeUntrustedText(segment.data.text ?? "").trim()
+        if (content) parts.push(content)
+        break
+      }
+      case "at":
+        parts.push(`@${String(segment.data.qq)}`)
+        break
+      case "face":
+        parts.push("[表情]")
+        break
+      case "image":
+        parts.push("[图片]")
+        break
+      case "record":
+      case "audio":
+        parts.push("[语音]")
+        break
+      case "video":
+        parts.push("[视频]")
+        break
+      case "file":
+        parts.push("[文件]")
+        break
+      default:
+        // 引用、转发与结构化段不进素材。
+        break
+    }
+  }
+  return parts.join(" ").trim()
+}
+
 /** 判断消息里是否 @ 了指定 QQ 号。 */
 export function mentionsUser(
   message: readonly MessageSegment[],

@@ -18,6 +18,10 @@ const BOOLEAN_SPELLINGS = ["1", "0", "true", "false", "yes", "no", "on", "off"] 
 const LOG_LEVELS: readonly string[] = ["debug", "info", "warn", "error"]
 /** 可订阅的事件类别。 */
 const EVENT_CATEGORIES: readonly string[] = ["message", "notice"]
+/** 合法的时刻格式：`HH:mm`。 */
+const CLOCK = /^([01]?\d|2[0-3]):([0-5]\d)$/
+/** 合法的日记推送方式。 */
+const DIARY_PUSH_MODES: readonly DiaryPush[] = ["owner", "group", "none"]
 
 export interface NapcatConfig {
   /** NapCat 正向 WebSocket 地址，必填。 */
@@ -146,6 +150,37 @@ export interface MediaConfig {
   allowedDirs: string[]
 }
 
+/** 日记的推送方式。 */
+export type DiaryPush = "owner" | "group" | "none"
+
+/** 日记配置。 */
+export interface DiaryConfig {
+  /** 日记根目录；空表示用机器人工作目录下的 `diary` 子目录。 */
+  path: string
+  /** 是否启用日记功能。 */
+  enabled: boolean
+  /** 聊天素材保留天数；只影响素材，不影响日记成品。 */
+  retentionDays: number
+  /** 每天生成日记的时刻，格式 `HH:mm`，本地时间。 */
+  summaryTime: string
+  /** 调度轮询间隔（秒）。 */
+  tickSeconds: number
+  /** 要生成日记的聊天，`group:123` / `private:456`；空表示按准入名单推导。 */
+  summaryTargets: string[]
+  /** 日记生成后往哪儿推：`owner` 推给所有者，`group` 推回聊天，`none` 不推。 */
+  push: DiaryPush
+  /** 是否回补历史聊天记录。 */
+  backfill: boolean
+  /** 回补时最多取多少条历史消息。 */
+  backfillMax: number
+  /** 单条素材的最大字符数。 */
+  maxLineChars: number
+  /** 单个聊天单天最多保留多少条素材。 */
+  maxLinesPerDay: number
+  /** 等待模型总结的超时时间（毫秒）。 */
+  timeoutMs: number
+}
+
 export interface ModelRef {
   providerID: string
   id: string
@@ -192,6 +227,7 @@ export interface QQBotConfig {
   events: EventsConfig
   log: LogConfig
   media: MediaConfig
+  diary: DiaryConfig
 }
 
 /** 除 NapCat 连接信息外的全部默认值。 */
@@ -239,6 +275,20 @@ export const DEFAULT_CONFIG: Omit<QQBotConfig, "napcat"> = {
   events: { subscribe: ["message"], notices: [], inject: true },
   log: { level: "info", dir: "", maxSize: "5m", maxFiles: 5 },
   media: { allowedDirs: [] },
+  diary: {
+    path: "",
+    enabled: true,
+    retentionDays: 30,
+    summaryTime: "23:30",
+    tickSeconds: 3600,
+    summaryTargets: [],
+    push: "owner",
+    backfill: false,
+    backfillMax: 1000,
+    maxLineChars: 200,
+    maxLinesPerDay: 2000,
+    timeoutMs: 120_000,
+  },
 }
 
 /** 迁移类告警前缀：启动时用更高等级输出，避免升级用户静默失联。 */
@@ -510,6 +560,42 @@ function createConfigSchema(
         return value.trim()
       })
 
+  /** 时刻：`HH:mm`。 */
+  const clock = (path: string, fallback: string) =>
+    z
+      .unknown()
+      .optional()
+      .transform((value) => {
+        if (!present(value)) return fallback
+        if (typeof value !== "string") {
+          warn(`${label(path)} 必须是字符串：${String(value)}`)
+          return fallback
+        }
+        const trimmed = value.trim()
+        if (!CLOCK.test(trimmed)) {
+          warn(`${label(path)} 不是合法的时刻：${trimmed}（应为 HH:mm）`)
+          return fallback
+        }
+        return trimmed
+      })
+
+  /** 日记推送方式。 */
+  const diaryPush = (path: string, fallback: DiaryPush) =>
+    z
+      .unknown()
+      .optional()
+      .transform((value) => {
+        if (!present(value)) return fallback
+        const raw = typeof value === "string" ? value.trim().toLowerCase() : ""
+        if (!DIARY_PUSH_MODES.includes(raw as DiaryPush)) {
+          warn(
+            `${label(path)} 不是合法的推送方式：${String(value)}（可用：${DIARY_PUSH_MODES.join("/")}）`,
+          )
+          return fallback
+        }
+        return raw as DiaryPush
+      })
+
   return z.object({
     napcat: z
       .object({
@@ -686,6 +772,25 @@ function createConfigSchema(
       })
       .prefault({})
       .catch(defaults.media),
+    diary: z
+      .object({
+        path: optionalDir("diary.path", defaults.diary.path),
+        enabled: boolean("diary.enabled", defaults.diary.enabled),
+        retentionDays: integer("diary.retentionDays", defaults.diary.retentionDays, 1),
+        summaryTime: clock("diary.summaryTime", defaults.diary.summaryTime),
+        tickSeconds: positive("diary.tickSeconds", defaults.diary.tickSeconds),
+        summaryTargets: stringList("diary.summaryTargets", defaults.diary.summaryTargets).default([
+          ...defaults.diary.summaryTargets,
+        ]),
+        push: diaryPush("diary.push", defaults.diary.push),
+        backfill: boolean("diary.backfill", defaults.diary.backfill),
+        backfillMax: positive("diary.backfillMax", defaults.diary.backfillMax),
+        maxLineChars: positive("diary.maxLineChars", defaults.diary.maxLineChars),
+        maxLinesPerDay: positive("diary.maxLinesPerDay", defaults.diary.maxLinesPerDay),
+        timeoutMs: positive("diary.timeoutMs", defaults.diary.timeoutMs),
+      })
+      .prefault({})
+      .catch(defaults.diary),
   })
 }
 
@@ -749,6 +854,18 @@ export const ENV_VARS = {
   "log.maxSize": "QQ_LOG_MAX_SIZE",
   "log.maxFiles": "QQ_LOG_MAX_FILES",
   "media.allowedDirs": "QQ_MEDIA_ALLOWED_DIRS",
+  "diary.path": "QQ_DIARY_PATH",
+  "diary.enabled": "QQ_DIARY_ENABLED",
+  "diary.retentionDays": "QQ_DIARY_RETENTION_DAYS",
+  "diary.summaryTime": "QQ_DIARY_SUMMARY_TIME",
+  "diary.tickSeconds": "QQ_DIARY_TICK_SECONDS",
+  "diary.summaryTargets": "QQ_DIARY_SUMMARY_TARGETS",
+  "diary.push": "QQ_DIARY_PUSH",
+  "diary.backfill": "QQ_DIARY_BACKFILL",
+  "diary.backfillMax": "QQ_DIARY_BACKFILL_MAX",
+  "diary.maxLineChars": "QQ_DIARY_MAX_LINE_CHARS",
+  "diary.maxLinesPerDay": "QQ_DIARY_MAX_LINES_PER_DAY",
+  "diary.timeoutMs": "QQ_DIARY_TIMEOUT_MS",
 } as const
 
 const OPTION_KEYS = new Set([
@@ -778,6 +895,7 @@ const OPTION_KEYS = new Set([
   "events",
   "log",
   "media",
+  "diary",
 ])
 
 const NESTED_OPTION_KEYS: Record<string, ReadonlySet<string>> = {
@@ -811,6 +929,20 @@ const NESTED_OPTION_KEYS: Record<string, ReadonlySet<string>> = {
   events: new Set(["subscribe", "notices", "inject"]),
   log: new Set(["level", "dir", "maxSize", "maxFiles"]),
   media: new Set(["allowedDirs"]),
+  diary: new Set([
+    "path",
+    "enabled",
+    "retentionDays",
+    "summaryTime",
+    "tickSeconds",
+    "summaryTargets",
+    "push",
+    "backfill",
+    "backfillMax",
+    "maxLineChars",
+    "maxLinesPerDay",
+    "timeoutMs",
+  ]),
 }
 
 /** 改过名的配置项：给出迁移提示而不是笼统的“未知配置项”。 */
@@ -961,6 +1093,10 @@ export function resolveConfig(
     },
     log: { ...parsed.log },
     media: { allowedDirs: [...parsed.media.allowedDirs] },
+    diary: {
+      ...parsed.diary,
+      summaryTargets: [...parsed.diary.summaryTargets],
+    },
     napcat: { url, token: parsed.napcat.token },
   }
 }

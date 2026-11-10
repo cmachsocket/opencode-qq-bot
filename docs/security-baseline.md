@@ -33,18 +33,20 @@ NapCat（OneBot 11，本机或远端）        ← 不可信边界
 | 工具结果与模型输出                   | 模型供应商 API               | 模型调用工具 / 生成回复            | 输出侧还要过凭证拦截                           |
 | 远端媒体 URL                         | NapCat → 目标站点            | `qq_send_image` / `qq_send_record` | 插件只预检地址，下载由 NapCat 完成             |
 | 入站图片 URL                         | 目标站点（第三方图床 / CDN） | 收到图片消息                       | 由插件下载，只允许公网地址                     |
+| 日记素材（聊天文本）                 | 模型供应商 API               | 生成自动总结时                     | 素材是群友可控文本，进提示词前先净化           |
 
 不会离机的：`napcat.token`、模型密钥、日志文件、工作目录里的其它文件（除非模型显式
 通过发送工具发出去，而发送工具只认白名单目录）。
 
 ## 本机落盘
 
-| 内容                   | 默认位置                                   | 说明                                                        |
-| ---------------------- | ------------------------------------------ | ----------------------------------------------------------- |
-| 工作目录（会话上下文） | `$XDG_DATA_HOME/opencode-qq-bot/workspace` | 未设置时 `~/.local/share/...`；`botLockFile` 等状态也在附近 |
-| 日志                   | `$XDG_STATE_HOME/opencode-qq-bot/logs`     | 未设置时 `~/.local/state/...`；每行脱敏后写入               |
-| 媒体缓存               | `$XDG_STATE_HOME/opencode-qq-bot/media`    | 入站图片与表情打标产物                                      |
-| 机器级锁               | 工作目录旁的锁文件                         | 同一台机器只允许一个实例消费 NapCat                         |
+| 内容                   | 默认位置                                   | 说明                                                                |
+| ---------------------- | ------------------------------------------ | ------------------------------------------------------------------- |
+| 工作目录（会话上下文） | `$XDG_DATA_HOME/opencode-qq-bot/workspace` | 未设置时 `~/.local/share/...`；`botLockFile` 等状态也在附近         |
+| 日志                   | `$XDG_STATE_HOME/opencode-qq-bot/logs`     | 未设置时 `~/.local/state/...`；每行脱敏后写入                       |
+| 媒体缓存               | `$XDG_STATE_HOME/opencode-qq-bot/media`    | 入站图片与表情打标产物                                              |
+| 日记与素材             | 工作目录 `diary/`（`diary.path` 可改）     | 成品 `diary/<聊天>/<日期>.md`，素材 `diary/raw/<聊天>/<日期>.jsonl` |
+| 机器级锁               | 工作目录旁的锁文件                         | 同一台机器只允许一个实例消费 NapCat                                 |
 
 这些目录都不要放进仓库、网盘同步目录或公开可读路径。
 
@@ -68,6 +70,11 @@ NapCat（OneBot 11，本机或远端）        ← 不可信边界
 | 14  | 工具按角色与聊天收窄：普通成员与主动说话按 `chat` / `proactive` 档（联网、网页抓取、`qq_*`），只有 owner / 管理员才用 `admin` 档（`allow: ["*"]`，即全部本地工具）；执行前二次拦截 | `src/tools/policy.ts`、`src/tools/policy-guard.ts`、`src/index.ts` | `tests/policy.test.ts`、`tests/policy-guard.test.ts`、`tests/commands.test.ts` |
 | 15  | QQ 会话里不创建子代理：子会话无法继承按聊天的工具限制，配置档放行也拒绝                                                                                                            | `src/tools/policy-guard.ts`                                        | `tests/policy-guard.test.ts`                                                   |
 | 16  | 无人值守轮次（主动说话）不得使用 `admin` 档：上下文完全来自聊天内容，按最低权限角色执行                                                                                            | `src/session/manager.ts`、`src/tools/policy.ts`                    | `tests/manager.test.ts`、`tests/policy.test.ts`                                |
+| 17  | 日记只对 owner 与管理员开放：`qq_diary_*` 与 `qq_send_file` 在成员 / 主动说话档里被 `deny`                                                                                         | `src/tools/policy.ts`、`src/tools/policy-guard.ts`                 | `tests/policy.test.ts`、`tests/tools.test.ts`                                  |
+| 18  | 日记素材是群友可控文本：先净化再进提示词，总结会话不挂任何工具                                                                                                                     | `src/naplink/render.ts`、`src/diary/summary.ts`、`src/index.ts`    | `tests/diary.test.ts`                                                          |
+| 19  | 日记只读写当前会话绑定的那个聊天，不跨群串档                                                                                                                                       | `src/diary/store.ts`、`src/tools/qq.ts`                            | `tests/diary.test.ts`、`tests/tools.test.ts`                                   |
+| 20  | 日记与素材只落在 `diary.path` 下，不写到别处                                                                                                                                       | `src/diary/store.ts`、`src/diary/collector.ts`、`src/index.ts`     | `tests/diary.test.ts`                                                          |
+| 21  | 发文件只允许白名单目录里的普通文件，软链接越界一律拒绝                                                                                                                             | `src/media-path.ts`、`src/tools/qq.ts`                             | `tests/media-path.test.ts`、`tests/tools.test.ts`                              |
 
 已知局限（不是 bug，但改代码时要记住）：
 

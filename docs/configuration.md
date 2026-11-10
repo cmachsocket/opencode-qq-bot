@@ -412,3 +412,33 @@ OpenCode 的附件只接受 `file:` 与 `data:`。远端图片会先下载到受
 单轮提示指一条消息渲染出来的附件，以及会话空闲时合并多轮消息后的附件。
 超出限制的图片不会下载，只有占位文本会进入提示词。
 下载使用 15 秒超时、拒绝重定向、拒绝本机与内网地址，并按魔数校验图片类型。
+
+## 日记
+
+日记功能把聊天流水记成 Markdown 文件，配置在 `diary` 一节。
+
+| 配置项                 | 环境变量                     | 默认值            | 说明                                         |
+| ---------------------- | ---------------------------- | ----------------- | -------------------------------------------- |
+| `diary.path`           | `QQ_DIARY_PATH`              | 工作目录 `diary/` | 日记成品与原始素材的存放目录，相对工作目录   |
+| `diary.enabled`        | `QQ_DIARY_ENABLED`           | `true`            | 是否启用日记功能                             |
+| `diary.retentionDays`  | `QQ_DIARY_RETENTION_DAYS`    | `30`              | 原始素材保留天数，只清素材，不动日记成品     |
+| `diary.summaryTime`    | `QQ_DIARY_SUMMARY_TIME`      | `23:30`           | 每天几点生成自动总结（本地时间 `HH:mm`）     |
+| `diary.tickSeconds`    | `QQ_DIARY_TICK_SECONDS`      | `3600`            | 调度心跳间隔（秒）                           |
+| `diary.summaryTargets` | `QQ_DIARY_SUMMARY_TARGETS`   | `[]`              | 只给这些聊天生成总结，逗号分隔；留空表示全部 |
+| `diary.push`           | `QQ_DIARY_PUSH`              | `owner`           | 总结推给谁：`owner` / `group` / `none`       |
+| `diary.backfill`       | `QQ_DIARY_BACKFILL`          | `false`           | 是否用 NapCat 历史消息回补素材               |
+| `diary.backfillMax`    | `QQ_DIARY_BACKFILL_MAX`      | `1000`            | 回补时最多取多少条历史消息                   |
+| `diary.maxLineChars`   | `QQ_DIARY_MAX_LINE_CHARS`    | `200`             | 单条素材最多多少字                           |
+| `diary.maxLinesPerDay` | `QQ_DIARY_MAX_LINES_PER_DAY` | `2000`            | 每天最多累积多少条素材                       |
+| `diary.timeoutMs`      | `QQ_DIARY_TIMEOUT_MS`        | `120000`          | 等待模型生成总结的超时（毫秒）               |
+
+- `diary.path` 为空时用工作目录下的 `diary/`；填相对路径也按工作目录解析。
+- `diary.summaryTime` 必须是 `HH:mm`，写错会告警并回退到 `23:30`。
+- `diary.push` 只能是 `owner`、`group`、`none`，写错会告警并回退到 `owner`。
+- `diary.summaryTargets` 里的目标写法是 `group:123` / `private:456`；
+  填了就只处理这些目标（还要通过准入判定），留空则处理放行名单里的全部目标。
+- 日记成品不设条数上限，也不会自动清理；`diary.retentionDays` 只作用于 `diary/raw/` 下的素材。
+- 自动总结依赖调度器，OpenCode 的 location 空闲超时会卸载插件、定时器随之消失；
+  需要它长期运行就按「保活」一节关掉 `experimental.location_idle_timeout`。
+
+功能说明见 [diary.md](diary.md)。

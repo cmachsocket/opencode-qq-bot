@@ -7,6 +7,11 @@ import { acquireBotLock, type BotLock, botLockPath } from "./bot-lock"
 import { type ChatTarget, targetKey, targetLabel } from "./chat"
 import { allowedTargets, isTargetAllowed } from "./access"
 import { MIGRATION_WARNING_PREFIX, resolveConfig, type QQBotConfig } from "./config"
+import { DiaryCollector } from "./diary/collector"
+import { createDiaryRunner, diaryCommand } from "./diary/command"
+import { DiaryScheduler } from "./diary/scheduler"
+import { DiaryStore } from "./diary/store"
+import { DiarySummarizer } from "./diary/summary"
 import { resolveHome } from "./home"
 import { claimInstance, takeHandover } from "./instance"
 import { KeepAlive } from "./keepalive"
@@ -16,7 +21,13 @@ import { formatModelMessage } from "./model-view"
 import { QQClient } from "./naplink/client"
 import { createHistoryProvider } from "./naplink/history"
 import { createMediaStore } from "./naplink/media"
-import { describeMentions, renderMessage, resolveUserName, shouldProcess } from "./naplink/render"
+import {
+  describeMentions,
+  extractDiaryText,
+  renderMessage,
+  resolveUserName,
+  shouldProcess,
+} from "./naplink/render"
 import { SendRateLimiter } from "./rate-limit"
 import { packageRoot, seedFile } from "./seed"
 import { collectEnvSecrets, redactUrl, secretsFromUrl, SensitiveChecker } from "./sensitive"
@@ -406,6 +417,40 @@ export default Plugin.define({
       const favoriteIndex = new FavoriteIndex(ctx.storage, logger)
       const labeler = new EmojiLabeler({ ctx, config, home, logger, media, favorites })
       cleanup.add("注销表情标注", () => labeler.dispose(), CleanupOrder.labeler)
+      // 日记：素材累积在 raw/ 下，成品是按天一个的 Markdown 文件。
+      // 日记目录默认落在机器人工作目录里，因此天然在出站媒体白名单内。
+      const diaryRoot = config.diary.path.trim()
+        ? resolve(home.directory, config.diary.path)
+        : join(home.directory, "diary")
+      const diaryStore = new DiaryStore({ root: diaryRoot, logger })
+      const diaryCollector = new DiaryCollector({
+        root: diaryRoot,
+        logger,
+        maxLineChars: config.diary.maxLineChars,
+        maxLinesPerDay: config.diary.maxLinesPerDay,
+      })
+      const diarySummarizer = new DiarySummarizer({
+        ctx,
+        config,
+        home,
+        logger,
+        collector: diaryCollector,
+        store: diaryStore,
+        timeoutMs: config.diary.timeoutMs,
+      })
+      cleanup.add("注销日记总结", () => diarySummarizer.dispose(), CleanupOrder.labeler)
+      const diaryScheduler = new DiaryScheduler({
+        config,
+        logger,
+        client,
+        limiter,
+        outbound,
+        sensitive,
+        store: diaryStore,
+        collector: diaryCollector,
+        summarizer: diarySummarizer,
+      })
+      cleanup.add("停止日记调度", () => diaryScheduler.dispose(), CleanupOrder.events)
       // QQ 工具只有持有机器级锁的实例才注册：工具表在进程内共享，
       // 没锁的实例注册了会覆盖持有者的实现，模型就会调到没有连接的那一份。
       let toolRegistration: { dispose(): Promise<void> } | undefined
@@ -424,6 +469,7 @@ export default Plugin.define({
           limiter,
           sensitive,
           outbound,
+          diary: diaryStore,
           tracer,
           // 没有机器级锁的实例不能发送：那是别的实例的机器人。
           canSend: () => botLock !== undefined,
@@ -431,7 +477,7 @@ export default Plugin.define({
         toolRegistration = registration
         cleanup.add("注销工具", () => registration.dispose(), CleanupOrder.tools)
       }
-      // 命令表：管理命令 + 表情标注，QQ 私聊与 TUI 共用同一套实现。
+      // 命令表：管理命令 + 表情标注 + 日记，QQ 私聊与 TUI 共用同一套实现。
       const commands = [
         ...COMMANDS,
         emojiCommand(
@@ -443,6 +489,19 @@ export default Plugin.define({
             favoriteIndex,
             labeler,
             limiter,
+          }),
+        ),
+        diaryCommand(
+          createDiaryRunner({
+            config,
+            logger,
+            client,
+            limiter,
+            outbound,
+            sensitive,
+            store: diaryStore,
+            collector: diaryCollector,
+            summarizer: diarySummarizer,
           }),
         ),
       ]
@@ -488,6 +547,11 @@ export default Plugin.define({
           // 表情标签会话不绑定 QQ 目标，拿不到按聊天的工具限制；
           // 它的输入是一张图片，工具一律摘掉，只让模型输出标签。
           if (await labeler.isLabelSession(event.sessionID)) {
+            for (const name of Object.keys(event.tools)) delete event.tools[name]
+            return
+          }
+          // 日记总结会话的输入是群友可控的聊天记录，同样不带任何工具。
+          if (await diarySummarizer.isSummarySession(event.sessionID)) {
             for (const name of Object.keys(event.tools)) delete event.tools[name]
           }
           return
@@ -725,6 +789,35 @@ export default Plugin.define({
         }
         return mutex
       }
+      /**
+       * 采集一条入站消息的日记素材。
+       *
+       * 落盘是异步的，不挡消息处理：写失败只记日志，不影响聊天。
+       */
+      const collectDiaryLine = (event: MessageEvent, target: ChatTarget, selfId: string): void => {
+        if (!config.diary.enabled) return
+        const content = extractDiaryText(event.message)
+        if (!content) return
+        const userId = String(event.user_id)
+        void (async () => {
+          let name = ""
+          try {
+            name = await resolveUserName(renderContext(target, selfId), userId)
+          } catch {
+            // 取不到显示名就退回 QQ 号。
+          }
+          await diaryCollector.append(targetKey(target), {
+            id: String(event.message_id),
+            time: event.time,
+            userId,
+            name: name || userId,
+            text: content,
+            self: Boolean(selfId) && userId === selfId,
+            backfilled: false,
+          })
+        })().catch((error: unknown) => logger.error("采集日记素材失败", error))
+      }
+
       const scheduleMessage = (event: MessageEvent) => {
         // 没有占用机器人连接时不消费消息，避免和别的实例重复投递。
         if (!botLock) return
@@ -738,6 +831,8 @@ export default Plugin.define({
           return
         }
         manager.touch(target)
+        // 日记素材：放在去重之后，重复投递的消息只会被记一次。
+        collectDiaryLine(event, target, selfId)
         logger.info(`${targetLabel(target)} 收到 QQ 消息`, {
           user: String(event.user_id),
           message_id: String(event.message_id),
@@ -834,6 +929,12 @@ export default Plugin.define({
           void tick().catch((error: unknown) => logger.error("主动说话心跳失败", error))
         }, config.proactive.tickSeconds * 1000)
         unrefTimer(proactiveTimer)
+      }
+
+      // 日记调度：到点生成当天的日记并推送。定时器随插件一起卸载，
+      // 要保证它一直跑需要 experimental.location_idle_timeout: false。
+      if (config.diary.enabled) {
+        diaryScheduler.start()
       }
 
       // 工具先注册，模型这一轮就能看到 qq_*；再连 NapCat 开始消费。

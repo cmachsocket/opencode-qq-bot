@@ -41,15 +41,23 @@ export interface ToolPolicyFile {
   chats: Record<string, string>
 }
 
+/**
+ * 只对 owner 与 admin 开放的工具。
+ *
+ * 日记记录聊天内容，发文件能把本地文件送出去：两者都只给管理档。
+ * 用 deny 而不是不放进 allow，是为了用户自定义配置档时也不会误放开。
+ */
+const DIARY_DENY = ["qq_diary_*", "qq_send_file"]
+
 /** 内置默认值：普通聊天只留联网搜索、网页抓取和发消息工具，管理档全开。 */
 export function defaultToolPolicy(): ToolPolicyFile {
   return {
     defaultProfile: "chat",
     profiles: {
-      chat: { allow: ["websearch", "webfetch", "qq_*"], deny: [] },
-      readonly: { allow: ["read", "glob", "grep", "qq_*"], deny: [] },
+      chat: { allow: ["websearch", "webfetch", "qq_*"], deny: [...DIARY_DENY] },
+      readonly: { allow: ["read", "glob", "grep", "qq_*"], deny: [...DIARY_DENY] },
       // 主动说话没有人参与，权限不能跟着聊天内容走：与普通聊天同档。
-      proactive: { allow: ["websearch", "webfetch", "qq_*"], deny: [] },
+      proactive: { allow: ["websearch", "webfetch", "qq_*"], deny: [...DIARY_DENY] },
       admin: { allow: ["*"], deny: [] },
     },
     chats: {},

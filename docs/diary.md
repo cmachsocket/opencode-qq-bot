@@ -1,6 +1,6 @@
 # 日记（按天纪要）
 
-状态：**设计稿，尚未实现**。本文把接口、存储格式与行为约定定死，实现时按本文落地。
+状态：**已实现**（P0 + P1）。本文把接口、存储格式与行为约定定死，实现按本文落地。
 
 ## 1. 目标与非目标
 
@@ -9,12 +9,13 @@
 - 一篇日记 = 一个聊天（群 / 私聊）的一天。
 - 主键是 `聊天 + 日期`，同一天同一聊天只有一篇，重复写就是覆盖。
 - 日记内容由模型总结当天聊天素材生成，也可以由 owner / 管理员手写。
+- 日记**以文件形式存放，也以文件形式发送**：磁盘上是 Markdown，QQ 里发出去的也是那个 Markdown 文件。
 
 **非目标**：
 
 - 不是跨聊天的全局记忆，也不参与 OpenCode 的会话上下文。
 - 不做全文检索（只有按日期取、按最近列表两种取法）。
-- 不做多端同步与导出格式（Markdown 文件即最终形态，人可直接打开）。
+- 不做导出格式转换：Markdown 文件即最终形态，人可以直接打开。
 
 ## 2. 用户可见行为
 
@@ -23,14 +24,31 @@
 QQ 私聊（owner / 管理员）里用 `/diary`，TUI 里用 `/qq-diary`：
 
 ```
-/diary write <内容>      写一条日记（默认今天）
+/diary write <内容>      写一篇日记（默认今天）
 /diary list [天数=7]    列出最近几天的日记
-/daiary show <日期>      看某天的日记，日期用 YYYY-MM-DD
+/diary show <日期>      看某天的日记，日期用 YYYY-MM-DD
 /diary auto [日期]       立刻生成或重生成某天的自动总结
 /diary help              用法说明
 ```
 
 - 命令自己负责发消息，不走模型；`run` 不返回文本。
+- `show` 发送的是**日记文件**，不是一大段文本：
+
+  ```
+  2026-11-10 的日记
+  [文件] 日记-2026-11-10.md
+  ```
+
+  文本行只做引导，正文在文件里。
+
+- `list` 发文本列表（日期 + 标题），不逐个发文件：
+
+  ```
+  日记（group:123，最近 7 篇）
+  2026-11-10 周末在群里闲聊
+  2026-11-09 聊到了新的部署流程
+  ```
+
 - `auto` 在后台跑，边跑边发进度（开始 / 完成 / 失败），与 `/emoji-label` 的节奏一致。
 - 同一时间只跑一个自动总结任务，重复触发会收到提示。
 - 命令只读写**命令所在聊天**的日记。TUI 侧没有绑定聊天时，发给配置里的第一个目标。
@@ -39,25 +57,31 @@ QQ 私聊（owner / 管理员）里用 `/diary`，TUI 里用 `/qq-diary`：
 
 模型通过三个工具读写日记，作用范围是**当前会话绑定的那个聊天**：
 
-| 工具             | 参数                                 | 行为                                              |
-| ---------------- | ------------------------------------ | ------------------------------------------------- |
-| `qq_diary_write` | `content`（必填）、`date?`、`title?` | 写入 / 覆盖一篇日记。`date` 省略表示今天。        |
-| `qq_diary_read`  | `date?`                              | 读一篇日记全文。`date` 省略表示该聊天最近的一篇。 |
-| `qq_diary_list`  | `days?`                              | 列出最近 N 篇的日期与标题，默认 7，不返回正文。   |
+| 工具             | 参数                                 | 行为                                                                    |
+| ---------------- | ------------------------------------ | ----------------------------------------------------------------------- |
+| `qq_diary_write` | `content`（必填）、`date?`、`title?` | 写入 / 覆盖一篇日记。`date` 省略表示今天。                              |
+| `qq_diary_read`  | `date?`                              | 读一篇日记的**正文文本**（给模型看）。`date` 省略表示该聊天最近的一篇。 |
+| `qq_diary_list`  | `days?`                              | 列出最近 N 篇的日期与标题，默认 7，不返回正文。                         |
 
-三个工具都必须落在 `qq` 命名空间下，否则默认 `chat` 档放行不到。
+外加一个通用的文件发送工具，日记的「以文件形式发送」由它承载：
+
+| 工具           | 参数                    | 行为                                                                               |
+| -------------- | ----------------------- | ---------------------------------------------------------------------------------- |
+| `qq_send_file` | `file`（必填）、`name?` | 把一个本地文件发到当前聊天。路径只能取自机器人工作目录、媒体目录和配置放开的目录。 |
+
+- `qq_send_file` 只对 owner / 管理员放行（见第 3 节）：工作目录里可能有 agent 的工作文件，不能让群成员随手捞走。
+- 四个工具都必须落在 `qq` 命名空间下，否则默认 `chat` 档放行不到。
 
 ### 2.3 自动总结与推送
 
-到点自动为每个目标聊天生成当天日记，产物私发 owner：
+到点自动为每个目标聊天生成当天日记，产物**以文件形式私发 owner**：
 
 ```
-{标题}
-
-{正文}
+2026-11-10 的日记已生成
+[文件] 日记-2026-11-10.md
 ```
 
-- 推送走插件自己的发送通道（`sendPlainMessage`），不消耗模型额度，也不受「必须调用 `qq_send_message`」的角色守则约束。
+- 推送走插件自己的发送通道（`sendFileMessage` + `sendPlainMessage`），不消耗模型额度，也不受「必须调用 `qq_send_message`」的角色守则约束。
 - 推送对象由 `QQ_DIARY_PUSH` 决定：`owner`（默认，私发 owner）/ `none`（只存档）/ `group`（发回目标聊天）。
 - 推送到群里时内容先过出站敏感信息拦截。
 
@@ -65,56 +89,80 @@ QQ 私聊（owner / 管理员）里用 `/diary`，TUI 里用 `/qq-diary`：
 
 日记是这个聊天的私密纪要，**只对 owner / 管理员开放**：
 
-| 角色      | `qq_diary_write` | `qq_diary_read` | `qq_diary_list` | `/diary` 命令 |
-| --------- | ---------------- | --------------- | --------------- | ------------- |
-| owner     | 可用             | 可用            | 可用            | 可用          |
-| admin     | 可用             | 可用            | 可用            | 可用          |
-| member    | 不可用           | 不可用          | 不可用          | 不可用        |
-| proactive | 不可用           | 不可用          | 不可用          | 不可用        |
+| 角色      | `qq_diary_write` | `qq_diary_read` | `qq_diary_list` | `qq_send_file` | `/diary` 命令 |
+| --------- | ---------------- | --------------- | --------------- | -------------- | ------------- |
+| owner     | 可用             | 可用            | 可用            | 可用           | 可用          |
+| admin     | 可用             | 可用            | 可用            | 可用           | 可用          |
+| member    | 不可用           | 不可用          | 不可用          | 不可用         | 不可用        |
+| proactive | 不可用           | 不可用          | 不可用          | 不可用         | 不可用        |
 
 实现方式是**配置层**收窄，不在工具里判角色：
 
-- `src/tools/policy.ts` 的 `defaultToolPolicy()` 内置默认值里，给 `chat` / `readonly` / `proactive` 三档都加 `deny: ["qq_diary_*"]`；owner / admin 走 `admin` 档（`allow: ["*"]`）不受影响。
+- `src/tools/policy.ts` 的 `defaultToolPolicy()` 内置默认值里，给 `chat` / `readonly` / `proactive` 三档都加 `deny: ["qq_diary_*", "qq_send_file"]`；owner / admin 走 `admin` 档（`allow: ["*"]`）不受影响。
 - `tool-profiles.json` 是用户文件，用户自己的配置会覆盖内置默认值，因此 `tool-profiles.example.json` 也要写上同样的 `deny`，并注明「删掉这行等于放开给群成员」。
 - `allowedTools` 里 deny 优先于 allow，所以 `allow` 里的 `qq_*` 不会把日记工具放回来。
-- `proactive` 档必须 deny：无人值守轮次的上下文完全来自聊天内容，不能让它读到日记。
+- `proactive` 档必须 deny：无人值守轮次的上下文完全来自聊天内容，不能让它读到日记，更不能让它发工作目录里的文件。
 
 命令侧沿用现有的 `isCommandChat`：只在 owner / 管理员自己的私聊里生效，群里不生效。
 
-## 4. 数据模型
+## 4. 存储
 
-### 4.1 成品条目
+### 4.1 目录布局
 
-```ts
-/** 日记来源：自动总结、手写、模型写入。 */
-export type DiarySource = "auto" | "manual" | "model"
+日记是文件，不是数据库条目。`diary_path`（默认 `<workspace>/diary`）下的布局：
 
-/** 一篇日记。 */
-export interface DiaryEntry {
-  /** 主键：`聊天键#日期`，如 `group:123#2026-11-10`。 */
-  key: string
-  /** 聊天键：`group:123` / `private:456`。 */
-  target: string
-  /** 日期：`YYYY-MM-DD`，本地时区。 */
-  date: string
-  /** 标题，可为空。 */
-  title: string
-  /** 正文。 */
-  content: string
-  /** 来源。 */
-  source: DiarySource
-  /** 创建时间（毫秒）。 */
-  createdAt: number
-  /** 更新时间（毫秒）。 */
-  updatedAt: number
-}
+```
+<diary_path>/
+  group-123/
+    2026-11-10.md          ← 日记成品
+  private-456/
+    2026-11-10.md
+  raw/
+    group-123/
+      2026-11-10.jsonl     ← 素材（中间产物，供模型总结用）
 ```
 
-写入语义是 upsert：同 `key` 已存在时保留 `createdAt`，更新其余字段并刷新 `updatedAt`。
+- 聊天目录名是 `targetKey` 里的 `:` 换成 `-`，即 `group-123` / `private-456`。
+- 成品文件名就是日期加 `.md`，因此目录里按文件名倒序就是按时间倒序。
+- 素材单独放在 `raw/` 下，不与成品混在一起。
 
-### 4.2 素材行
+### 4.2 日记文件格式
 
-素材是「当天聊天的原始行」，用来喂给模型做总结，不直接给人看。
+日记是一个自包含的 Markdown 文件，元数据放在 front matter 里，程序读它、人也能直接看：
+
+```markdown
+---
+date: 2026-11-10
+chat: group:123
+source: auto
+created: 2026-11-10T15:30:00.000Z
+updated: 2026-11-10T15:30:00.000Z
+---
+
+# 周末在群里闲聊
+
+正文……
+```
+
+- `source` 取值 `auto`（模型总结）/ `manual`（命令手写）/ `model`（模型用工具写的）。
+- `created` 首次写入时定下，之后覆盖写保持不变；`updated` 每次写入刷新。
+- 正文第一行是标题（`# 标题`），其后是正文。标题为空时用 `{date} 的日记` 兜底。
+- 发送时发的是**整个文件**，front matter 一并发出（它只有几行，是这个文件自描述的代价）。
+
+### 4.3 不设存储上限
+
+- 日记成品**不设条数上限，也不自动清理**：写多少留多少，靠文件系统自己的空间管理。
+- 列表不读全量内容，只扫目录：读目录 → 过滤 `^\d{4}-\d{2}-\d{2}\.md$` → 按文件名倒序 → 取前 N 个 → 只读这 N 个文件的 front matter 拿标题。
+- 素材是中间产物，按 `QQ_DIARY_RETENTION_DAYS`（默认 30 天）清理过期文件。素材清理**不影响**已生成的日记。
+
+### 4.4 其它存储
+
+| 内容        | 位置                                       | 说明                                   |
+| ----------- | ------------------------------------------ | -------------------------------------- |
+| 总结会话 ID | `ctx.storage`，键 `diary-summary-session`  | 与 `emoji-label-session` 同一套做法    |
+| 素材行      | `<diary_path>/raw/<聊天slug>/<日期>.jsonl` | 每行一个 JSON 对象，按 `time` 升序追加 |
+
+素材行结构：
 
 ```ts
 /** 一行聊天素材。 */
@@ -136,18 +184,7 @@ export interface DiaryLine {
 }
 ```
 
-### 4.3 存储键与落盘路径
-
-| 内容        | 位置                                      | 说明                                                      |
-| ----------- | ----------------------------------------- | --------------------------------------------------------- |
-| 成品日记    | `ctx.storage`，键 `diary-entries`         | `{"version":1,"entries":[DiaryEntry]}`，按 `key` 升序保存 |
-| 素材行      | `<diaryDir>/raw/<聊天slug>/<日期>.jsonl`  | 每行一个 JSON 对象，按 `time` 升序追加                    |
-| 总结会话 ID | `ctx.storage`，键 `diary-summary-session` | 与 `emoji-label-session` 同一套做法                       |
-
-- `diaryDir` 默认取机器人工作目录下的 `diary`（`<home>/diary`），与工作目录同属一个 XDG 数据根。
-- 聊天 slug：`targetKey` 里的 `:` 换成 `-`，即 `group-123` / `private-456`。
-- 成品总量有硬上限（`QQ_DIARY_ENTRIES_MAX`，默认 365）。插件存储是单个 JSON 值、没有分页，所以上限必须自己控：超出时按 `updatedAt` 淘汰最旧的条目。
-- 素材按天分文件，保留 `QQ_DIARY_RETENTION_DAYS` 天（默认 30），过期文件由定时任务清理。日志、媒体、锁文件旁边要新增这一项，见 `docs/security-baseline.md` 的「本机落盘」表。
+日志、媒体、锁文件旁边要新增日记目录这一项，见 `docs/security-baseline.md` 的「本机落盘」表。
 
 ## 5. 采集链路
 
@@ -164,10 +201,11 @@ export interface DiaryLine {
   | ------------------------------------------------- | ------------------------------------- |
   | `text`                                            | 原样，经 `sanitizeUntrustedText` 净化 |
   | `at`                                              | `@<QQ号>`                             |
-  | `face` / `emoji`                                  | `[表情]`                              |
+  | `face`                                            | `[表情]`                              |
   | `image`                                           | `[图片]`                              |
-  | `record`                                          | `[语音]`                              |
-  | `video` / `file`                                  | `[视频]` / `[文件]`                   |
+  | `record` / `audio`                                | `[语音]`                              |
+  | `video`                                           | `[视频]`                              |
+  | `file`                                            | `[文件]`                              |
   | `reply` / `forward` / `json` / `xml` / `markdown` | 忽略                                  |
 
 - 每行按码点截断到 `QQ_DIARY_MAX_LINE_CHARS`（默认 200）。
@@ -255,8 +293,8 @@ export interface DiaryLine {
 
 ### 6.4 生成结果
 
-- 标题为空时用日期兜底：`{date} 的日记`。
-- 正文为空 → 视为无内容，不写条目（避免生成空日记）。
+- 标题为空时用 `{date} 的日记` 兜底。
+- 正文为空 → 视为无内容，不写文件（避免生成空日记）。
 - 同一聊天同一天已有 `auto` 日记时默认跳过；`/diary auto` 手动触发可以覆盖。
 
 ## 7. 定时调度
@@ -268,102 +306,149 @@ export interface DiaryLine {
 - 目标聊天：`QQ_DIARY_SUMMARY_TARGETS` 为空时取 `allowedTargets(config.access, config.ownerQQ)` 的全部；非空时解析成 `group:123` / `private:456`，只对准入放行的生效。
 - 并发控制：一个全局互斥 + 一个「正在生成」的集合，同一聊天同一时刻只跑一个任务（照 `src/index.ts` 主动说话心跳的 `Mutex` 写法）。
 - 目标聊天当天没有素材时跳过，不调用模型，也不发推送。
-- 推送内容过出站敏感信息拦截；`push=owner` 时附带素材目录路径，方便 owner 直接翻原始记录。
+- 推送内容过出站敏感信息拦截；`push=owner` 时在说明文本里附上日记文件的路径，方便 owner 直接翻原始记录。
 
 前提：定时器随插件一起卸载。要保证定时跑，需要 `experimental.location_idle_timeout: false`（README「保活」一节已说明），否则长时间空闲后插件被卸载，定时任务就停了。
 
-## 8. 配置项
+## 8. 发送
+
+### 8.1 文件发送通道
+
+在 `src/tools/qq.ts` 新增一个插件侧的文件发送函数，与 `sendPlainMessage` 并列：
+
+```ts
+/**
+ * 向一个目标发送本地文件。
+ *
+ * 路径白名单与出站媒体共用 `OutboundMedia`：
+ * 只允许机器人工作目录、媒体目录和配置放开的目录，判定不过直接抛错。
+ */
+export async function sendFileMessage(
+  client: QQClient,
+  target: ChatTarget,
+  file: string,
+  options: {
+    name?: string
+    limiter: SendRateLimiter
+    outbound: OutboundMedia
+    sensitive: SensitiveChecker
+  },
+): Promise<void>
+```
+
+- 走 `outbound.check(file)` 拿白名单判定，再 `materialize` 得到交给 NapCat 的绝对真实路径。
+- NapCat 消息段：`{ type: "file", data: { file: <绝对路径>, name: <显示名> } }`。
+- 发送前过 `SensitiveChecker`；限流走 `limiter.pace(pluginSendScope(target), operation)`，与普通发送共用计数域。
+- 显示名默认取文件名；日记统一用 `日记-<日期>.md`，标题不进文件名（避免非法字符）。
+
+### 8.2 日记的发送入口
+
+| 入口                 | 发什么                                                        |
+| -------------------- | ------------------------------------------------------------- |
+| `/diary show <日期>` | 一行说明文本 + 日记文件                                       |
+| 自动总结推送         | 一行说明文本 + 日记文件                                       |
+| `qq_diary_read`      | 只把正文文本返回给模型；模型要发给聊天时自己调 `qq_send_file` |
+| `qq_diary_list`      | 只发列表文本                                                  |
+
+日记目录在机器人工作目录内，天然落在出站媒体白名单里（工作目录本身就在白名单中），不需要额外放开目录。
+
+## 9. 配置项
 
 新增 `diary` 配置节。插件选项 > 环境变量 > 默认值，三层与现有配置一致。
 
-| 选项                   | 环境变量                     | 默认     | 取值                       | 说明                                           |
-| ---------------------- | ---------------------------- | -------- | -------------------------- | ---------------------------------------------- |
-| `diary.enabled`        | `QQ_DIARY_ENABLED`           | `true`   | 布尔                       | 日记总开关，关掉后不采集、不生成、不推送。     |
-| `diary.dir`            | `QQ_DIARY_DIR`               | 空       | 路径                       | 素材目录，空表示 `<home>/diary`。              |
-| `diary.retentionDays`  | `QQ_DIARY_RETENTION_DAYS`    | `30`     | 正整数                     | 素材文件保留天数。                             |
-| `diary.entriesMax`     | `QQ_DIARY_ENTRIES_MAX`       | `365`    | 正整数                     | 成品日记保留条数，超出淘汰最旧。               |
-| `diary.summaryTime`    | `QQ_DIARY_SUMMARY_TIME`      | `23:30`  | `HH:mm`                    | 自动总结时刻（本地时间）。                     |
-| `diary.tickSeconds`    | `QQ_DIARY_TICK_SECONDS`      | `3600`   | 正整数                     | 调度轮询间隔。                                 |
-| `diary.summaryTargets` | `QQ_DIARY_SUMMARY_TARGETS`   | 空       | 逗号分隔                   | 自动总结的目标聊天，空表示准入放行的全部聊天。 |
-| `diary.push`           | `QQ_DIARY_PUSH`              | `owner`  | `owner` / `none` / `group` | 自动总结产物的推送方式。                       |
-| `diary.backfill`       | `QQ_DIARY_BACKFILL`          | `false`  | 布尔                       | 是否用 NapCat 历史接口回补素材缺口。           |
-| `diary.backfillMax`    | `QQ_DIARY_BACKFILL_MAX`      | `1000`   | 正整数                     | 单天单聊天最多回补多少条。                     |
-| `diary.maxLineChars`   | `QQ_DIARY_MAX_LINE_CHARS`    | `200`    | 正整数                     | 单行素材的最大字符数。                         |
-| `diary.maxLinesPerDay` | `QQ_DIARY_MAX_LINES_PER_DAY` | `2000`   | 正整数                     | 单天单聊天的素材行数上限。                     |
-| `diary.timeoutMs`      | `QQ_DIARY_TIMEOUT_MS`        | `120000` | 正整数                     | 等待模型总结的超时时间。                       |
+| 选项                   | 环境变量                     | 默认     | 取值                       | 说明                                                |
+| ---------------------- | ---------------------------- | -------- | -------------------------- | --------------------------------------------------- |
+| `diary.path`           | `QQ_DIARY_PATH`              | 空       | 路径                       | 日记目录，空表示机器人工作目录下的 `diary` 子目录。 |
+| `diary.enabled`        | `QQ_DIARY_ENABLED`           | `true`   | 布尔                       | 日记总开关，关掉后不采集、不生成、不推送。          |
+| `diary.retentionDays`  | `QQ_DIARY_RETENTION_DAYS`    | `30`     | 正整数                     | **素材**文件保留天数，不影响已生成的日记。          |
+| `diary.summaryTime`    | `QQ_DIARY_SUMMARY_TIME`      | `23:30`  | `HH:mm`                    | 自动总结时刻（本地时间）。                          |
+| `diary.tickSeconds`    | `QQ_DIARY_TICK_SECONDS`      | `3600`   | 正整数                     | 调度轮询间隔。                                      |
+| `diary.summaryTargets` | `QQ_DIARY_SUMMARY_TARGETS`   | 空       | 逗号分隔                   | 自动总结的目标聊天，空表示准入放行的全部聊天。      |
+| `diary.push`           | `QQ_DIARY_PUSH`              | `owner`  | `owner` / `none` / `group` | 自动总结产物的推送方式。                            |
+| `diary.backfill`       | `QQ_DIARY_BACKFILL`          | `false`  | 布尔                       | 是否用 NapCat 历史接口回补素材缺口。                |
+| `diary.backfillMax`    | `QQ_DIARY_BACKFILL_MAX`      | `1000`   | 正整数                     | 单天单聊天最多回补多少条。                          |
+| `diary.maxLineChars`   | `QQ_DIARY_MAX_LINE_CHARS`    | `200`    | 正整数                     | 单行素材的最大字符数。                              |
+| `diary.maxLinesPerDay` | `QQ_DIARY_MAX_LINES_PER_DAY` | `2000`   | 正整数                     | 单天单聊天的素材行数上限。                          |
+| `diary.timeoutMs`      | `QQ_DIARY_TIMEOUT_MS`        | `120000` | 正整数                     | 等待模型总结的超时时间。                            |
 
-配置项落地要改 `src/config.ts` 的六处：`QQBotConfig` 接口、`DEFAULT_CONFIG`、`createConfigSchema` 里的 zod 分支、`ENV_VARS`、`OPTION_KEYS` 与 `NESTED_OPTION_KEYS`、`resolveConfig` 返回体的字段拷贝。
+- `diary.path` 为空时取 `<home>/diary`（`home` 是机器人工作目录，默认 `$XDG_DATA_HOME/opencode-qq-bot/workspace`）。配置项与 `toolProfilesPath` / `chatOverridesPath` 同属一类「路径」配置。
+- 日记成品**没有条数上限配置**，也不再需要：条目就是文件。
+- 配置项落地要改 `src/config.ts` 的六处：`QQBotConfig` 接口、`DEFAULT_CONFIG`、`createConfigSchema` 里的 zod 分支、`ENV_VARS`、`OPTION_KEYS` 与 `NESTED_OPTION_KEYS`、`resolveConfig` 返回体的字段拷贝。
 
 新增环境变量必须同步写进 `.env.example` 与 README 的配置表，`tests/docs.test.ts` 会校验这两处。
 
-## 9. 错误处理
+## 10. 错误处理
 
 | 场景               | 行为                                                                          |
 | ------------------ | ----------------------------------------------------------------------------- |
-| 写文件失败         | 记日志，丢弃该行，不影响聊天。                                                |
+| 写文件失败         | 记日志，丢弃这次写入，不影响聊天。                                            |
 | 素材为空           | 跳过生成，不调用模型，不推送。                                                |
 | 总结超时 / 失败    | 记日志，最多重试 1 次；仍失败则保留素材，等下一次 tick 或手动 `/diary auto`。 |
-| 输出被清洗成空     | 视为无内容，不写条目。                                                        |
+| 输出被清洗成空     | 视为无内容，不写文件。                                                        |
+| 日记目录不存在     | 首次写入时按需创建（含聊天子目录）。                                          |
 | 工具找不到会话绑定 | 返回 `error: 当前会话没有绑定的聊天，无法读写日记`。                          |
 | 工具找不到日记     | 返回 `error: 没有找到 2026-11-10 的日记`，并附上可用的日期列表。              |
+| 文件不在白名单目录 | `OutboundMedia` 抛错，工具返回错误说明，不占用发送额度。                      |
 | 存储读失败         | 当作没有日记，不缓存失败结果，下次重试。                                      |
 
 工具的错误文案统一用 `error:` 前缀（`src/tools/qq.ts` 的 `text()` 会据此标记 `failed: true`）。
 
-## 10. 不变量与安全约束
+## 11. 不变量与安全约束
 
 新增到 `docs/security-baseline.md` 的不变量表：
 
-| #   | 不变量                                                                        | 实现                                   | 测试                                          |
-| --- | ----------------------------------------------------------------------------- | -------------------------------------- | --------------------------------------------- |
-| 17  | 日记只对 owner / 管理员开放：member 与 proactive 角色拿不到 `qq_diary_*` 工具 | `src/tools/policy.ts`                  | `tests/policy.test.ts`、`tests/tools.test.ts` |
-| 18  | 日记素材是群友可控文本：进总结会话前净化结构标签，且总结会话不带任何工具      | `src/diary/summary.ts`、`src/index.ts` | `tests/diary.test.ts`                         |
-| 19  | 日记只能读写当前会话绑定的那个聊天，不跨聊天                                  | `src/tools/qq.ts`                      | `tests/tools.test.ts`                         |
-| 20  | 素材与日记落盘都在受控目录里，不进公开可读路径                                | `src/diary/store.ts`                   | `tests/diary.test.ts`                         |
+| #   | 不变量                                                                                     | 实现                                   | 测试                                              |
+| --- | ------------------------------------------------------------------------------------------ | -------------------------------------- | ------------------------------------------------- |
+| 17  | 日记只对 owner / 管理员开放：member 与 proactive 角色拿不到 `qq_diary_*` 与 `qq_send_file` | `src/tools/policy.ts`                  | `tests/policy.test.ts`、`tests/tools.test.ts`     |
+| 18  | 日记素材是群友可控文本：进总结会话前净化结构标签，且总结会话不带任何工具                   | `src/diary/summary.ts`、`src/index.ts` | `tests/diary.test.ts`                             |
+| 19  | 日记只能读写当前会话绑定的那个聊天，不跨聊天                                               | `src/tools/qq.ts`                      | `tests/tools.test.ts`                             |
+| 20  | 日记与素材只落在 `diary.path` 指定的目录里，不进公开可读路径                               | `src/diary/store.ts`                   | `tests/diary.test.ts`                             |
+| 21  | 发送文件只允许白名单目录内的普通文件，软链接越界同样拒绝                                   | `src/media-path.ts`、`src/tools/qq.ts` | `tests/media-path.test.ts`、`tests/tools.test.ts` |
 
 配套约束：
 
 - 总结会话在 `src/index.ts` 的 context hook 里被摘掉全部工具（与表情标签会话同样的处理）。
 - 总结会话不绑定 QQ 目标，因此不会带上「必须调用 `qq_send_message`」的角色守则。
-- 推送走 `sendPlainMessage` 时不经过 `qq_send_message` 的角色守则，但**也不经过**模型侧的出站检查，所以推送内容自己过 `SensitiveChecker`。
-- 日记正文回灌进模型上下文（`qq_diary_read` 的返回值）前，再过一次 `sanitizeUntrustedText`。
+- 推送走 `sendFileMessage` 时不经过 `qq_send_message` 的角色守则，但**也不经过**模型侧的出站检查，所以推送内容自己过 `SensitiveChecker`。
+- 日记正文回灌进模型上下文（`qq_diary_read` 的返回值）前，再过一次 `sanitizeUntrustedText`；正文超过 4000 字按前 4000 字截断（固定上限，不做配置项）。
 
-## 11. 已知限制
+## 12. 已知限制
 
 - 素材只收群友发言，机器人自己的回复不在里面（出站采集放在 P2）。
 - 一天内聊得极多的群，素材会被 `maxLinesPerDay` 截断，总结只能覆盖前面的部分。
 - 回补默认关闭；打开后每天每聊天最多回补 `backfillMax` 条，超出部分不会补。
 - 自动总结生成的是**当天**的日记。如果插件在 `summaryTime` 之后整天没运行，那一天就没有日记（补写昨天的能力放在 P2）。
-- 插件存储是单个 JSON 值，条目多了会有读写开销；`entriesMax` 是硬上限。
+- 日记文件不设上限，磁盘占用只受文件系统限制；长期运行需要自己留意空间。
 - 日记不做全文检索，只有按日期取和按最近列表两种取法。
 - 日记只存在于本机，不做同步。
 
-## 12. 落地清单
+## 13. 落地清单
 
 **新增文件**
 
 ```
-src/diary/store.ts       成品日记的存取（ctx.storage），含 upsert / 取 / 列表 / 淘汰
+src/diary/store.ts       日记文件的读写（Markdown + front matter）、列表、素材行
 src/diary/collector.ts   素材行累积与落盘、按天读取、过期清理
 src/diary/summary.ts     自动总结（专用会话 + 提示词 + 清洗）
 src/diary/command.ts     /diary 命令（参数解析 + 执行器 + 命令定义）
 src/diary/scheduler.ts   定时调度与推送
-src/diary/format.ts      日期键、slug、文本格式化
+src/diary/format.ts      日期键、slug、front matter 解析与序列化
 ```
 
 **修改文件**
 
 ```
 src/index.ts               构造依赖、接命令、挂调度器、context hook 摘工具、dispose
-src/tools/qq.ts            新增 qq_diary_write / qq_diary_read / qq_diary_list
-src/tools/policy.ts        默认档加 deny: ["qq_diary_*"]
+src/tools/qq.ts            新增 qq_diary_write / qq_diary_read / qq_diary_list / qq_send_file，
+                           以及 sendFileMessage 发送通道
+src/tools/policy.ts        默认档加 deny: ["qq_diary_*", "qq_send_file"]
 src/config.ts              新增 diary 配置节（六处）
 src/naplink/history.ts     新增按时间范围拉取（回补用）
 src/naplink/render.ts      新增轻量素材提取
 .env.example               新增 QQ_DIARY_*（必须）
 README.md                  配置表、工具表、管理命令表、目录树（必须）
 docs/configuration.md      日记配置章节
-docs/security-baseline.md  本机落盘表 + 不变量 17–20
+docs/security-baseline.md  本机落盘表 + 不变量 17–21
 CHANGELOG.md               [Unreleased] → Added
 tool-profiles.example.json 默认档补 deny，并注释放开方式
 ```
@@ -371,17 +456,18 @@ tool-profiles.example.json 默认档补 deny，并注释放开方式
 **测试**
 
 ```
-tests/diary.test.ts   日期键、slug、store 的 upsert / 列表 / 淘汰、轻量提取的占位符与截断、
-                       素材行上限、回补去重、总结输出清洗、命令参数解析、权限拒绝
-tests/tools.test.ts   工具清单断言 + 三个日记工具的读写与跨聊天拒绝
-tests/policy.test.ts  member / proactive 档拿不到 qq_diary_*，admin 档可以
+tests/diary.test.ts   日期键、slug、front matter 解析与序列化、日记文件读写与覆盖、
+                       列表的目录扫描与排序、轻量提取的占位符与截断、素材行上限、
+                       回补去重、总结输出清洗、命令参数解析、权限拒绝
+tests/tools.test.ts   工具清单断言 + 四个新工具的读写与跨聊天拒绝 + 文件白名单拒绝
+tests/policy.test.ts  member / proactive 档拿不到 qq_diary_* 与 qq_send_file，admin 档可以
 tests/docs.test.ts    不需要改（它跟随 ENV_VARS 自动校验 README 与 .env.example）
 ```
 
-## 13. 实施阶段
+## 14. 实施阶段
 
-| 阶段 | 内容                                                                | 产出             |
-| ---- | ------------------------------------------------------------------- | ---------------- |
-| P0   | store + 轻量提取 + `/diary write\|list\|show` + 三个工具 + 权限分档 | 日记能写能读能查 |
-| P1   | 素材累积 + 总结会话 + 定时调度 + 推送                               | 日记能自动生成   |
-| P2   | NapCat 历史回补 + 出站消息采集 + 跨天补写昨天                       | 素材更完整       |
+| 阶段 | 内容                                                                                    | 产出                     |
+| ---- | --------------------------------------------------------------------------------------- | ------------------------ |
+| P0   | 文件存储 + 轻量提取 + `/diary write\|list\|show` + 三个工具 + `qq_send_file` + 权限分档 | 日记能写能读能查能发文件 |
+| P1   | 素材累积 + 总结会话 + 定时调度 + 文件推送                                               | 日记能自动生成           |
+| P2   | NapCat 历史回补 + 出站消息采集 + 跨天补写昨天                                           | 素材更完整               |

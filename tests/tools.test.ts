@@ -6,6 +6,8 @@ import type { Plugin } from "@opencode/plugin"
 import { QQ_TOOL_NAMES, registerTools, TOOL_NAMESPACE } from "../src/tools/qq"
 import { DEFAULT_CONFIG, type QQBotConfig } from "../src/config"
 import type { ChatTarget } from "../src/chat"
+import { dateKey } from "../src/diary/format"
+import { DiaryStore } from "../src/diary/store"
 import type { CustomFace } from "../src/emoji/favorites"
 import { FavoriteIndex, type IndexStorage } from "../src/emoji/favorite-index"
 import type { Logger } from "../src/logger"
@@ -38,6 +40,8 @@ interface Harness {
     requestReply: ReturnType<typeof vi.fn>
   }
   logger: Record<keyof Logger, ReturnType<typeof vi.fn>>
+  /** 日记存储，供日记工具读写。 */
+  diary: DiaryStore
   /** 临时工作目录，媒体文件都放在这里。 */
   workspace: string
 }
@@ -150,6 +154,10 @@ async function createHarness(
     await writeFile(join(workspace, name), "media")
   }
   const outbound = new OutboundMedia({ workspace, allowedDirs: [workspace] })
+  const diary = new DiaryStore({
+    root: join(workspace, "diary"),
+    logger: logger as unknown as Logger,
+  })
 
   await registerTools({
     ctx,
@@ -168,9 +176,10 @@ async function createHarness(
     outbound,
     tracer,
     canSend,
+    diary,
   })
 
-  return { tools, api, favorites, manager, logger, workspace }
+  return { tools, api, favorites, manager, logger, diary, workspace }
 }
 
 const context = { sessionID: "session-1" }
@@ -180,11 +189,15 @@ describe("registerTools", () => {
     const { tools } = await createHarness()
     expect([...tools.keys()].sort()).toEqual([
       "qq_delete_message",
+      "qq_diary_list",
+      "qq_diary_read",
+      "qq_diary_write",
       "qq_favorite_list",
       "qq_fetch_ptt_text",
       "qq_get_group_member_info",
       "qq_get_login_info",
       "qq_request_reply",
+      "qq_send_file",
       "qq_send_forward",
       "qq_send_image",
       "qq_send_message",
@@ -972,6 +985,143 @@ describe("registerTools", () => {
       expect(spans.map((span) => span.name)).toEqual(["response_sent"])
       expect(spans[0]?.traceId).toBe("trace-1")
       expect(spans[0]?.target).toBe("group:100")
+    })
+  })
+
+  describe("日记工具", () => {
+    it("写入的日记落在当前会话绑定的聊天下", async () => {
+      const { tools, diary } = await createHarness(group(100))
+      const result = await tools
+        .get(`${TOOL_NAMESPACE}_diary_write`)
+        ?.execute({ content: "今天聊了发布", title: "发布" }, context)
+      expect(result?.content).not.toContain("error")
+      const entry = await diary.read("group:100", dateKey())
+      expect(entry?.title).toBe("发布")
+      expect(entry?.body).toBe("今天聊了发布")
+      expect(entry?.source).toBe("model")
+    })
+
+    it("不指定日期时写到今天", async () => {
+      const { tools, diary } = await createHarness(group(100))
+      await tools
+        .get(`${TOOL_NAMESPACE}_diary_write`)
+        ?.execute({ content: "正文", date: "2026-11-09" }, context)
+      expect(await diary.read("group:100", "2026-11-09")).toBeTruthy()
+      expect(await diary.read("group:100", dateKey())).toBeUndefined()
+    })
+
+    it("日期格式不对时拒绝写入", async () => {
+      const { tools, diary } = await createHarness(group(100))
+      const result = await tools
+        .get(`${TOOL_NAMESPACE}_diary_write`)
+        ?.execute({ content: "正文", date: "2026-13-40" }, context)
+      expect(result?.content).toContain("error")
+      expect(await diary.list("group:100", 7)).toEqual([])
+    })
+
+    it("读取最近一篇日记的正文", async () => {
+      const { tools, diary } = await createHarness(group(100))
+      await diary.write("group:100", "2026-11-09", {
+        title: "旧",
+        body: "旧正文",
+        source: "manual",
+      })
+      await diary.write("group:100", "2026-11-10", {
+        title: "新",
+        body: "新正文",
+        source: "manual",
+      })
+      const result = await tools.get(`${TOOL_NAMESPACE}_diary_read`)?.execute({}, context)
+      expect(result?.content).toContain("2026-11-10")
+      expect(result?.content).toContain("新正文")
+    })
+
+    it("按日期读取，缺失时给出可用日期", async () => {
+      const { tools, diary } = await createHarness(group(100))
+      await diary.write("group:100", "2026-11-10", {
+        title: "标题",
+        body: "正文",
+        source: "manual",
+      })
+      const hit = await tools
+        .get(`${TOOL_NAMESPACE}_diary_read`)
+        ?.execute({ date: "2026-11-10" }, context)
+      expect(hit?.content).toContain("正文")
+      const miss = await tools
+        .get(`${TOOL_NAMESPACE}_diary_read`)
+        ?.execute({ date: "2026-11-01" }, context)
+      expect(miss?.content).toContain("error")
+      expect(miss?.content).toContain("2026-11-10")
+    })
+
+    it("列日记只给日期和标题", async () => {
+      const { tools, diary } = await createHarness(group(100))
+      await diary.write("group:100", "2026-11-10", {
+        title: "闲聊",
+        body: "正文",
+        source: "manual",
+      })
+      const result = await tools.get(`${TOOL_NAMESPACE}_diary_list`)?.execute({ days: 7 }, context)
+      expect(result?.content).toBe("2026-11-10 闲聊")
+    })
+
+    it("没有日记时提示为空", async () => {
+      const { tools } = await createHarness(group(100))
+      const result = await tools.get(`${TOOL_NAMESPACE}_diary_list`)?.execute({}, context)
+      expect(result?.content).toContain("还没有日记")
+    })
+
+    it("只读写自己所在的聊天，不串到别的群", async () => {
+      const { tools, diary } = await createHarness(group(100))
+      await tools.get(`${TOOL_NAMESPACE}_diary_write`)?.execute({ content: "群里的" }, context)
+      expect(await diary.read("group:100", dateKey())).toBeTruthy()
+      expect(await diary.read("group:200", dateKey())).toBeUndefined()
+    })
+  })
+
+  describe("发送文件", () => {
+    it("把白名单里的文件按给定名字发出去", async () => {
+      const { tools, api, workspace } = await createHarness(group(100))
+      const file = join(workspace, "note.md")
+      await writeFile(file, "内容")
+      const result = await tools
+        .get(`${TOOL_NAMESPACE}_send_file`)
+        ?.execute({ file, name: "日记.md" }, context)
+      expect(result?.content).not.toContain("error")
+      expect(api["sendGroupMessage"]).toHaveBeenCalledWith(100, [
+        { type: "file", data: { file, name: "日记.md" } },
+      ])
+    })
+
+    it("不给名字时用原文件名", async () => {
+      const { tools, api, workspace } = await createHarness(group(100))
+      const file = join(workspace, "note.md")
+      await writeFile(file, "内容")
+      await tools.get(`${TOOL_NAMESPACE}_send_file`)?.execute({ file }, context)
+      const payload = api["sendGroupMessage"]?.mock.calls[0]?.[1] as {
+        data: { name: string }
+      }[]
+      expect(payload[0]?.data.name).toBe("note.md")
+    })
+
+    it("拒绝白名单以外的路径", async () => {
+      const { tools, api } = await createHarness(group(100))
+      const result = await tools
+        .get(`${TOOL_NAMESPACE}_send_file`)
+        ?.execute({ file: "/etc/hostname" }, context)
+      expect(result?.content).toContain("error")
+      expect(api["sendGroupMessage"]).not.toHaveBeenCalled()
+    })
+
+    it("私聊里发到私聊", async () => {
+      const { tools, api, workspace } = await createHarness(privateChat(200))
+      const file = join(workspace, "note.md")
+      await writeFile(file, "内容")
+      await tools.get(`${TOOL_NAMESPACE}_send_file`)?.execute({ file }, context)
+      expect(api["sendPrivateMessage"]).toHaveBeenCalledWith(200, [
+        { type: "file", data: { file, name: "note.md" } },
+      ])
+      expect(api["sendGroupMessage"]).not.toHaveBeenCalled()
     })
   })
 })

@@ -96,6 +96,34 @@ describe("defaultToolPolicy", () => {
       "qq_send_message",
     ])
   })
+
+  it("keeps diary tools away from members and proactive turns", () => {
+    const names = [
+      "qq_diary_write",
+      "qq_diary_read",
+      "qq_diary_list",
+      "qq_send_file",
+      "qq_send_message",
+    ]
+    const file = defaultToolPolicy()
+    for (const profile of ["chat", "readonly", "proactive"] as const) {
+      const allowed = allowedTools(file.profiles[profile]!, names)
+      expect(allowed, `${profile} 档不该拿到日记与文件工具`).toEqual(["qq_send_message"])
+    }
+  })
+
+  it("lets owner and admin use the diary tools", () => {
+    const admin = defaultToolPolicy().profiles.admin
+    expect(admin).toBeDefined()
+    expect(
+      allowedTools(admin!, [
+        "qq_diary_write",
+        "qq_diary_read",
+        "qq_diary_list",
+        "qq_send_file",
+      ]).sort(),
+    ).toEqual(["qq_diary_list", "qq_diary_read", "qq_diary_write", "qq_send_file"])
+  })
 })
 
 describe("profileNameFor", () => {

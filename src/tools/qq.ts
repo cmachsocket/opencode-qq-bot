@@ -1,8 +1,11 @@
+import { basename } from "node:path"
 import type { Plugin } from "@opencode/plugin"
 import { isTargetAllowed } from "../access"
 import { delay } from "../async"
 import { type ChatTarget, targetKey, targetLabel } from "../chat"
 import type { QQBotConfig } from "../config"
+import { dateKey, isDateKey } from "../diary/format"
+import type { DiaryStore } from "../diary/store"
 import {
   CUSTOM_FACE_SUB_TYPE,
   type FavoriteStore,
@@ -12,6 +15,7 @@ import {
 import type { FavoriteIndex } from "../emoji/favorite-index"
 import type { Logger } from "../logger"
 import type { OutboundMedia } from "../media-path"
+import { neutralizeStructureTags, sanitizeUntrustedText } from "../model-view"
 import type { QQClient } from "../naplink/client"
 import { splitGraphemes, splitMessage, segmentDelayMs, toPlainText } from "../outbound"
 import type { RateLimitVerdict, SendRateLimiter } from "../rate-limit"
@@ -50,6 +54,10 @@ export const QQ_TOOL_NAMES = [
   "qq_get_group_member_info",
   "qq_fetch_ptt_text",
   "qq_get_login_info",
+  "qq_send_file",
+  "qq_diary_write",
+  "qq_diary_read",
+  "qq_diary_list",
 ] as const
 
 export interface ToolDeps {
@@ -68,6 +76,8 @@ export interface ToolDeps {
   sensitive: SensitiveChecker
   /** 出站媒体的路径与地址把关。 */
   outbound: OutboundMedia
+  /** 日记读写，供 qq_diary_* 使用；不传就不注册日记工具。 */
+  diary?: DiaryStore
   /** 调用链追踪器；不传就不记追踪。 */
   tracer?: Tracer
   /**
@@ -111,6 +121,25 @@ interface MessageIdInput {
   message_id?: number | string
 }
 
+interface DiaryWriteInput {
+  content?: string
+  date?: string
+  title?: string
+}
+
+interface DiaryReadInput {
+  date?: string
+}
+
+interface DiaryListInput {
+  days?: number
+}
+
+interface FileInput {
+  file?: string
+  name?: string
+}
+
 /** 合并转发里单个节点的字数上限，留出余量避免被 NapCat 截断。 */
 const FORWARD_NODE_CHARS = 3000
 
@@ -122,6 +151,30 @@ function text(value: string, metadata?: Record<string, unknown>) {
 
 /** 工具返回值：content 是给模型看的文本，metadata 带失败标记。 */
 type ToolResult = ReturnType<typeof text>
+
+/** 日记正文进模型上下文的固定上限，超出部分截断。 */
+const DIARY_READ_MAX_CHARS = 4000
+
+/**
+ * 净化日记正文。
+ *
+ * 逐行净化再整体中和结构标签：日记是多段文本，
+ * 整体净化会把换行压成空格，段落就没了。
+ */
+function sanitizeDiaryBody(body: string): string {
+  const lines = String(body ?? "")
+    .replace(/\r\n/g, "\n")
+    .split("\n")
+    .map((line) => sanitizeUntrustedText(line))
+  return neutralizeStructureTags(lines.join("\n"))
+}
+
+/** 组装给模型看的日记正文：标题加正文，超长截断。 */
+function formatDiaryBody(date: string, title: string, body: string): string {
+  const plain = sanitizeDiaryBody(body)
+  const clipped = Array.from(plain).slice(0, DIARY_READ_MAX_CHARS).join("")
+  return [`${date} 的日记：${sanitizeUntrustedText(title)}`, "", clipped].join("\n")
+}
 
 /** 按目标类型把消息投递出去：群聊与私聊走不同的 API。 */
 function sendPayload(client: QQClient, target: ChatTarget, payload: string | unknown[]) {
@@ -200,6 +253,34 @@ export function createPlainSender(
 }
 
 /**
+ * 向一个目标发送本地文件。
+ *
+ * 路径先过出站白名单：只允许白名单目录里的普通文件，软链接指向别处也拒绝。
+ * 文件内容不扫描，只看显示名与路径，避免把凭证文件指出去。
+ */
+export async function sendFileMessage(
+  client: QQClient,
+  target: ChatTarget,
+  file: string,
+  options: {
+    /** 对方看到的文件名；不传时用真实文件名。 */
+    name?: string
+    limiter: SendRateLimiter
+    outbound: OutboundMedia
+    sensitive: SensitiveChecker
+  },
+): Promise<void> {
+  const plan = await options.outbound.check(file)
+  if (plan.kind !== "local") throw new Error("只能发送本地文件")
+  const path = plan.path
+  const name = options.name?.trim() || basename(path)
+  const verdict = options.sensitive.check(`${name}\n${path}`)
+  if (!verdict.allowed) throw new Error(verdict.reason)
+  await options.limiter.pace(pluginSendScope(target), nextPlainOperation())
+  await sendPayload(client, target, [{ type: "file", data: { file: path, name } }])
+}
+
+/**
  * 注册 QQ 命名空间下的工具。
  *
  * 全部工具都是对 NapCat OneBot API 的透传，
@@ -217,6 +298,7 @@ export async function registerTools(deps: ToolDeps): Promise<{ dispose(): Promis
     limiter,
     sensitive,
     outbound,
+    diary,
     tracer,
   } = deps
 
@@ -904,6 +986,148 @@ export async function registerTools(deps: ToolDeps): Promise<{ dispose(): Promis
       execute: async () => {
         const info = await client.api.getLoginInfo()
         return text(JSON.stringify(info))
+      },
+    })
+
+    // 日记工具依赖日记存储；没配存储时不注册，免得模型调到一个必然失败的工具。
+    const diaryStore = diary
+    if (diaryStore) {
+      /** 日记工具的目标：必须是当前会话绑定且放行的那个聊天。 */
+      const diaryTarget = (sessionID: string): ChatTarget | undefined => requireTarget(sessionID)
+
+      /** 找不到日记时把可用的日期一起回给模型，省得它来回试。 */
+      const diaryMissing = async (chat: string, date: string): Promise<string> => {
+        const available = (await diaryStore.list(chat, 10)).map((item) => item.date)
+        const hint = available.length > 0 ? `（可用的日期：${available.join("、")}）` : ""
+        return `error: 没有找到 ${date} 的日记${hint}`
+      }
+
+      editor.add({
+        name: "diary_write",
+        description:
+          "给当前 QQ 群聊或私聊写一篇日记。同一个聊天同一天只有一篇日记，重复写会覆盖当天那一篇。content 是日记正文；date 是日期，格式 YYYY-MM-DD，省略表示今天；title 是标题，省略时用日期做标题。",
+        input: {
+          type: "object",
+          properties: {
+            content: { type: "string", description: "日记正文（必填）" },
+            date: { type: "string", description: "日期，格式 YYYY-MM-DD；省略表示今天" },
+            title: { type: "string", description: "日记标题；省略时用日期做标题" },
+          },
+          required: ["content"],
+          additionalProperties: false,
+        },
+        options: { namespace: TOOL_NAMESPACE, codemode: false },
+        execute: async (raw, context) => {
+          const input = (raw ?? {}) as DiaryWriteInput
+          const target = diaryTarget(context.sessionID)
+          if (!target) return text("error: 当前会话没有绑定的聊天，无法读写日记")
+          const content = (input.content ?? "").trim()
+          if (!content) return text("error: 缺少 content")
+          const date = input.date?.trim() || dateKey()
+          if (!isDateKey(date)) return text(`error: 日期格式不对：${date}，请用 YYYY-MM-DD`)
+          const entry = await diaryStore.write(targetKey(target), date, {
+            title: input.title?.trim() ?? "",
+            body: content,
+            source: "model",
+          })
+          return text(`已写入 ${date} 的日记：${entry.title}`)
+        },
+      })
+
+      editor.add({
+        name: "diary_read",
+        description:
+          "读取当前 QQ 群聊或私聊的日记正文。date 是日期，格式 YYYY-MM-DD；省略时返回最近一篇。返回的是日记文本，不是文件列表。",
+        input: {
+          type: "object",
+          properties: {
+            date: { type: "string", description: "日期，格式 YYYY-MM-DD；省略表示最近一篇" },
+          },
+          additionalProperties: false,
+        },
+        options: { namespace: TOOL_NAMESPACE, codemode: false },
+        execute: async (raw, context) => {
+          const input = (raw ?? {}) as DiaryReadInput
+          const target = diaryTarget(context.sessionID)
+          if (!target) return text("error: 当前会话没有绑定的聊天，无法读写日记")
+          const chat = targetKey(target)
+          const date = input.date?.trim()
+          if (!date) {
+            const latest = await diaryStore.latest(chat)
+            if (!latest) return text("error: 这个聊天还没有日记")
+            return text(formatDiaryBody(latest.date, latest.title, latest.body))
+          }
+          if (!isDateKey(date)) return text(`error: 日期格式不对：${date}，请用 YYYY-MM-DD`)
+          const entry = await diaryStore.read(chat, date)
+          if (!entry) return text(await diaryMissing(chat, date))
+          return text(formatDiaryBody(entry.date, entry.title, entry.body))
+        },
+      })
+
+      editor.add({
+        name: "diary_list",
+        description:
+          "列出当前 QQ 群聊或私聊最近的日记，只返回日期和标题。days 是看几篇，默认 7 篇。",
+        input: {
+          type: "object",
+          properties: {
+            days: { type: "number", description: "看最近几篇，默认 7" },
+          },
+          additionalProperties: false,
+        },
+        options: { namespace: TOOL_NAMESPACE, codemode: false },
+        execute: async (raw, context) => {
+          const input = (raw ?? {}) as DiaryListInput
+          const target = diaryTarget(context.sessionID)
+          if (!target) return text("error: 当前会话没有绑定的聊天，无法读写日记")
+          const days = Number.isInteger(input.days) && (input.days ?? 0) > 0 ? (input.days ?? 7) : 7
+          const entries = await diaryStore.list(targetKey(target), days)
+          if (entries.length === 0) return text("这个聊天还没有日记。")
+          return text(entries.map((entry) => `${entry.date} ${entry.title}`).join("\n"))
+        },
+      })
+    }
+
+    editor.add({
+      name: "send_file",
+      description:
+        "向当前 QQ 群聊或私聊发送一个本地文件。file 是文件路径，只能是机器人允许发送的目录里的普通文件；name 是对方看到的文件名，省略时用原文件名。",
+      input: {
+        type: "object",
+        properties: {
+          file: { type: "string", description: "本地文件路径（必填）" },
+          name: { type: "string", description: "对方看到的文件名；省略时用原文件名" },
+        },
+        required: ["file"],
+        additionalProperties: false,
+      },
+      options: { namespace: TOOL_NAMESPACE, codemode: false },
+      execute: async (raw, context) => {
+        const input = (raw ?? {}) as FileInput
+        const prepared = await prepareSend(context.sessionID)
+        if (prepared.error) return prepared.error
+        const target = prepared.target
+        const denied = checkReplyPermission(context.sessionID, target)
+        if (denied) return text(denied)
+        const file = input.file?.trim()
+        if (!file) return text("error: 缺少 file")
+        let plan
+        try {
+          plan = await outbound.check(file)
+        } catch (error) {
+          return text(`error: ${error instanceof Error ? error.message : String(error)}`)
+        }
+        if (plan.kind !== "local") return text("error: 只能发送本地文件")
+        const path = plan.path
+        const name = input.name?.trim() || basename(path)
+        // 文件内容没法扫描，路径与显示名同样过一遍出站检查。
+        guardOutbound(target, `${name}\n${path}`)
+        const verdict = await permit(target, nextOperation())
+        if (!verdict.allowed) return refuse(context.sessionID, verdict)
+        const response = await send(target, [{ type: "file", data: { file: path, name } }])
+        trackSent(target, response)
+        manager.markMessageSent(context.sessionID)
+        return text("你已成功发送文件，可以选择结束对话")
       },
     })
   })

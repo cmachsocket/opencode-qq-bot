@@ -3,11 +3,15 @@
   "profiles": {
     "chat": {
       "allow": ["websearch", "webfetch", "qq_*"],
-      "deny": []
+      "deny": ["qq_diary_*", "qq_send_file"]
     },
     "readonly": {
       "allow": ["read", "glob", "grep", "qq_*"],
-      "deny": []
+      "deny": ["qq_diary_*", "qq_send_file"]
+    },
+    "proactive": {
+      "allow": ["websearch", "webfetch", "qq_*"],
+      "deny": ["qq_diary_*", "qq_send_file"]
     },
     "admin": {
       "allow": ["*"],
