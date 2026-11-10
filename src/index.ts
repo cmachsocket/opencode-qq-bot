@@ -37,7 +37,13 @@ import { registerAskGuard } from "./tools/ask-guard"
 import { defaultToolProfilesPath, roleOf, ToolPolicy } from "./tools/policy"
 import { registerToolPolicy } from "./tools/policy-guard"
 import { registerSendGuard } from "./tools/send-guard"
-import { createPlainSender, registerTools, sendPlainMessage, TOOL_NAMESPACE } from "./tools/qq"
+import {
+  createPlainSender,
+  QQ_REQUEST_REPLY_TOOL,
+  registerTools,
+  sendPlainMessage,
+  TOOL_NAMESPACE,
+} from "./tools/qq"
 import { createEmojiRunner, emojiCommand } from "./emoji/command"
 import { describeNotice, noticeMatches, noticeTarget } from "./events/notice"
 import { NoticeStore } from "./events/store"
@@ -504,7 +510,7 @@ export default Plugin.define({
         event.system.push({
           type: "text",
           text: turn?.proactive
-            ? `这是一次主动发起话题，必须调用 qq_send_message 把话题发到${destination}。`
+            ? `这是一次主动发起话题，必须调用 qq_send_message 把话题发到${destination}。${target.kind === "group" && config.reply.requirePermission ? "群里要先调用 qq_request_reply 说明为什么要回复，拿到权限后才能发送。" : ""}`
             : turn?.atMe
               ? wakeHint(turn.wake)
               : turn?.suppress
@@ -519,12 +525,21 @@ export default Plugin.define({
             text: `聊天里发生过的通知（不需要回复）：\n${notices.map((item) => `- ${item}`).join("\n")}`,
           })
         }
+        // 群里默认没有发送权限：模型得先想清楚该不该回复，说明理由才拿得到权限。
+        if (target.kind === "group" && config.reply.requirePermission) {
+          event.system.push({
+            type: "text",
+            text: `默认你没有向用户发消息的权限。要回复，先判断该不该回复，再调用 ${QQ_REQUEST_REPLY_TOOL} 说明为什么要回复；拿到权限后才能调用 qq_send_message，权限只在本轮有效。`,
+          })
+        }
         // 本轮发送者的角色决定工具档：owner / admin 全开，其他按聊天配置。
         // 角色按会话保留，没有在途轮次（重启、TUI 驱动）时也照样收窄。
         {
           const allowed = await policy.allow(role, targetKey(target), Object.keys(event.tools))
           const removed: string[] = []
           for (const name of Object.keys(event.tools)) {
+            // 申请回复权限的工具必须一直留着：不然模型永远拿不到发送权限。
+            if (name === QQ_REQUEST_REPLY_TOOL) continue
             if (!allowed.has(name)) {
               removed.push(name)
               delete event.tools[name]

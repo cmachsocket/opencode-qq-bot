@@ -34,6 +34,8 @@ interface Harness {
     isOutgoing: ReturnType<typeof vi.fn>
     isKnownMessage: ReturnType<typeof vi.fn>
     activeTurn: ReturnType<typeof vi.fn>
+    canReply: ReturnType<typeof vi.fn>
+    requestReply: ReturnType<typeof vi.fn>
   }
   logger: Record<keyof Logger, ReturnType<typeof vi.fn>>
   /** 临时工作目录，媒体文件都放在这里。 */
@@ -77,6 +79,7 @@ async function createHarness(
     fetchPttText: vi.fn(async () => ({ text: "语音转写" })),
     getLoginInfo: vi.fn(async () => ({ user_id: 123, nickname: "机器人" })),
   }
+  let replyAllowed = false
   const manager = {
     targetForSession: vi.fn(() => target ?? undefined),
     markMessageSent: vi.fn(),
@@ -84,6 +87,11 @@ async function createHarness(
     isOutgoing: vi.fn(() => true),
     isKnownMessage: vi.fn(() => true),
     activeTurn: vi.fn(() => undefined),
+    canReply: vi.fn(() => replyAllowed),
+    requestReply: vi.fn((_sessionID: string, reason: string) => {
+      replyAllowed = true
+      return { granted: true, reason }
+    }),
   }
   const logger = {
     debug: vi.fn(),
@@ -110,6 +118,8 @@ async function createHarness(
     napcat: { url: "ws://127.0.0.1:3001" },
     access: accessConfig({ groups: [100], users: [200] }),
     sendDelayMs: 0,
+    // 测试里默认不设门槛：要测权限门禁的用例自己打开。
+    reply: { ...DEFAULT_CONFIG.reply, requirePermission: false },
     rateLimit: {
       maxPerMinute: 0,
       maxPerHour: 0,
@@ -174,6 +184,7 @@ describe("registerTools", () => {
       "qq_fetch_ptt_text",
       "qq_get_group_member_info",
       "qq_get_login_info",
+      "qq_request_reply",
       "qq_send_forward",
       "qq_send_image",
       "qq_send_message",
@@ -227,6 +238,54 @@ describe("registerTools", () => {
     expect(api["sendGroupMessage"]).not.toHaveBeenCalled()
   })
 
+  it("refuses to send in a group until the model explains why it wants to reply", async () => {
+    const { tools, api } = await createHarness(group(100), {
+      reply: { ...DEFAULT_CONFIG.reply, requirePermission: true },
+    })
+    const result = await tools
+      .get(`${TOOL_NAMESPACE}_send_message`)
+      ?.execute({ content: "你好" }, context)
+    expect(result?.content).toContain("qq_request_reply")
+    expect(api["sendGroupMessage"]).not.toHaveBeenCalled()
+  })
+
+  it("grants the reply permission for the rest of the turn", async () => {
+    const { tools, api, manager } = await createHarness(group(100), {
+      reply: { ...DEFAULT_CONFIG.reply, requirePermission: true },
+    })
+    const asked = await tools
+      .get(`${TOOL_NAMESPACE}_request_reply`)
+      ?.execute({ reason: "对方在提问，需要回答" }, context)
+    expect(asked?.content).toContain("已获得本轮的回复权限")
+    expect(manager.requestReply).toHaveBeenCalledWith("session-1", "对方在提问，需要回答")
+
+    const sent = await tools
+      .get(`${TOOL_NAMESPACE}_send_message`)
+      ?.execute({ content: "你好" }, context)
+    expect(sent?.content).toBe("你已成功发送消息，可以选择结束对话")
+    expect(api["sendGroupMessage"]).toHaveBeenCalledTimes(1)
+  })
+
+  it("requires a reason before granting the reply permission", async () => {
+    const { tools, manager } = await createHarness(group(100), {
+      reply: { ...DEFAULT_CONFIG.reply, requirePermission: true },
+    })
+    const result = await tools.get(`${TOOL_NAMESPACE}_request_reply`)?.execute({}, context)
+    expect(result?.content).toContain("必须说明为什么回复")
+    expect(manager.requestReply).not.toHaveBeenCalled()
+  })
+
+  it("keeps private chats open without asking for permission", async () => {
+    const { tools, api } = await createHarness(privateChat(200), {
+      reply: { ...DEFAULT_CONFIG.reply, requirePermission: true },
+    })
+    const result = await tools
+      .get(`${TOOL_NAMESPACE}_send_message`)
+      ?.execute({ content: "你好" }, context)
+    expect(result?.content).toBe("你已成功发送消息，可以选择结束对话")
+    expect(api["sendPrivateMessage"]).toHaveBeenCalledTimes(1)
+  })
+
   it("skips sending when the model chooses not to reply", async () => {
     const { tools, api, manager } = await createHarness()
     const result = await tools
@@ -235,6 +294,28 @@ describe("registerTools", () => {
     expect(result?.content).toBe("skipped")
     expect(api["sendGroupMessage"]).not.toHaveBeenCalled()
     expect(manager.markMessageSent).toHaveBeenCalledWith("session-1")
+  })
+
+  it("lets the model choose not to reply without asking for permission", async () => {
+    const { tools, api } = await createHarness(group(100), {
+      reply: { ...DEFAULT_CONFIG.reply, requirePermission: true },
+    })
+    const result = await tools
+      .get(`${TOOL_NAMESPACE}_send_message`)
+      ?.execute({ content: "算了", reply: false }, context)
+    expect(result?.content).toBe("skipped")
+    expect(api["sendGroupMessage"]).not.toHaveBeenCalled()
+  })
+
+  it("refuses to poke in a group until the model explains why it wants to reply", async () => {
+    const { tools, api } = await createHarness(group(100), {
+      reply: { ...DEFAULT_CONFIG.reply, requirePermission: true },
+    })
+    const result = await tools
+      .get(`${TOOL_NAMESPACE}_send_poke`)
+      ?.execute({ user_id: 123 }, context)
+    expect(result?.content).toContain("qq_request_reply")
+    expect(api["sendGroupMessage"]).not.toHaveBeenCalled()
   })
 
   it("skips sending empty content", async () => {
@@ -618,7 +699,13 @@ describe("registerTools", () => {
 
     it("超长消息按段计数", async () => {
       const { tools, api } = await createHarness(group(100), {
-        reply: { minDelayMs: 0, maxDelayMs: 0, segmentChars: 150, forwardThresholdChars: 0 },
+        reply: {
+          minDelayMs: 0,
+          maxDelayMs: 0,
+          segmentChars: 150,
+          forwardThresholdChars: 0,
+          requirePermission: false,
+        },
         rateLimit: {
           maxPerMinute: 1,
           maxPerHour: 0,
@@ -729,7 +816,13 @@ describe("registerTools", () => {
   describe("分段回复节奏", () => {
     it("超过单段字数就拆成多段发送", async () => {
       const { tools, api } = await createHarness(group(100), {
-        reply: { minDelayMs: 0, maxDelayMs: 0, segmentChars: 10, forwardThresholdChars: 0 },
+        reply: {
+          minDelayMs: 0,
+          maxDelayMs: 0,
+          segmentChars: 10,
+          forwardThresholdChars: 0,
+          requirePermission: false,
+        },
       })
       const result = await tools
         .get(`${TOOL_NAMESPACE}_send_message`)
@@ -742,7 +835,13 @@ describe("registerTools", () => {
 
     it("段与段之间按随机区间等待", async () => {
       const { tools, api } = await createHarness(group(100), {
-        reply: { minDelayMs: 1000, maxDelayMs: 3000, segmentChars: 10, forwardThresholdChars: 0 },
+        reply: {
+          minDelayMs: 1000,
+          maxDelayMs: 3000,
+          segmentChars: 10,
+          forwardThresholdChars: 0,
+          requirePermission: false,
+        },
         sendDelayMs: 0,
       })
       const before = Date.now()
@@ -756,7 +855,13 @@ describe("registerTools", () => {
 
     it("没配随机区间时沿用固定的发送间隔", async () => {
       const { tools, api } = await createHarness(group(100), {
-        reply: { minDelayMs: 0, maxDelayMs: 0, segmentChars: 10, forwardThresholdChars: 0 },
+        reply: {
+          minDelayMs: 0,
+          maxDelayMs: 0,
+          segmentChars: 10,
+          forwardThresholdChars: 0,
+          requirePermission: false,
+        },
         sendDelayMs: 0,
       })
       await tools
@@ -767,7 +872,13 @@ describe("registerTools", () => {
 
     it("超过阈值的回复改用合并转发", async () => {
       const { tools, api } = await createHarness(group(100), {
-        reply: { minDelayMs: 0, maxDelayMs: 0, segmentChars: 150, forwardThresholdChars: 100 },
+        reply: {
+          minDelayMs: 0,
+          maxDelayMs: 0,
+          segmentChars: 150,
+          forwardThresholdChars: 100,
+          requirePermission: false,
+        },
       })
       const result = await tools
         .get(`${TOOL_NAMESPACE}_send_message`)
@@ -788,7 +899,13 @@ describe("registerTools", () => {
 
     it("转发节点太长时拆成多个节点", async () => {
       const { tools, api } = await createHarness(group(100), {
-        reply: { minDelayMs: 0, maxDelayMs: 0, segmentChars: 150, forwardThresholdChars: 100 },
+        reply: {
+          minDelayMs: 0,
+          maxDelayMs: 0,
+          segmentChars: 150,
+          forwardThresholdChars: 100,
+          requirePermission: false,
+        },
       })
       await tools
         .get(`${TOOL_NAMESPACE}_send_message`)
@@ -799,7 +916,13 @@ describe("registerTools", () => {
 
     it("剩余额度不够分段时改用合并转发", async () => {
       const { tools, api } = await createHarness(group(100), {
-        reply: { minDelayMs: 0, maxDelayMs: 0, segmentChars: 10, forwardThresholdChars: 1000 },
+        reply: {
+          minDelayMs: 0,
+          maxDelayMs: 0,
+          segmentChars: 10,
+          forwardThresholdChars: 1000,
+          requirePermission: false,
+        },
         rateLimit: {
           maxPerMinute: 1,
           maxPerHour: 0,
@@ -818,7 +941,13 @@ describe("registerTools", () => {
 
     it("关闭转发阈值后照旧分段发送", async () => {
       const { tools, api } = await createHarness(group(100), {
-        reply: { minDelayMs: 0, maxDelayMs: 0, segmentChars: 150, forwardThresholdChars: 0 },
+        reply: {
+          minDelayMs: 0,
+          maxDelayMs: 0,
+          segmentChars: 150,
+          forwardThresholdChars: 0,
+          requirePermission: false,
+        },
       })
       await tools
         .get(`${TOOL_NAMESPACE}_send_message`)

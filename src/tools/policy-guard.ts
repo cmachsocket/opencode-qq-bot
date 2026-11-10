@@ -3,6 +3,7 @@ import { targetKey, targetLabel } from "../chat"
 import type { Logger } from "../logger"
 import type { SessionManager } from "../session/manager"
 import type { ToolPolicy } from "./policy"
+import { QQ_REQUEST_REPLY_TOOL } from "./qq"
 
 /** 会开启独立会话的工具名；不同版本分别叫 subagent 与 task。 */
 const SUBAGENT_TOOLS = new Set(["subagent", "task"])
@@ -35,6 +36,8 @@ export async function registerToolPolicy(
       logger.warn(`${targetLabel(target)} 会话里拒绝创建子代理 ${event.tool}`)
       throw new Error("QQ 聊天会话里不能创建子代理：子会话不会继承按聊天的工具限制。")
     }
+    // 申请回复权限的工具必须一直放行：不然模型永远拿不到发送权限。
+    if (event.tool === QQ_REQUEST_REPLY_TOOL) return
     const allowed = await policy.allow(role, targetKey(target), [event.tool])
     logger.debug(`${targetLabel(target)} 工具策略检查`, {
       role,

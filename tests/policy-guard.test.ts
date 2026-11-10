@@ -87,4 +87,9 @@ describe("registerToolPolicy", () => {
     await expect(harness.before("websearch")).resolves.toBeUndefined()
     await expect(harness.before("shell")).rejects.toThrow(/tool-profiles/)
   })
+
+  it("申请回复权限的工具始终放行", async () => {
+    const { harness } = await createHarness({ allow: ["websearch"] })
+    await expect(harness.before("qq_request_reply")).resolves.toBeUndefined()
+  })
 })

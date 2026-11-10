@@ -172,6 +172,10 @@ interface ChatState {
   lastRetireAt: number
   /** 最近一次清空当前轮次的原因与时间，仅供排查。 */
   lastClear?: { reason: string; at: number; role?: Role; traceId?: string }
+  /** 本轮是否已批准发送：模型先说明理由才拿到这个权限，轮次结束即失效。 */
+  replyAllowed: boolean
+  /** 批准发送的理由，仅供日志与排查。 */
+  replyReason?: string
 }
 
 /** 插件存储接受的值类型。 */
@@ -605,6 +609,7 @@ export class SessionManager {
         reminders: 0,
         lastUserMessageAt: this.activity[key] ?? Date.now(),
         lastRetireAt: 0,
+        replyAllowed: false,
       }
       this.states.set(key, state)
     }
@@ -875,6 +880,9 @@ export class SessionManager {
       ...(state.lastClear.traceId ? { trace_id: state.lastClear.traceId } : {}),
     })
     state.current = undefined
+    // 发送权限只在本轮有效：轮次结束就收回，下一轮要重新说明理由。
+    state.replyAllowed = false
+    state.replyReason = undefined
     // 在途轮次落盘，重启后不会把已经结束的一轮又恢复出来。
     this.scheduleSave()
   }
@@ -909,6 +917,8 @@ export class SessionManager {
       lastDispatchAt: state.lastDispatchAt,
       idleAt: state.idleAt,
       lastClear: state.lastClear,
+      replyAllowed: state.replyAllowed,
+      replyReason: state.replyReason,
       now: Date.now(),
     }
   }
@@ -920,6 +930,33 @@ export class SessionManager {
     state.awaitingSend = false
     state.reminders = 0
     this.scheduleSave()
+  }
+
+  /**
+   * 模型申请本轮的发送权限。
+   *
+   * 默认不给发送权限：模型得先说明为什么回复，拿到权限后才能调用发送工具。
+   * 权限只在本轮有效，轮次结束就失效。
+   *
+   * @returns 是否批准。会话没有绑定或已经有权限时不算失败。
+   */
+  requestReply(sessionID: string, reason: string): { granted: boolean; reason: string } {
+    const state = this.sessions.get(sessionID)
+    if (!state) return { granted: false, reason }
+    // 权限只在本轮有效：没有进行中的轮次就不给。
+    if (!state.current) {
+      this.logger.warn(`${targetLabel(state.target)} 没有进行中的轮次，不给发送权限`)
+      return { granted: false, reason }
+    }
+    state.replyAllowed = true
+    state.replyReason = reason
+    this.logger.info(`${targetLabel(state.target)} 模型申请本轮发送权限：${reason}`)
+    return { granted: true, reason }
+  }
+
+  /** 本轮是否已经拿到发送权限。 */
+  canReply(sessionID: string): boolean {
+    return this.sessions.get(sessionID)?.replyAllowed === true
   }
 
   /** 记录一条机器人发出的消息，撤回工具只能操作这些消息。 */
@@ -1266,10 +1303,15 @@ export class SessionManager {
         ...(reminderRole ? { role: reminderRole } : {}),
       }
       this.logger.warn(`${label} 模型未调用发送工具，提醒第 ${state.reminders} 次`)
+      // 群里默认没有发送权限，提醒里得说清楚先申请再发。
+      const permissionHint =
+        this.config.reply.requirePermission && state.target.kind === "group"
+          ? "群里要先调用 qq_request_reply 说明为什么要回复，拿到权限后才能发送。"
+          : ""
       try {
         await this.ctx.session.synthetic({
           sessionID,
-          text: `[提醒] 你这一轮没有调用任何发送工具，直接输出的文字会被丢弃。请调用 qq_send_message 工具：想回复就 reply=true 并给出 content，不想回复就 reply=false；发送图片、语音、转发或戳一戳也视为已回复。`,
+          text: `[提醒] 你这一轮没有调用任何发送工具，直接输出的文字会被丢弃。请调用 qq_send_message 工具：想回复就 reply=true 并给出 content，不想回复就 reply=false；发送图片、语音、转发或戳一戳也视为已回复。${permissionHint}`,
         })
       } catch (error) {
         state.awaitingSend = false

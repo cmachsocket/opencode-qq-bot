@@ -65,6 +65,8 @@ export interface ReplyConfig {
   segmentChars: number
   /** 单条回复超过该字数就改用合并转发，0 表示关闭。 */
   forwardThresholdChars: number
+  /** 是否要求模型先说明理由才能发送：默认开启。 */
+  requirePermission: boolean
 }
 
 /** 调用链追踪配置。 */
@@ -215,7 +217,13 @@ export const DEFAULT_CONFIG: Omit<QQBotConfig, "napcat"> = {
     allowUsers: [],
   },
   wake: { prefixes: ["/"], ignoreAtAll: true, replyToSelf: true, ignoreAtOthers: true },
-  reply: { minDelayMs: 0, maxDelayMs: 0, segmentChars: 150, forwardThresholdChars: 1500 },
+  reply: {
+    minDelayMs: 0,
+    maxDelayMs: 0,
+    segmentChars: 150,
+    forwardThresholdChars: 1500,
+    requirePermission: true,
+  },
   trace: { enabled: true, dir: "", maxSizeMb: 80, retentionDays: 7 },
   reminder: { enabled: true, max: 2 },
   keepAlive: { enabled: true, seconds: 20 * 60 },
@@ -603,6 +611,7 @@ function createConfigSchema(
           "reply.forwardThresholdChars",
           defaults.reply.forwardThresholdChars,
         ),
+        requirePermission: boolean("reply.requirePermission", defaults.reply.requirePermission),
       })
       .prefault({})
       .catch(defaults.reply),
@@ -716,6 +725,7 @@ export const ENV_VARS = {
   "reply.maxDelayMs": "QQ_REPLY_MAX_DELAY_MS",
   "reply.segmentChars": "QQ_REPLY_SEGMENT_CHARS",
   "reply.forwardThresholdChars": "QQ_REPLY_FORWARD_THRESHOLD_CHARS",
+  "reply.requirePermission": "QQ_REPLY_REQUIRE_PERMISSION",
   "trace.enabled": "QQ_TRACE_ENABLED",
   "trace.dir": "QQ_TRACE_DIR",
   "trace.maxSizeMb": "QQ_TRACE_MAX_SIZE_MB",
@@ -785,7 +795,13 @@ const NESTED_OPTION_KEYS: Record<string, ReadonlySet<string>> = {
     "allowUsers",
   ]),
   wake: new Set(["prefixes", "ignoreAtAll", "replyToSelf", "ignoreAtOthers"]),
-  reply: new Set(["minDelayMs", "maxDelayMs", "segmentChars", "forwardThresholdChars"]),
+  reply: new Set([
+    "minDelayMs",
+    "maxDelayMs",
+    "segmentChars",
+    "forwardThresholdChars",
+    "requirePermission",
+  ]),
   trace: new Set(["enabled", "dir", "maxSizeMb", "retentionDays"]),
   reminder: new Set(["enabled", "max"]),
   keepAlive: new Set(["enabled", "seconds"]),

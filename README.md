@@ -107,6 +107,7 @@ bun install
 | `reply.maxDelayMs`                  | `QQ_REPLY_MAX_DELAY_MS`            | `0`                   | 分段之间的随机等待上限（毫秒），`0` 表示用固定间隔  |
 | `reply.segmentChars`                | `QQ_REPLY_SEGMENT_CHARS`           | `150`                 | 单段最多多少字，超出就拆成多段发送                  |
 | `reply.forwardThresholdChars`       | `QQ_REPLY_FORWARD_THRESHOLD_CHARS` | `1500`                | 超过多少字改用合并转发，`0` 表示不转换              |
+| `reply.requirePermission`           | `QQ_REPLY_REQUIRE_PERMISSION`      | `true`                | 群里发消息前是否要求模型先说明理由（私聊始终开放）  |
 | `trace.enabled`                     | `QQ_TRACE_ENABLED`                 | `true`                | 是否记录调用链追踪                                  |
 | `trace.dir`                         | `QQ_TRACE_DIR`                     | 与日志同目录          | 追踪文件目录                                        |
 | `trace.maxSizeMb`                   | `QQ_TRACE_MAX_SIZE_MB`             | `80`                  | 追踪文件总容量上限（MB）                            |
@@ -228,6 +229,7 @@ OpenCode 按 location 统计会话活动，默认空闲 60 分钟后卸载该 lo
 
 | 工具                       | 说明                                                                                        |
 | -------------------------- | ------------------------------------------------------------------------------------------- |
+| `qq_request_reply`         | 申请本轮的回复权限，必须说明为什么要回复；权限只在本轮有效                                  |
 | `qq_send_message`          | 发消息。`content` 文本，`reply=false` 表示已读不回，`unlimit_length=true` 解除长度告警      |
 | `qq_send_image`            | 发图片，`file` 传路径或 URL，`base64` 传 `base64://` 数据                                   |
 | `qq_send_record`           | 发语音                                                                                      |
@@ -430,6 +432,9 @@ QQ 私聊（owner / 管理员）用 `/emoji-label`，TUI 用加前缀的 `/qq-em
 ## 行为
 
 - **回复是强制的**：系统提示要求模型每轮至少调用一个发送类工具，直接输出的文字会被丢弃。
+- **发消息前先说明理由**：群里默认不给模型发送权限，要回复必须先调用 `qq_request_reply`
+  说明为什么要回复，拿到权限后才能发送；权限只在本轮有效。私聊默认开放，不用申请。
+  关闭 `reply.requirePermission` 后模型可以直接发消息。
 - **被 @ 才必须回**：群里没被 @ 时模型可以调用 `qq_send_message` 并设 `reply=false` 选择已读不回；私聊消息必须回复。
   每个群可以用会话覆盖改这条规则（每条必回 / 前缀必回 / 完全不理），详见「会话覆盖」。
 - **消息合并**：会话正在跑模型时新到的消息进缓存，会话空闲后合并成一轮再投进去。

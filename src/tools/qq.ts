@@ -24,12 +24,21 @@ import type { Tracer } from "../trace"
 export const TOOL_NAMESPACE = "qq"
 
 /**
+ * 申请回复权限的工具名。
+ *
+ * 群里默认没有发送权限：模型得先说明为什么要回复，拿到权限才能发送；
+ * 权限只在本轮有效。私聊默认开放，不需要申请。
+ */
+export const QQ_REQUEST_REPLY_TOOL = "qq_request_reply"
+
+/**
  * 暴露给模型的 QQ 工具名。
  *
  * 上游按 `namespace_工具名` 生成对外名字（点号换成下划线），模型只认这些名字；
  * `qq_send_message` 是模型发消息的唯一入口。
  */
 export const QQ_TOOL_NAMES = [
+  "qq_request_reply",
   "qq_send_message",
   "qq_send_image",
   "qq_send_sticker",
@@ -241,6 +250,22 @@ export async function registerTools(deps: ToolDeps): Promise<{ dispose(): Promis
     return undefined
   }
 
+  /**
+   * 群里发消息前的权限检查。
+   *
+   * 默认没有发送权限：模型先说明理由才拿得到，权限只在本轮有效。
+   * 私聊默认开放，不用申请；选择不回复（`reply=false`）也不需要权限。
+   *
+   * @returns 可以发送时返回 undefined，否则返回给模型的错误文案。
+   */
+  const checkReplyPermission = (sessionID: string, target: ChatTarget): string | undefined => {
+    if (!config.reply.requirePermission) return undefined
+    if (target.kind === "private") return undefined
+    if (manager.canReply(sessionID)) return undefined
+    logger.warn(`${targetLabel(target)} 本轮还没有回复权限，拒绝发送`, traceMeta(sessionID))
+    return `error: 本轮还没有回复权限。要回复用户，先调用 ${QQ_REQUEST_REPLY_TOOL} 说明为什么要回复；拿到权限后才能调用 qq_send_message。`
+  }
+
   // 同一次工具调用拆出的多段共用一个操作 id：段与段之间不再额外等间隔。
   let operationSeq = 0
   const nextOperation = (): string => `send-${++operationSeq}`
@@ -433,6 +458,41 @@ export async function registerTools(deps: ToolDeps): Promise<{ dispose(): Promis
     // 按聊天配置的 qq_* 规则永远命不中，普通成员会连发消息的能力都没有。
 
     editor.add({
+      name: "request_reply",
+      description:
+        "申请本轮的回复权限。群里默认没有发送权限：要回复用户，先调用这个工具并说明为什么要回复，拿到权限后才能调用 qq_send_message；权限只在本轮有效，轮次结束就收回。私聊默认就有权限，不用申请。",
+      input: {
+        type: "object",
+        properties: {
+          reason: {
+            type: "string",
+            description: "为什么要回复这条消息（必填）：说清楚回复的理由，不要只写「需要回复」",
+          },
+        },
+        required: ["reason"],
+        additionalProperties: false,
+      },
+      options: { namespace: TOOL_NAMESPACE, codemode: false },
+      execute: async (raw, context) => {
+        const input = (raw ?? {}) as { reason?: unknown }
+        const reason = typeof input.reason === "string" ? input.reason.trim() : ""
+        if (!reason) return text("error: 必须说明为什么回复（reason 不能为空）")
+        const target = manager.targetForSession(context.sessionID)
+        if (!target) return text("error: 当前会话没有绑定 QQ 群聊或私聊")
+        const granted = manager.requestReply(context.sessionID, reason)
+        if (!granted.granted) {
+          return text("error: 当前没有进行中的 QQ 消息轮次，拿不到回复权限")
+        }
+        if (target.kind === "private") {
+          return text("私聊默认就有回复权限，直接调用 qq_send_message 即可。")
+        }
+        return text(
+          `已获得本轮的回复权限（理由：${reason}）。现在可以调用 qq_send_message 回复；权限只在本轮有效。`,
+        )
+      },
+    })
+
+    editor.add({
       name: "send_message",
       description:
         "向当前 QQ 群聊或私聊发送一条消息。每轮必须调用一个发送工具。content: 要发送的文本；reply: true 表示发送，false 表示选择不发送（已读不回）；unlimit_length: 设为 true 可解除默认的长度告警限制。",
@@ -472,6 +532,8 @@ export async function registerTools(deps: ToolDeps): Promise<{ dispose(): Promis
           manager.markMessageSent(context.sessionID)
           return text("skipped")
         }
+        const denied = checkReplyPermission(context.sessionID, target)
+        if (denied) return text(denied)
         guardOutbound(target, plain)
 
         // 长度按字素簇算，和拆段的口径一致：一个 emoji 只算一个。
@@ -542,6 +604,8 @@ export async function registerTools(deps: ToolDeps): Promise<{ dispose(): Promis
         const prepared = await prepareSend(context.sessionID)
         if (prepared.error) return prepared.error
         const target = prepared.target
+        const denied = checkReplyPermission(context.sessionID, target)
+        if (denied) return text(denied)
         const file = input.file ?? (input.base64 ? `base64://${input.base64}` : undefined)
         if (!file) return text("error: 缺少 file 或 base64")
         const tooLarge = checkInlineSize(file, "图片")
@@ -593,6 +657,8 @@ export async function registerTools(deps: ToolDeps): Promise<{ dispose(): Promis
         const prepared = await prepareSend(context.sessionID)
         if (prepared.error) return prepared.error
         const target = prepared.target
+        const denied = checkReplyPermission(context.sessionID, target)
+        if (denied) return text(denied)
         const id = input.id
         if (typeof id !== "number" || !Number.isInteger(id)) {
           return text("error: 缺少 id（收藏表情编号）")
@@ -639,6 +705,8 @@ export async function registerTools(deps: ToolDeps): Promise<{ dispose(): Promis
         const prepared = await prepareSend(context.sessionID)
         if (prepared.error) return prepared.error
         const target = prepared.target
+        const denied = checkReplyPermission(context.sessionID, target)
+        if (denied) return text(denied)
         if (!input.file) return text("error: 缺少 file")
         const tooLarge = checkInlineSize(input.file, "语音")
         if (tooLarge) return text(tooLarge)
@@ -685,6 +753,8 @@ export async function registerTools(deps: ToolDeps): Promise<{ dispose(): Promis
         const prepared = await prepareSend(context.sessionID)
         if (prepared.error) return prepared.error
         const target = prepared.target
+        const denied = checkReplyPermission(context.sessionID, target)
+        if (denied) return text(denied)
         const nodes: {
           user_id: number
           nickname: string
@@ -733,6 +803,8 @@ export async function registerTools(deps: ToolDeps): Promise<{ dispose(): Promis
         const prepared = await prepareSend(context.sessionID)
         if (prepared.error) return prepared.error
         const target = prepared.target
+        const denied = checkReplyPermission(context.sessionID, target)
+        if (denied) return text(denied)
         if (!input.user_id) return text("error: 缺少 user_id")
         const verdict = await permit(target, nextOperation())
         if (!verdict.allowed) return refuse(context.sessionID, verdict)

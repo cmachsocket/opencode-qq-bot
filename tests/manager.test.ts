@@ -1492,6 +1492,22 @@ describe("B1 冷启动补历史", () => {
     expect(harness.manager.currentRole("session-1")).toBe("admin")
   })
 
+  it("gives the reply permission only for the current turn", async () => {
+    const harness = createHarness()
+    await harness.manager.enqueue(group(100), { text: "你好", files: [], atMe: false })
+    expect(harness.manager.canReply("session-1")).toBe(false)
+
+    const granted = harness.manager.requestReply("session-1", "对方在提问")
+    expect(granted.granted).toBe(true)
+    expect(harness.manager.canReply("session-1")).toBe(true)
+
+    // 轮次结束就收回权限：下一轮要重新说明理由。
+    harness.manager.markMessageSent("session-1")
+    await harness.manager.handleIdle("session-1")
+    expect(harness.manager.canReply("session-1")).toBe(false)
+    expect(harness.manager.describeTurn("session-1").replyAllowed).toBe(false)
+  })
+
   it("重置聊天时打断执行中的回合并解绑会话", async () => {
     const harness = createHarness()
     await harness.manager.enqueue(group(100), { text: "你好", files: [], atMe: false })

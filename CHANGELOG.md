@@ -2,6 +2,15 @@
 
 本文件记录 opencode-qq-bot 的重要变更。
 
+## [Unreleased]
+
+### Added
+
+- 回复权限：默认不给模型直接发消息的权限。群里要回复用户，必须先调用
+  `qq_request_reply` 说明为什么要回复，拿到权限后才能调用 `qq_send_message`；
+  权限只在本轮有效，轮次结束就收回。这样模型得先想清楚该不该回复，而不是凭本能每条都回。
+  私聊默认开放，不用申请；`reply.requirePermission` 可以关掉这个门槛。
+
 ## [0.6.7] - 2026-11-10
 
 ### Changed
