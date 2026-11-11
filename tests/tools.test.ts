@@ -1145,6 +1145,20 @@ describe("registerTools", () => {
       expect(miss?.content).toContain("2026-11-10")
     })
 
+    it("超长的日记正文按自然边界截断并标注", async () => {
+      const { tools, diary } = await diaryHarness()
+      await diary.write("private:200", "2026-11-10", {
+        title: "标题",
+        body: `${"第一段。".repeat(1000)}${"尾巴".repeat(1000)}`,
+        source: "manual",
+      })
+      const result = await tools
+        .get(`${TOOL_NAMESPACE}_diary_read`)
+        ?.execute({ date: "2026-11-10" }, context)
+      expect(result?.content).toContain("…（已截断）")
+      expect(result?.content).not.toContain("尾巴")
+    })
+
     it("列日记只给日期和标题", async () => {
       const { tools, diary } = await diaryHarness()
       await diary.write("private:200", "2026-11-10", {

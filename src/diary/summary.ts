@@ -8,6 +8,7 @@ import type { Logger } from "../logger"
 import { neutralizeStructureTags, sanitizeUntrustedText } from "../model-view"
 import { toPlainText } from "../outbound"
 import { findSession } from "../session/find"
+import { softTruncate } from "../text"
 import type { DiaryCollector, DiaryLine } from "./collector"
 import { fallbackTitle } from "./format"
 import type { DiaryStore } from "./store"
@@ -82,7 +83,7 @@ export function cleanDiarySummary(raw: string): { title: string; body: string } 
   if (!plain) return undefined
   const lines = plain.split("\n")
   const titleLine = (lines[0] ?? "").trim()
-  const title = Array.from(titleLine).slice(0, DIARY_TITLE_MAX_CHARS).join("")
+  const title = softTruncate(titleLine, DIARY_TITLE_MAX_CHARS)
   const body = lines
     .slice(1)
     .map((line) => line.trim())
@@ -92,7 +93,7 @@ export function cleanDiarySummary(raw: string): { title: string; body: string } 
   if (!body) return undefined
   return {
     title: title || fallbackTitle(""),
-    body: Array.from(body).slice(0, DIARY_BODY_MAX_CHARS).join(""),
+    body: softTruncate(body, DIARY_BODY_MAX_CHARS),
   }
 }
 

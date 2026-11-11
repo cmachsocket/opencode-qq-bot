@@ -213,7 +213,7 @@ export interface DiaryLine {
   | `file`                                            | `[文件]`                              |
   | `reply` / `forward` / `json` / `xml` / `markdown` | 忽略                                  |
 
-- 每行按码点截断到 `QQ_DIARY_MAX_LINE_CHARS`（默认 200）。
+- 每行按自然边界截断到 `QQ_DIARY_MAX_LINE_CHARS`（默认 200）：先断在最近的段落、换行或句末，末尾标注 `…（已截断）`，不把群友的话拦腰砍断。
 - 单天行数上限 `QQ_DIARY_MAX_LINES_PER_DAY`（默认 2000），超出的新行丢弃并记一条日志。
 - 发送者显示名用现有的 `nameCache` + `resolveUserName` 解析，取不到退到 QQ 号。
 - 落盘是异步的，不能挡住消息处理；写文件失败只记日志，不影响聊天。
@@ -295,7 +295,7 @@ export interface DiaryLine {
 - 超时 `QQ_DIARY_TIMEOUT_MS`（默认 120000）；超时算失败，不写入。
 - 失败最多重试 1 次，间隔 10 秒；仍失败则不写日记，保留素材等下一次机会。
 - 插件卸载（`abort.signal`）后不再发起新的总结请求，也不写入。
-- 输出清洗：去掉 markdown 装饰（`remove-markdown`，与 `src/outbound.ts` 同款）、去掉首尾空行；标题取第一行（超过 20 字截断），正文取其余部分；正文为空时这次总结作废，不写。
+- 输出清洗：去掉 markdown 装饰（`remove-markdown`，与 `src/outbound.ts` 同款）、去掉首尾空行；标题取第一行，正文取其余部分；标题超过 20 字、正文超过 800 字时按自然边界截断并标注 `…（已截断）`；正文为空时这次总结作废，不写。
 - 写入 `source: "auto"`。
 
 ### 6.4 生成结果
@@ -421,7 +421,7 @@ export async function sendFileMessage(
 - 总结会话在 `src/index.ts` 的 context hook 里被摘掉全部工具（与表情标签会话同样的处理）。
 - 总结会话不绑定 QQ 目标，因此不会带上「必须调用 `qq_send_message`」的角色守则。
 - 推送走 `sendFileMessage` 时不经过 `qq_send_message` 的角色守则，但**也不经过**模型侧的出站检查，所以推送内容自己过 `SensitiveChecker`。
-- 日记正文回灌进模型上下文（`qq_diary_read` 的返回值）前，再过一次 `sanitizeUntrustedText`；正文超过 4000 字按前 4000 字截断（固定上限，不做配置项）。
+- 日记正文回灌进模型上下文（`qq_diary_read` 的返回值）前，再过一次 `sanitizeUntrustedText`；正文超过 4000 字时按自然边界截断并标注 `…（已截断）`（固定上限，不做配置项）。
 
 ## 12. 已知限制
 

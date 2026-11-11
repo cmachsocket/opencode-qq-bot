@@ -590,6 +590,7 @@ src/
   session/prompt.ts  固定守则与系统提示
   session/soul.ts    角色设定定位、读取与热更新
   session/manager.ts 群聊 / 私聊 ↔ 会话映射、消息缓存
+  text.ts            通用文本工具：按自然边界截断并标注
   tools/ask-guard.ts 拦截内置 question 工具
   tools/send-guard.ts 拒绝连续调用发送工具
   tools/policy.ts    工具权限配置档与热加载

@@ -1,6 +1,7 @@
 import { appendFile, mkdir, readFile, readdir, rm, stat } from "node:fs/promises"
 import { join } from "node:path"
 import type { Logger } from "../logger"
+import { softTruncate } from "../text"
 import { chatSlug, dateKey } from "./format"
 import { isInside, realDir, realExisting } from "./paths"
 
@@ -51,17 +52,6 @@ export interface DiaryCollectorDeps {
 const RAW_FILE = /^(\d{4}-\d{2}-\d{2})\.jsonl$/
 
 /**
- * 按码点截断。
- *
- * 按码点而不是 UTF-16 码元截：emoji 不会被切成半个。
- */
-export function truncateChars(value: string, max: number): string {
-  const chars = Array.from(value)
-  if (chars.length <= max) return value
-  return chars.slice(0, max).join("")
-}
-
-/**
  * 聊天素材的累积与落盘。
  *
  * 素材按天分文件：`<root>/raw/<聊天目录>/<日期>.jsonl`，每行一个 JSON 对象。
@@ -104,7 +94,7 @@ export class DiaryCollector {
       )
       return false
     }
-    const record: DiaryLine = { ...line, text: truncateChars(line.text, this.deps.maxLineChars) }
+    const record: DiaryLine = { ...line, text: softTruncate(line.text, this.deps.maxLineChars) }
     try {
       const dir = this.rawDir(chat)
       await mkdir(dir, { recursive: true, mode: 0o700 })

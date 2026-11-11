@@ -24,6 +24,7 @@ import { modelSendScope, pluginSendScope } from "../rate-limit"
 import type { SensitiveChecker } from "../sensitive"
 import type { SessionManager } from "../session/manager"
 import type { Tracer } from "../trace"
+import { softTruncate } from "../text"
 
 /** 工具命名空间，最终工具名为 qq_send_message 等。 */
 export const TOOL_NAMESPACE = "qq"
@@ -175,10 +176,10 @@ function sanitizeDiaryBody(body: string): string {
   return neutralizeStructureTags(lines.join("\n"))
 }
 
-/** 组装给模型看的日记正文：标题加正文，超长截断。 */
+/** 组装给模型看的日记正文：标题加正文，超长时按自然边界截断。 */
 function formatDiaryBody(date: string, title: string, body: string): string {
   const plain = sanitizeDiaryBody(body)
-  const clipped = Array.from(plain).slice(0, DIARY_READ_MAX_CHARS).join("")
+  const clipped = softTruncate(plain, DIARY_READ_MAX_CHARS)
   return [`${date} 的日记：${sanitizeUntrustedText(title)}`, "", clipped].join("\n")
 }
 

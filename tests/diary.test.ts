@@ -5,7 +5,7 @@ import { join } from "node:path"
 import type { MessageSegment } from "@naplink/naplink"
 import type { ChatTarget } from "../src/chat"
 import { DEFAULT_CONFIG, type QQBotConfig } from "../src/config"
-import { DiaryCollector, isSelfSpeaker, truncateChars } from "../src/diary/collector"
+import { DiaryCollector, isSelfSpeaker } from "../src/diary/collector"
 import {
   createDiaryRunner,
   diaryCommand,
@@ -30,6 +30,7 @@ import { extractDiaryText } from "../src/naplink/render"
 import type { QQClient } from "../src/naplink/client"
 import { SendRateLimiter } from "../src/rate-limit"
 import { SensitiveChecker } from "../src/sensitive"
+import { softTruncate } from "../src/text"
 import { accessConfig } from "./fixtures"
 
 const logger: Logger = {
@@ -300,9 +301,29 @@ describe("日记素材", () => {
     expect(Array.from(lines[0]?.text ?? "").length).toBe(10)
   })
 
+  it("超长的素材行按自然边界收尾并标注截断", async () => {
+    const root = await tempRoot()
+    const collector = makeCollector(root)
+    const time = Math.floor(new Date(2026, 10, 10, 15, 30).getTime() / 1000)
+    await collector.append("group:123", {
+      id: "1",
+      time,
+      userId: "200",
+      name: "小明",
+      text: `${"第一句。".repeat(40)}${"尾巴".repeat(100)}`,
+      self: false,
+      backfilled: false,
+    })
+    const text = (await collector.read("group:123", "2026-11-10"))[0]?.text ?? ""
+    expect(text.endsWith("…（已截断）")).toBe(true)
+    expect(text).toContain("第一句。")
+    expect(text).not.toContain("尾巴")
+    expect(Array.from(text).length).toBeLessThanOrEqual(200)
+  })
+
   it("截断函数不切开半个 emoji", () => {
-    expect(truncateChars("😀😀😀", 2)).toBe("😀😀")
-    expect(truncateChars("abc", 10)).toBe("abc")
+    expect(softTruncate("😀😀😀", 2)).toBe("😀😀")
+    expect(softTruncate("abc", 10)).toBe("abc")
   })
 
   it("单天行数超上限后丢弃新素材", async () => {
@@ -513,11 +534,14 @@ describe("日记总结", () => {
     expect(cleanDiarySummary("")).toBeUndefined()
   })
 
-  it("标题与正文都有长度上限", () => {
-    const long = `${"标".repeat(50)}\n\n${"正".repeat(2000)}`
+  it("标题与正文都有长度上限，超长时标注截断", () => {
+    const long = `${"标".repeat(50)}\n\n${"正。".repeat(1000)}`
     const cleaned = cleanDiarySummary(long)
     expect(Array.from(cleaned?.title ?? "").length).toBe(20)
     expect(Array.from(cleaned?.body ?? "").length).toBe(800)
+    expect(cleaned?.title.endsWith("…（已截断）")).toBe(true)
+    // 断在句子边界上：正文不会停在半个句子里
+    expect(cleaned?.body.endsWith("正。…（已截断）")).toBe(true)
   })
 })
 
