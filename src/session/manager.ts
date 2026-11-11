@@ -1191,6 +1191,10 @@ export class SessionManager {
     state.awaitingSend = true
     // 新的用户轮次重新给一份提醒预算，否则连续几轮不调工具就再也提醒不了。
     state.reminders = 0
+    // 轮次边界：发送许可只在本轮有效。新一轮无条件收回上一轮的许可，
+    // 免得缓冲消息触发的新一轮带着上一轮的许可开跑。
+    state.replyAllowed = false
+    state.replyReason = undefined
     const label = targetLabel(state.target)
     this.logger.debug(`${label} 开始投递一轮`, {
       role,
@@ -1303,10 +1307,10 @@ export class SessionManager {
         ...(reminderRole ? { role: reminderRole } : {}),
       }
       this.logger.warn(`${label} 模型未调用发送工具，提醒第 ${state.reminders} 次`)
-      // 群里默认没有发送权限，提醒里得说清楚先申请再发。
+      // 群里按约定不主动发言，提醒里得说清楚先说明理由再发。
       const permissionHint =
         this.config.reply.requirePermission && state.target.kind === "group"
-          ? "群里要先调用 qq_request_reply 说明为什么要回复，拿到权限后才能发送。"
+          ? "群里要先调用 qq_request_reply 说明为什么要回复，说明之后才能发送。"
           : ""
       try {
         await this.ctx.session.synthetic({

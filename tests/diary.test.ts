@@ -1,11 +1,11 @@
 import { describe, expect, it, vi } from "vitest"
-import { mkdtemp, readFile, stat, utimes } from "node:fs/promises"
+import { mkdir, mkdtemp, readFile, stat, symlink, utimes, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import type { MessageSegment } from "@naplink/naplink"
 import type { ChatTarget } from "../src/chat"
 import { DEFAULT_CONFIG, type QQBotConfig } from "../src/config"
-import { DiaryCollector, truncateChars } from "../src/diary/collector"
+import { DiaryCollector, isSelfSpeaker, truncateChars } from "../src/diary/collector"
 import {
   createDiaryRunner,
   diaryCommand,
@@ -21,9 +21,9 @@ import {
   serializeDiary,
   type DiaryEntry,
 } from "../src/diary/format"
-import { minutesOfDay } from "../src/diary/scheduler"
+import { minutesOfDay, DiaryScheduler } from "../src/diary/scheduler"
 import { DiaryStore } from "../src/diary/store"
-import { buildDiaryPrompt, cleanDiarySummary } from "../src/diary/summary"
+import { buildDiaryPrompt, cleanDiarySummary, DiarySummarizer } from "../src/diary/summary"
 import type { Logger } from "../src/logger"
 import { OutboundMedia } from "../src/media-path"
 import { extractDiaryText } from "../src/naplink/render"
@@ -217,9 +217,52 @@ describe("日记存储", () => {
     expect(await store.latest("group:123")).toBeUndefined()
     expect(await store.list("group:123", 7)).toEqual([])
   })
+
+  it("拒绝不是真实日期的文件名", async () => {
+    const root = await tempRoot()
+    const store = makeStore(root)
+    await expect(
+      store.write("group:123", "../../evil", { title: "x", body: "x", source: "manual" }),
+    ).rejects.toThrow("日期格式不对")
+    expect(await store.read("group:123", "../../evil")).toBeUndefined()
+    expect(await store.read("group:123", "2026-02-30")).toBeUndefined()
+  })
+
+  it("软链到日记根目录之外时不读也不写", async () => {
+    const root = await tempRoot()
+    const outside = await tempRoot()
+    const target = join(outside, "stolen.md")
+    await writeFile(target, "外部内容", "utf8")
+    const store = makeStore(root)
+    await mkdir(join(root, "group-123"), { recursive: true })
+    await symlink(target, join(root, "group-123", "2026-11-10.md"))
+
+    expect(await store.read("group:123", "2026-11-10")).toBeUndefined()
+    await expect(
+      store.write("group:123", "2026-11-10", { title: "改写", body: "正文", source: "manual" }),
+    ).rejects.toThrow("不在日记根目录内")
+    expect(await readFile(target, "utf8")).toBe("外部内容")
+  })
+
+  it("日记目录与文件的权限显式收紧", async () => {
+    const root = await tempRoot()
+    const store = makeStore(root)
+    await store.write("group:123", "2026-11-10", { title: "t", body: "b", source: "manual" })
+    const dirMode = (await stat(join(root, "group-123"))).mode & 0o777
+    const fileMode = (await stat(store.filePath("group:123", "2026-11-10"))).mode & 0o777
+    expect(dirMode).toBe(0o700)
+    expect(fileMode).toBe(0o600)
+  })
 })
 
 describe("日记素材", () => {
+  it("机器人自己的发言也算素材", () => {
+    expect(isSelfSpeaker("200", "200")).toBe(true)
+    expect(isSelfSpeaker("201", "200")).toBe(false)
+    // 拿不到自己的 QQ 号时不能把所有发言都当成自己的。
+    expect(isSelfSpeaker("200", "")).toBe(false)
+  })
+
   it("按天写入素材并能读回来", async () => {
     const root = await tempRoot()
     const collector = makeCollector(root)
@@ -332,6 +375,29 @@ describe("日记素材", () => {
     expect(await collector.read("group:123", "2026-11-10")).toEqual([])
     expect(await collector.has("group:123", "2026-11-10")).toBe(false)
   })
+
+  it("素材文件软链到根目录之外时拒绝写入", async () => {
+    const root = await tempRoot()
+    const outside = await tempRoot()
+    const collector = makeCollector(root)
+    const time = Math.floor(new Date(2026, 10, 10, 12, 0).getTime() / 1000)
+    await mkdir(collector.rawDir("group:123"), { recursive: true })
+    const target = join(outside, "raw.jsonl")
+    await writeFile(target, "", "utf8")
+    await symlink(target, collector.rawFile("group:123", "2026-11-10"))
+
+    const ok = await collector.append("group:123", {
+      id: "1",
+      time,
+      userId: "200",
+      name: "甲",
+      text: "内容",
+      self: false,
+      backfilled: false,
+    })
+    expect(ok).toBe(false)
+    expect(await readFile(target, "utf8")).toBe("")
+  })
 })
 
 describe("素材的轻量提取", () => {
@@ -393,6 +459,32 @@ describe("日记总结", () => {
     expect(prompt).toContain("不要调用任何工具")
   })
 
+  it("机器人自己的行署机器人且不带 @QQ 号", () => {
+    const prompt = buildDiaryPrompt("2026-11-10", [
+      {
+        id: "1",
+        time: Math.floor(new Date(2026, 10, 10, 15, 30).getTime() / 1000),
+        userId: "123",
+        name: "机器人",
+        text: "@123 收到",
+        self: true,
+        backfilled: false,
+      },
+      {
+        id: "2",
+        time: Math.floor(new Date(2026, 10, 10, 15, 31).getTime() / 1000),
+        userId: "200",
+        name: "小明",
+        text: "你好",
+        self: false,
+        backfilled: false,
+      },
+    ])
+    expect(prompt).toContain("机器人：@某人 收到")
+    expect(prompt).not.toContain("@123")
+    expect(prompt).toContain("小明：你好")
+  })
+
   it("素材里的结构标签被中和", () => {
     const prompt = buildDiaryPrompt("2026-11-10", [
       {
@@ -426,6 +518,130 @@ describe("日记总结", () => {
     const cleaned = cleanDiarySummary(long)
     expect(Array.from(cleaned?.title ?? "").length).toBe(20)
     expect(Array.from(cleaned?.body ?? "").length).toBe(800)
+  })
+})
+
+describe("日记总结会话", () => {
+  async function makeSummarizer(options?: { foreignText?: string }) {
+    const root = await tempRoot()
+    const home = await tempRoot()
+    const store = makeStore(root)
+    const collector = makeCollector(root)
+    const prompts: string[] = []
+    const queue: { type: string; data: { sessionID: string; text?: string } }[] = []
+    let wake: (() => void) | undefined
+    const emit = (event: { type: string; data: { sessionID: string; text?: string } }) => {
+      queue.push(event)
+      wake?.()
+      wake = undefined
+    }
+    const sessionID = "ses_summary"
+    const ctx = {
+      session: {
+        get: vi.fn(async () => ({ id: sessionID, location: { directory: home } })),
+        list: vi.fn(async () => ({ data: [], cursor: { next: undefined } })),
+        create: vi.fn(async () => ({ id: sessionID })),
+        prompt: vi.fn(async ({ text }: { text: string }) => {
+          prompts.push(text)
+          // 别的会话的输出会混进同一个全局事件流里，不能进总结正文。
+          if (options?.foreignText) {
+            emit({
+              type: "session.text.ended",
+              data: { sessionID: "ses_other", text: options.foreignText },
+            })
+          }
+          emit({ type: "session.text.ended", data: { sessionID, text: "标题\n\n正文" } })
+          emit({ type: "session.execution.succeeded", data: { sessionID } })
+        }),
+      },
+      storage: {
+        get: vi.fn(async () => undefined),
+        set: vi.fn(async () => {}),
+      },
+      event: {
+        subscribe: async function* ({ signal }: { signal: AbortSignal }) {
+          while (!signal.aborted) {
+            if (queue.length === 0) {
+              await new Promise<void>((resolve) => {
+                wake = resolve
+                signal.addEventListener("abort", () => resolve(), { once: true })
+              })
+            }
+            while (queue.length > 0) yield queue.shift()
+          }
+        },
+      },
+    }
+    const summarizer = new DiarySummarizer({
+      ctx: ctx as never,
+      config: { ...DEFAULT_CONFIG, napcat: { url: "ws://127.0.0.1:3001" } },
+      home: { directory: home } as never,
+      logger,
+      collector,
+      store,
+    })
+    return { summarizer, store, collector, prompts, sessionID }
+  }
+
+  it("同一聊天同一天并发只跑一次总结", async () => {
+    const { summarizer, store, collector, prompts } = await makeSummarizer()
+    await collector.append("private:200", {
+      id: "1",
+      time: Math.floor(Date.now() / 1000),
+      userId: "200",
+      name: "甲",
+      text: "今天聊了发布",
+      self: false,
+      backfilled: false,
+    })
+    const [first, second] = await Promise.all([
+      summarizer.summarize("private:200", dateKey()),
+      summarizer.summarize("private:200", dateKey()),
+    ])
+    expect(first).toBe("标题")
+    expect(second).toBe("标题")
+    expect(prompts).toHaveLength(1)
+    const entry = await store.read("private:200", dateKey())
+    expect(entry?.body).toBe("正文")
+    await summarizer.dispose()
+  })
+
+  it("别的会话的输出不进总结正文", async () => {
+    const { summarizer, store, collector } = await makeSummarizer({ foreignText: "别人的秘密" })
+    await collector.append("private:200", {
+      id: "1",
+      time: Math.floor(Date.now() / 1000),
+      userId: "200",
+      name: "甲",
+      text: "今天聊了发布",
+      self: false,
+      backfilled: false,
+    })
+    const title = await summarizer.summarize("private:200", dateKey())
+    expect(title).toBe("标题")
+    const entry = await store.read("private:200", dateKey())
+    expect(entry?.title).toBe("标题")
+    expect(entry?.body).toBe("正文")
+    await summarizer.dispose()
+  })
+
+  it("查不到会话时按总结会话处理，工具会被摘掉", async () => {
+    const summarizer = new DiarySummarizer({
+      ctx: {
+        session: {
+          get: vi.fn(async () => {
+            throw new Error("会话不存在")
+          }),
+        },
+      } as never,
+      config: { ...DEFAULT_CONFIG, napcat: { url: "ws://127.0.0.1:3001" } },
+      home: { directory: "/tmp" } as never,
+      logger,
+      collector: makeCollector(await tempRoot()),
+      store: makeStore(await tempRoot()),
+    })
+    // 失败即视为总结会话：宁可多摘工具，也不能把群友可控文本当指令执行。
+    await expect(summarizer.isSummarySession("ses_unknown")).resolves.toBe(true)
   })
 })
 
@@ -477,11 +693,12 @@ describe("日记命令执行", () => {
     root: string
     store: DiaryStore
     collector: DiaryCollector
+    config: QQBotConfig
     api: Record<string, ReturnType<typeof vi.fn>>
     runner: ReturnType<typeof createDiaryRunner>
   }
 
-  async function makeHarness(): Promise<CommandHarness> {
+  async function makeHarness(ownerQQ?: number): Promise<CommandHarness> {
     const root = await tempRoot()
     const store = makeStore(root)
     const collector = makeCollector(root)
@@ -494,6 +711,7 @@ describe("日记命令执行", () => {
       napcat: { url: "ws://127.0.0.1:3001" },
       access: accessConfig({ groups: [100], users: [200] }),
       sendDelayMs: 0,
+      ...(ownerQQ === undefined ? {} : { ownerQQ }),
       rateLimit: {
         maxPerMinute: 0,
         maxPerHour: 0,
@@ -517,7 +735,7 @@ describe("日记命令执行", () => {
       collector,
       summarizer: { summarize: vi.fn(async () => undefined) } as never,
     })
-    return { root, store, collector, api, runner }
+    return { root, store, collector, config, api, runner }
   }
 
   it("write 写一篇日记并回执", async () => {
@@ -583,6 +801,63 @@ describe("日记命令执行", () => {
     expect(await store.read("group:200", dateKey())).toBeUndefined()
   })
 
+  it("命令只在 owner 私聊里执行", async () => {
+    const { runner, store, config } = await makeHarness(200)
+    const command = diaryCommand(runner)
+    const makeContext = (target: ChatTarget, source?: "qq" | "tui") =>
+      ({
+        config,
+        target,
+        source,
+        manager: {},
+        policy: {},
+        overrides: {},
+        toolNames: [],
+        commands: [],
+      }) as never
+
+    const refused = await command.run(makeContext(group(100), "qq"), ["write", "群里的"])
+    expect(refused).toContain("owner 自己的私聊")
+    expect(await store.read("group:100", dateKey())).toBeUndefined()
+
+    await command.run(makeContext(privateChat(200), "qq"), ["write", "owner 的"])
+    expect(await store.read("private:200", dateKey())).toBeTruthy()
+  })
+
+  it("TUI 里也只操作 owner 私聊的日记", async () => {
+    const { runner, store, config } = await makeHarness(200)
+    const context = {
+      config,
+      target: group(100),
+      source: "tui",
+      manager: {},
+      policy: {},
+      overrides: {},
+      toolNames: [],
+      commands: [],
+    } as never
+    await diaryCommand(runner).run(context, ["write", "tui 里的"])
+    expect(await store.read("group:100", dateKey())).toBeUndefined()
+    expect(await store.read("private:200", dateKey())).toBeTruthy()
+  })
+
+  it("日记正文含敏感信息时不发文件", async () => {
+    const { runner, store, api } = await makeHarness()
+    await store.write("group:100", "2026-11-10", {
+      title: "闲聊",
+      body: "token ghp_abcdefghijklmnopqrstuvwxyz0123456789",
+      source: "manual",
+    })
+    await runner.run(group(100), "show 2026-11-10")
+    const sentFile = api["sendGroupMessage"]?.mock.calls.some(
+      (call) => Array.isArray(call[1]) && (call[1] as { type: string }[])[0]?.type === "file",
+    )
+    expect(sentFile).toBe(false)
+    expect(
+      api["sendGroupMessage"]?.mock.calls.some((call) => String(call[1]).includes("已拦截")),
+    ).toBe(true)
+  })
+
   it("命令定义进共享命令表", () => {
     const command = diaryCommand({ run: vi.fn(async () => {}) })
     expect(command.name).toBe("diary")
@@ -591,6 +866,47 @@ describe("日记命令执行", () => {
 })
 
 describe("日记调度", () => {
+  async function makeScheduler(overrides: Partial<QQBotConfig["diary"]> = {}) {
+    const root = await tempRoot()
+    const store = makeStore(root)
+    const collector = makeCollector(root)
+    const api = {
+      sendGroupMessage: vi.fn(async () => ({})),
+      sendPrivateMessage: vi.fn(async () => ({})),
+    }
+    const config: QQBotConfig = {
+      ...DEFAULT_CONFIG,
+      ownerQQ: 200,
+      napcat: { url: "ws://127.0.0.1:3001" },
+      access: accessConfig({ groups: [100], users: [200] }),
+      sendDelayMs: 0,
+      rateLimit: {
+        maxPerMinute: 0,
+        maxPerHour: 0,
+        minGapMs: 0,
+        stall: false,
+        stallMaxWaitMs: 60_000,
+      },
+      diary: { ...DEFAULT_CONFIG.diary, enabled: true, summaryTime: "00:00", ...overrides },
+    }
+    const client = {
+      api,
+      selfId: "123",
+      ensureConnected: vi.fn(async () => true),
+    } as unknown as QQClient
+    const deps = {
+      config,
+      logger,
+      client,
+      limiter: new SendRateLimiter(config.rateLimit),
+      outbound: new OutboundMedia({ workspace: root, allowedDirs: [root] }),
+      sensitive: new SensitiveChecker({ enabled: true }),
+      store,
+      collector,
+    }
+    return { root, store, collector, api, config, deps }
+  }
+
   it("时刻换算成当天第几分钟", () => {
     expect(minutesOfDay("23:30")).toBe(23 * 60 + 30)
     expect(minutesOfDay("00:00")).toBe(0)
@@ -601,6 +917,54 @@ describe("日记调度", () => {
     expect(minutesOfDay("")).toBe(0)
     expect(minutesOfDay("24:00")).toBe(0)
     expect(minutesOfDay("乱写")).toBe(0)
+  })
+
+  it("只总结 owner 自己的私聊", async () => {
+    const { store, collector, deps } = await makeScheduler({ push: "none" })
+    const time = Math.floor(Date.now() / 1000)
+    for (const chat of ["private:200", "group:100"]) {
+      await collector.append(chat, {
+        id: "1",
+        time,
+        userId: "200",
+        name: "甲",
+        text: "内容",
+        self: false,
+        backfilled: false,
+      })
+    }
+    const summarize = vi.fn(async (chat: string, date: string) => {
+      await store.write(chat, date, { title: "t", body: "b", source: "auto" })
+      return "t"
+    })
+    const scheduler = new DiaryScheduler({ ...deps, summarizer: { summarize } as never })
+    await scheduler.tick(new Date())
+    expect(summarize.mock.calls.map((call) => call[0])).toEqual(["private:200"])
+    expect(await store.hasAuto("group:100", dateKey())).toBe(false)
+  })
+
+  it("日记正文含敏感信息时不推送", async () => {
+    const { store, collector, api, deps } = await makeScheduler({ push: "owner" })
+    await collector.append("private:200", {
+      id: "1",
+      time: Math.floor(Date.now() / 1000),
+      userId: "200",
+      name: "甲",
+      text: "内容",
+      self: false,
+      backfilled: false,
+    })
+    const summarize = vi.fn(async (chat: string, date: string) => {
+      await store.write(chat, date, {
+        title: "t",
+        body: "token ghp_abcdefghijklmnopqrstuvwxyz0123456789",
+        source: "auto",
+      })
+      return "t"
+    })
+    const scheduler = new DiaryScheduler({ ...deps, summarizer: { summarize } as never })
+    await scheduler.tick(new Date())
+    expect(api["sendPrivateMessage"]).not.toHaveBeenCalled()
   })
 })
 

@@ -252,11 +252,11 @@ OpenCode 按 location 统计会话活动，默认空闲 60 分钟后卸载该 lo
 | `qq_delete_message`        | 撤回机器人自己发送过的消息                                                                  |
 | `qq_get_group_member_info` | 查用户资料：群聊返回群名片与昵称，私聊返回昵称                                              |
 | `qq_fetch_ptt_text`        | 转写当前聊天最近收到的语音                                                                  |
-| `qq_get_login_info`        | 机器人自己的 QQ 号与昵称                                                                    |
-| `qq_send_file`             | 发文件，`file` 传路径，只能发白名单目录里的普通文件                                         |
-| `qq_diary_write`           | 写日记，`content` 正文，`date` 省略即今天，`title` 标题                                     |
-| `qq_diary_read`            | 读日记，`date` 省略即最近一篇，只读当前聊天自己的日记                                       |
-| `qq_diary_list`            | 列日记，`days` 默认最近 7 篇，只列日期与标题                                                |
+| `qq_get_login_info`        | 机器人自己的 QQ 号与昵称（要求当前会话已绑定 QQ 聊天）                                      |
+| `qq_send_file`             | 发文件，`file` 传路径，只能发白名单目录里的普通文件；member / proactive 只能取媒体目录      |
+| `qq_diary_write`           | 写日记，`content` 正文，`date` 省略即今天，`title` 标题；仅 owner 私聊                      |
+| `qq_diary_read`            | 读日记，`date` 省略即最近一篇；仅 owner 私聊                                                |
+| `qq_diary_list`            | 列日记，`days` 默认最近 7 篇，只列日期与标题；仅 owner 私聊                                 |
 
 发送类工具（消息、图片、语音、收藏表情、转发、戳一戳）成功后都算本轮已回复，不会再触发补发提醒。
 连续调用发送类工具会被拒绝，避免把同一条消息发两遍；中间调用任意其它工具后即可再次发送。
@@ -291,7 +291,8 @@ OpenCode 按 location 统计会话活动，默认空闲 60 分钟后卸载该 lo
 
 - `allow` 就是白名单：没列出的工具一律不可用；支持 `*` 与 `qq_*` 这类通配，`deny` 优先于 `allow`。
 - 日记相关工具（`qq_diary_write` / `qq_diary_read` / `qq_diary_list`）与 `qq_send_file`
-  默认在 `deny` 里，普通成员用不到；删掉这一行等于放开给群成员。owner 与管理员走 `admin` 档，不受影响。
+  默认在 `deny` 里，普通成员用不到；删掉这一行等于放开给群成员。owner 与管理员走 `admin` 档，
+  但日记工具还额外受 `OWNER_ONLY` 与 owner 私聊范围限制，admin 即使配置放行也用不了；`qq_send_file` 不受这条额外限制。
 - 文件缺失时用内置默认值；改完下一轮生效；写到一半或解析失败会沿用上一份并告警。
 - 普通成员的默认档只放行 `websearch`、`webfetch` 与 `qq_*`（发消息），`shell` / `write` / `read` / 子代理等本地工具全部拒绝；子代理被挡是因为它会开新会话，绕过按聊天过滤。
   QQ 会话里创建子代理一律拒绝，即使配置档放行。
@@ -348,15 +349,15 @@ OpenCode 按 location 统计会话活动，默认空闲 60 分钟后卸载该 lo
 QQ 侧只在 owner 与管理员自己的私聊里生效，
 群里和其他人的私聊不会触发；TUI 侧执行时结果发到该会话绑定的 QQ 聊天：
 
-| 命令                               | 作用                                                                           |
-| ---------------------------------- | ------------------------------------------------------------------------------ |
-| `/help`                            | 命令说明                                                                       |
-| `/status`                          | 各聊天的会话、队列与重试状态                                                   |
-| `/reset`                           | 列出放行名单里的聊天及各自的重置命令                                           |
-| `/reset group:123`                 | 打断执行中的回合并删除该聊天的会话，下一条消息重新开始；名单外目标拒绝         |
-| `/tools [group:123]`               | 查看各聊天使用的配置档与可用工具                                               |
-| `/emoji-label [all\|inc\|list]`    | 给收藏表情生成中文标签（TUI 侧是 `/qq-emoji-label`）                           |
-| `/diary [write\|list\|show\|auto]` | 日记：写一篇、列出最近几篇、看某天的日记、生成当天总结（TUI 侧是 `/qq-diary`） |
+| 命令                               | 作用                                                                                          |
+| ---------------------------------- | --------------------------------------------------------------------------------------------- |
+| `/help`                            | 命令说明                                                                                      |
+| `/status`                          | 各聊天的会话、队列与重试状态                                                                  |
+| `/reset`                           | 列出放行名单里的聊天及各自的重置命令                                                          |
+| `/reset group:123`                 | 打断执行中的回合并删除该聊天的会话，下一条消息重新开始；名单外目标拒绝                        |
+| `/tools [group:123]`               | 查看各聊天使用的配置档与可用工具                                                              |
+| `/emoji-label [all\|inc\|list]`    | 给收藏表情生成中文标签（TUI 侧是 `/qq-emoji-label`）                                          |
+| `/diary [write\|list\|show\|auto]` | 日记：写一篇、列出最近几篇、看某天的日记、生成当天总结；仅 owner 私聊（TUI 侧是 `/qq-diary`） |
 
 ### 通知事件订阅
 
@@ -425,7 +426,7 @@ QQ 私聊（owner / 管理员）用 `/emoji-label`，TUI 用加前缀的 `/qq-em
 
 把聊天的流水记成一篇篇 Markdown 日记，主人可以直接读到、发给模型读，也能在每天结束时自动总结一篇。
 
-QQ 私聊（owner / 管理员）用 `/diary`，TUI 用加前缀的 `/qq-diary`：
+QQ 里只在 **owner 自己的私聊**里用 `/diary`（admin 与群里都会被拒绝），TUI 里用加前缀的 `/qq-diary`：
 
 ```
 /diary write 今天群里在聊新版本发布      写一篇日记
@@ -437,18 +438,23 @@ QQ 私聊（owner / 管理员）用 `/diary`，TUI 用加前缀的 `/qq-diary`�
 ```
 
 - 日记是文件，不是数据库里的条目：默认放在机器人工作目录的 `diary/` 下，
-  每个聊天一个子目录，文件名是日期（`group-123/2026-11-10.md`）。
+  文件名是日期（`private-200/2026-11-10.md`）。
+- 日记范围固定为 **owner 自己的私聊**：群聊与 admin 的私聊都不采集、不生成、不推送。
 - 成品不设条数上限，也不会自动清理；只有中间产物（原始素材）按 `diary.retentionDays` 过期清理。
 - `show` 会把日记文件本身作为附件发出来（文件名 `日记-2026-11-10.md`），自动总结也用同样的方式推送。
 - 日记功能默认开启，关掉用 `diary.enabled=false` 或 `QQ_DIARY_ENABLED=false`。
 
 模型侧有三个工具：`qq_diary_write` 写、`qq_diary_read` 读、`qq_diary_list` 列，
-外加 `qq_send_file` 发文件。**这些工具只有 owner 与管理员能用**，普通成员的默认配置档
-把它们列入 `deny`；想放开就在 `tool-profiles.json` 里删掉那一行。
+外加 `qq_send_file` 发文件。**三个日记工具只有 owner 能用**（admin 也不行），普通成员的默认配置档
+把它们列入 `deny`；即便在 `tool-profiles.json` 里放开，代码里的 owner 角色与 owner 私聊范围判断仍然生效。
+`qq_send_file` 对 owner / admin 放开。
+
+`qq_send_file` / `qq_send_image` / `qq_send_record` 的本地路径按角色收窄：owner / admin 可取工作目录、
+媒体目录和 `media.allowedDirs`，member 与 proactive 只能取媒体目录。
 
 自动总结在每天 `diary.summaryTime`（默认 23:30）后由调度器触发，用一个不绑定 QQ 目标的
-专用会话跑，素材先净化再进提示词。推送给谁由 `diary.push` 决定：`owner`（默认）只发给主人，
-`group` 发给该聊天，`none` 不推送。需要这个功能时记得关掉 OpenCode 的 location 空闲超时
+专用会话跑，素材先净化再进提示词，推送前还会扫描日记正文。推送对象固定是 owner 私聊：
+`diary.push` 的 `owner`（默认）与 `group` 等价，`none` 不推送。需要这个功能时记得关掉 OpenCode 的 location 空闲超时
 （见上面「保活」）。
 
 详细说明见 [docs/diary.md](docs/diary.md)。
@@ -569,13 +575,17 @@ src/
   diary/command.ts   /qq-diary 命令（QQ 私聊里是 /diary）
   diary/collector.ts 日记素材的累积、按天读取与过期清理
   diary/format.ts    日记日期键、目录名与 front matter 读写
+  diary/paths.ts     日记路径的 realpath 解析与目录边界判定
   diary/scheduler.ts 日记的定时总结与推送
+  diary/scope.ts     日记范围（owner 私聊）判定
   diary/store.ts     日记成品的文件读写与列表
   diary/summary.ts   用模型把当天素材总结成一篇日记
   naplink/client.ts  NapLink 连接与 API 门面
   naplink/history.ts 冷启动 / 重启恢复时补齐历史消息
   naplink/render.ts  消息段 → 文本与图片附件
   outbound.ts        出站文本：markdown → 纯文本、字素簇安全切分
+  runtime/claim.ts   持有者退出后的接管重试定时器
+  runtime/start.ts   运行时启动状态机（全部成功才算启动完成）
   sensitive.ts       出站敏感信息检查：凭证、令牌、凭证路径
   session/prompt.ts  固定守则与系统提示
   session/soul.ts    角色设定定位、读取与热更新

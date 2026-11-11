@@ -51,6 +51,11 @@ describe("neutralizeStructureTags", () => {
     expect(neutralizeStructureTags("<" + "quote>")).toBe("＜quote＞")
     expect(neutralizeStructureTags("<hist" + "ory>")).toBe("＜hist" + "ory＞")
   })
+
+  it("聊天素材里的 chat 标签也拦得住，逃不出素材段", () => {
+    expect(neutralizeStructureTags("<chat>")).toBe("＜chat＞")
+    expect(neutralizeStructureTags("</chat>")).toBe("＜/chat＞")
+  })
 })
 
 describe("StructureTagGuard", () => {
@@ -87,6 +92,11 @@ describe("sanitizeSenderName", () => {
 
   it("去掉私用区字符，伪造不出结构标签的占位符", () => {
     expect(sanitizeSenderName(`名${PRIVATE_USE}字`)).toBe("名字")
+  })
+
+  it("去掉圆括号，伪造不出角色标记", () => {
+    expect(sanitizeSenderName("小(admin)")).toBe("小admin")
+    expect(sanitizeSenderName("小（owner）")).toBe("小owner")
   })
 })
 

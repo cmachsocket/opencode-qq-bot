@@ -9,7 +9,8 @@ import type { SensitiveChecker } from "../sensitive"
 import { createPlainSender, sendFileMessage } from "../tools/qq"
 import type { DiaryCollector } from "./collector"
 import { dateKey, isDateKey } from "./format"
-import type { DiaryStore } from "./store"
+import { diaryScopeChat, isDiaryScopeChat } from "./scope"
+import { readDiaryHead, type DiaryStore } from "./store"
 import type { DiarySummarizer } from "./summary"
 
 /** 命令名。TUI 侧注册为 `qq-diary`，QQ 私聊里用 `/diary`。 */
@@ -129,6 +130,20 @@ export function createDiaryRunner(deps: DiaryRunnerDeps): DiaryCommandRunner {
   /** 发一篇日记：一行说明加文件本身。 */
   const sendDiaryFile = async (target: ChatTarget, date: string): Promise<void> => {
     const file = store.filePath(targetKey(target), date)
+    // `sendFileMessage` 只查文件名和路径，日记正文得自己过一遍出站检查。
+    let body: string
+    try {
+      body = await readDiaryHead(file)
+    } catch (error) {
+      logger.error(`${targetLabel(target)} 的日记文件读取失败，放弃发送`, error)
+      await report(target, "日记文件读取失败，没有发送。")
+      return
+    }
+    if (!sensitive.check(body).allowed) {
+      logger.warn(`${targetLabel(target)} 的日记正文包含敏感信息，已拦截`)
+      await report(target, "日记正文包含敏感信息，已拦截。")
+      return
+    }
     await sendFileMessage(client, target, file, {
       name: `日记-${date}.md`,
       limiter,
@@ -271,7 +286,14 @@ export function diaryCommand(runner: DiaryCommandRunner): CommandDefinition {
     description: "写、看、列出聊天日记：write 手写，show 看某天，list 列最近几篇，auto 自动总结。",
     usage: DIARY_USAGE_LINES,
     run: async (context, args) => {
-      await runner.run(context.target, args.join(" "))
+      // 日记只属于 owner：QQ 侧只认 owner 自己的私聊。
+      const scope = diaryScopeChat(context.config)
+      if (!scope) return "没有配置 ownerQQ，无法使用日记。"
+      if (context.source !== "tui" && !isDiaryScopeChat(context.config, context.target)) {
+        return "日记只在 owner 自己的私聊里可用。"
+      }
+      // TUI 侧同样按 owner 私聊操作：不能在绑到群聊的会话里把日记发进群里。
+      await runner.run(scope, args.join(" "))
     },
   }
 }

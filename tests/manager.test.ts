@@ -1508,6 +1508,21 @@ describe("B1 冷启动补历史", () => {
     expect(harness.manager.describeTurn("session-1").replyAllowed).toBe(false)
   })
 
+  it("新一轮开始就收回上一轮的发送许可", async () => {
+    const harness = createHarness()
+    await harness.manager.enqueue(group(100), { text: "你好", files: [], atMe: false })
+    await harness.manager.handleIdle("session-1")
+    const granted = harness.manager.requestReply("session-1", "对方在提问")
+    expect(granted.granted).toBe(true)
+    expect(harness.manager.canReply("session-1")).toBe(true)
+
+    // 轮次边界：下一轮无条件收回上一轮的许可，模型要重新说明理由。
+    await harness.manager.enqueue(group(100), { text: "在吗", files: [], atMe: false })
+    await harness.manager.flushBuffered("session-1")
+    expect(harness.manager.canReply("session-1")).toBe(false)
+    expect(harness.manager.describeTurn("session-1").replyReason).toBeUndefined()
+  })
+
   it("重置聊天时打断执行中的回合并解绑会话", async () => {
     const harness = createHarness()
     await harness.manager.enqueue(group(100), { text: "你好", files: [], atMe: false })

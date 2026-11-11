@@ -68,6 +68,8 @@ export interface CommandContext {
   overrides: ChatOverrides
   /** 命令所属的聊天：QQ 命令是发送者私聊，TUI 命令是会话绑定的聊天。 */
   target: ChatTarget
+  /** 命令来源：QQ 消息还是 TUI。日记这类只给 owner 的命令据此收口。 */
+  source?: "qq" | "tui"
   /** 当前注册的全部工具名。 */
   toolNames: () => Promise<string[]>
 }

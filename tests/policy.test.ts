@@ -202,6 +202,18 @@ describe("ToolPolicy", () => {
     expect(await policy.profileOf("member", "group:100")).toBe("readonly")
   })
 
+  it("keeps owner-only diary tools away from admins", async () => {
+    const policy = new ToolPolicy(join(tmpdir(), "qq-policy-missing", "none.json"), logger)
+    const names = ["qq_diary_write", "qq_diary_read", "qq_diary_list", "qq_send_message"]
+    // admin 档位本身允许日记工具，但角色不是 owner，运行时必须再收一次。
+    expect([...(await policy.allow("admin", "private:200", names))].sort()).toEqual([
+      "qq_send_message",
+    ])
+    expect([...(await policy.allow("owner", "private:200", names))].sort()).toEqual(
+      [...names].sort(),
+    )
+  })
+
   it("misses a file by using the built-in policy", async () => {
     const policy = new ToolPolicy(join(tmpdir(), "qq-policy-missing", "none.json"), logger)
     expect(await policy.current()).toEqual(defaultToolPolicy())

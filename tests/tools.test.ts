@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest"
-import { mkdtemp, writeFile } from "node:fs/promises"
+import { mkdir, mkdtemp, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import type { Plugin } from "@opencode/plugin"
@@ -38,6 +38,7 @@ interface Harness {
     activeTurn: ReturnType<typeof vi.fn>
     canReply: ReturnType<typeof vi.fn>
     requestReply: ReturnType<typeof vi.fn>
+    currentRole: ReturnType<typeof vi.fn>
   }
   logger: Record<keyof Logger, ReturnType<typeof vi.fn>>
   /** 日记存储，供日记工具读写。 */
@@ -68,6 +69,8 @@ async function createHarness(
   canSend: () => boolean = () => true,
   /** NapCat 是否连得上；不传表示连得上。 */
   connected: () => boolean = () => true,
+  /** 从「实际注册的工具表」里藏掉几个，模拟清单漂移。 */
+  hiddenTools: string[] = [],
 ): Promise<Harness> {
   const tools = new Map<string, ToolDefinition>()
   const api = {
@@ -96,6 +99,8 @@ async function createHarness(
       replyAllowed = true
       return { granted: true, reason }
     }),
+    // 默认按 owner 档位：老用例读写工作目录，不受成员档位的媒体目录限制影响。
+    currentRole: vi.fn(() => "admin"),
   }
   const logger = {
     debug: vi.fn(),
@@ -111,9 +116,14 @@ async function createHarness(
           add: (tool: ToolDefinition) => {
             tools.set(`${tool.options?.namespace ?? ""}_${tool.name}`, tool)
           },
+          list: () => [...tools.keys()].map((id) => ({ id })),
         })
         return { dispose: async () => {} }
       }),
+      // 实际注册的工具表：清单核对用它，藏掉几个就能模拟漂移。
+      list: vi.fn(async () =>
+        [...tools.keys()].filter((id) => !hiddenTools.includes(id)).map((id) => ({ id })),
+      ),
     },
   } as unknown as Plugin.Context
 
@@ -154,6 +164,11 @@ async function createHarness(
     await writeFile(join(workspace, name), "media")
   }
   const outbound = new OutboundMedia({ workspace, allowedDirs: [workspace] })
+  // 成员档位只能碰媒体目录；测试里给它一个独立目录，方便验证路径收窄。
+  const memberDir = join(workspace, "member-media")
+  await mkdir(memberDir, { recursive: true })
+  await writeFile(join(memberDir, "shared.png"), "media")
+  const outboundMember = new OutboundMedia({ workspace: memberDir, allowedDirs: [memberDir] })
   const diary = new DiaryStore({
     root: join(workspace, "diary"),
     logger: logger as unknown as Logger,
@@ -174,6 +189,7 @@ async function createHarness(
     limiter: new SendRateLimiter(config.rateLimit),
     sensitive: new SensitiveChecker({ enabled: config.sensitive.enabled }),
     outbound,
+    outboundMember,
     tracer,
     canSend,
     diary,
@@ -215,6 +231,16 @@ describe("registerTools", () => {
   it("registers the tools under the names the model calls", async () => {
     const { tools } = await createHarness()
     expect([...tools.keys()].sort()).toEqual([...QQ_TOOL_NAMES].sort())
+  })
+
+  it("warns when the tool list drifts from the registered tools", async () => {
+    const { logger } = await createHarness(group(100), {}, undefined, undefined, undefined, [
+      "qq_send_poke",
+    ])
+    expect(logger.warn).toHaveBeenCalledWith(
+      "QQ 工具清单与实际注册不一致",
+      expect.objectContaining({ missing: ["qq_send_poke"] }),
+    )
   })
 
   it("keeps the message formatting in one send", async () => {
@@ -269,7 +295,7 @@ describe("registerTools", () => {
     const asked = await tools
       .get(`${TOOL_NAMESPACE}_request_reply`)
       ?.execute({ reason: "对方在提问，需要回答" }, context)
-    expect(asked?.content).toContain("已获得本轮的回复权限")
+    expect(asked?.content).toContain("已按约定说明本轮回复理由")
     expect(manager.requestReply).toHaveBeenCalledWith("session-1", "对方在提问，需要回答")
 
     const sent = await tools
@@ -383,17 +409,21 @@ describe("registerTools", () => {
     expect(api["sendGroupForwardMessage"]).not.toHaveBeenCalled()
   })
 
-  it("blocks forward nicknames that contain credentials", async () => {
+  it("ignores sender identity supplied by the model", async () => {
     const { tools, api } = await createHarness()
-    await expect(
-      tools.get(`${TOOL_NAMESPACE}_send_forward`)?.execute(
-        {
-          nodes: [{ nickname: "password = hunter2000", content: "你好" }],
-        },
-        context,
-      ),
-    ).rejects.toThrow("出站消息包含疑似敏感信息")
-    expect(api["sendGroupForwardMessage"]).not.toHaveBeenCalled()
+    await tools.get(`${TOOL_NAMESPACE}_send_forward`)?.execute(
+      {
+        nodes: [{ user_id: "999", nickname: "冒充者", content: "你好" }],
+      },
+      context,
+    )
+    expect(api["sendGroupForwardMessage"]).toHaveBeenCalledWith(100, [
+      {
+        user_id: 123,
+        nickname: "机器人",
+        content: [{ type: "text", data: { text: "你好" } }],
+      },
+    ])
   })
 
   it("does not block when the sensitive check is disabled", async () => {
@@ -501,6 +531,34 @@ describe("registerTools", () => {
     expect(api["sendGroupMessage"]).not.toHaveBeenCalled()
   })
 
+  it("lets members send media only from the media directory", async () => {
+    const { tools, api, manager, workspace } = await createHarness()
+    manager.currentRole.mockReturnValue("member")
+    await expect(
+      tools
+        .get(`${TOOL_NAMESPACE}_send_image`)
+        ?.execute({ file: join(workspace, "a.png") }, context),
+    ).rejects.toThrow("不在允许的目录内")
+    expect(api["sendGroupMessage"]).not.toHaveBeenCalled()
+
+    const media = join(workspace, "member-media", "shared.png")
+    const result = await tools
+      .get(`${TOOL_NAMESPACE}_send_image`)
+      ?.execute({ file: media }, context)
+    expect(result?.content).toContain("你已成功发送图片")
+    expect(api["sendGroupMessage"]).toHaveBeenCalledWith(100, [
+      { type: "image", data: { file: media } },
+    ])
+  })
+
+  it("keeps the wider workspace access for the owner", async () => {
+    const { tools, api, manager, workspace } = await createHarness()
+    manager.currentRole.mockReturnValue("owner")
+    const file = join(workspace, "a.png")
+    await tools.get(`${TOOL_NAMESPACE}_send_image`)?.execute({ file }, context)
+    expect(api["sendGroupMessage"]).toHaveBeenCalledWith(100, [{ type: "image", data: { file } }])
+  })
+
   it("rejects an image without a file", async () => {
     const { tools } = await createHarness()
     const result = await tools.get(`${TOOL_NAMESPACE}_send_image`)?.execute({}, context)
@@ -564,11 +622,11 @@ describe("registerTools", () => {
     const { tools, api } = await createHarness()
     await tools
       .get(`${TOOL_NAMESPACE}_send_forward`)
-      ?.execute({ nodes: [{ user_id: "1", nickname: "甲", content: "**转发**" }] }, context)
+      ?.execute({ nodes: [{ content: "**转发**" }] }, context)
     expect(api["sendGroupForwardMessage"]).toHaveBeenCalledWith(100, [
       {
-        user_id: 1,
-        nickname: "甲",
+        user_id: 123,
+        nickname: "机器人",
         content: [{ type: "text", data: { text: "转发" } }],
       },
     ])
@@ -596,6 +654,15 @@ describe("registerTools", () => {
     expect(result?.content).toContain("123")
   })
 
+  it("refuses login and favorite queries without a bound chat", async () => {
+    const { tools, api } = await createHarness(null)
+    const login = await tools.get(`${TOOL_NAMESPACE}_get_login_info`)?.execute({}, context)
+    expect(login?.content).toContain("没有绑定 QQ")
+    const favorites = await tools.get(`${TOOL_NAMESPACE}_favorite_list`)?.execute({}, context)
+    expect(favorites?.content).toContain("没有绑定 QQ")
+    expect(api["getLoginInfo"]).not.toHaveBeenCalled()
+  })
+
   it("marks media replies as sent", async () => {
     const { tools, manager, workspace } = await createHarness()
     await tools
@@ -615,6 +682,17 @@ describe("registerTools", () => {
       .get(`${TOOL_NAMESPACE}_delete_message`)
       ?.execute({ message_id: "5" }, context)
     expect(result?.content).toContain("error")
+    expect(api["deleteMessage"]).not.toHaveBeenCalled()
+  })
+
+  it("requires the reply permission before deleting in a group", async () => {
+    const { tools, api } = await createHarness(group(100), {
+      reply: { ...DEFAULT_CONFIG.reply, requirePermission: true },
+    })
+    const result = await tools
+      .get(`${TOOL_NAMESPACE}_delete_message`)
+      ?.execute({ message_id: "5" }, context)
+    expect(result?.content).toContain("qq_request_reply")
     expect(api["deleteMessage"]).not.toHaveBeenCalled()
   })
 
@@ -648,13 +726,19 @@ describe("registerTools", () => {
     expect(api["fetchPttText"]).not.toHaveBeenCalled()
   })
 
-  it("rejects an invalid forward user id", async () => {
+  it("always fills in the bot identity on forward nodes", async () => {
     const { tools, api } = await createHarness()
     const result = await tools
       .get(`${TOOL_NAMESPACE}_send_forward`)
-      ?.execute({ nodes: [{ user_id: "abc", content: "内容" }] }, context)
-    expect(result?.content).toContain("error")
-    expect(api["sendGroupForwardMessage"]).not.toHaveBeenCalled()
+      ?.execute({ nodes: [{ user_id: "999", nickname: "冒充者" }] }, context)
+    expect(result?.content).not.toContain("error")
+    expect(api["sendGroupForwardMessage"]).toHaveBeenCalledWith(100, [
+      {
+        user_id: 123,
+        nickname: "机器人",
+        content: [{ type: "text", data: { text: "" } }],
+      },
+    ])
   })
 
   it("accepts reply=false without content", async () => {
@@ -780,14 +864,14 @@ describe("registerTools", () => {
       const { tools, api } = await createHarness(privateChat(200))
       const result = await tools
         .get(`${TOOL_NAMESPACE}_send_forward`)
-        ?.execute({ nodes: [{ user_id: "1", content: "内容" }] }, context)
+        ?.execute({ nodes: [{ content: "内容" }] }, context)
       expect(result?.content).toBe("你已成功发送合并转发消息，可以选择结束对话")
       expect(api["sendPrivateForwardMessage"]).toHaveBeenCalledWith({
         user_id: 200,
         messages: [
           {
-            user_id: 1,
-            nickname: "未知用户",
+            user_id: 123,
+            nickname: "机器人",
             content: [{ type: "text", data: { text: "内容" } }],
           },
         ],
@@ -989,44 +1073,51 @@ describe("registerTools", () => {
   })
 
   describe("日记工具", () => {
-    it("写入的日记落在当前会话绑定的聊天下", async () => {
-      const { tools, diary } = await createHarness(group(100))
+    // 日记只服务 owner 自己的私聊：所有用例都从这条会话进。
+    const diaryHarness = async () => {
+      const harness = await createHarness(privateChat(200), { ownerQQ: 200 })
+      harness.manager.currentRole.mockReturnValue("owner")
+      return harness
+    }
+
+    it("写入的日记落在 owner 的私聊下", async () => {
+      const { tools, diary } = await diaryHarness()
       const result = await tools
         .get(`${TOOL_NAMESPACE}_diary_write`)
         ?.execute({ content: "今天聊了发布", title: "发布" }, context)
       expect(result?.content).not.toContain("error")
-      const entry = await diary.read("group:100", dateKey())
+      const entry = await diary.read("private:200", dateKey())
       expect(entry?.title).toBe("发布")
       expect(entry?.body).toBe("今天聊了发布")
       expect(entry?.source).toBe("model")
     })
 
     it("不指定日期时写到今天", async () => {
-      const { tools, diary } = await createHarness(group(100))
+      const { tools, diary } = await diaryHarness()
       await tools
         .get(`${TOOL_NAMESPACE}_diary_write`)
         ?.execute({ content: "正文", date: "2026-11-09" }, context)
-      expect(await diary.read("group:100", "2026-11-09")).toBeTruthy()
-      expect(await diary.read("group:100", dateKey())).toBeUndefined()
+      expect(await diary.read("private:200", "2026-11-09")).toBeTruthy()
+      expect(await diary.read("private:200", dateKey())).toBeUndefined()
     })
 
     it("日期格式不对时拒绝写入", async () => {
-      const { tools, diary } = await createHarness(group(100))
+      const { tools, diary } = await diaryHarness()
       const result = await tools
         .get(`${TOOL_NAMESPACE}_diary_write`)
         ?.execute({ content: "正文", date: "2026-13-40" }, context)
       expect(result?.content).toContain("error")
-      expect(await diary.list("group:100", 7)).toEqual([])
+      expect(await diary.list("private:200", 7)).toEqual([])
     })
 
     it("读取最近一篇日记的正文", async () => {
-      const { tools, diary } = await createHarness(group(100))
-      await diary.write("group:100", "2026-11-09", {
+      const { tools, diary } = await diaryHarness()
+      await diary.write("private:200", "2026-11-09", {
         title: "旧",
         body: "旧正文",
         source: "manual",
       })
-      await diary.write("group:100", "2026-11-10", {
+      await diary.write("private:200", "2026-11-10", {
         title: "新",
         body: "新正文",
         source: "manual",
@@ -1037,8 +1128,8 @@ describe("registerTools", () => {
     })
 
     it("按日期读取，缺失时给出可用日期", async () => {
-      const { tools, diary } = await createHarness(group(100))
-      await diary.write("group:100", "2026-11-10", {
+      const { tools, diary } = await diaryHarness()
+      await diary.write("private:200", "2026-11-10", {
         title: "标题",
         body: "正文",
         source: "manual",
@@ -1055,8 +1146,8 @@ describe("registerTools", () => {
     })
 
     it("列日记只给日期和标题", async () => {
-      const { tools, diary } = await createHarness(group(100))
-      await diary.write("group:100", "2026-11-10", {
+      const { tools, diary } = await diaryHarness()
+      await diary.write("private:200", "2026-11-10", {
         title: "闲聊",
         body: "正文",
         source: "manual",
@@ -1066,16 +1157,47 @@ describe("registerTools", () => {
     })
 
     it("没有日记时提示为空", async () => {
-      const { tools } = await createHarness(group(100))
+      const { tools } = await diaryHarness()
       const result = await tools.get(`${TOOL_NAMESPACE}_diary_list`)?.execute({}, context)
       expect(result?.content).toContain("还没有日记")
     })
 
-    it("只读写自己所在的聊天，不串到别的群", async () => {
-      const { tools, diary } = await createHarness(group(100))
-      await tools.get(`${TOOL_NAMESPACE}_diary_write`)?.execute({ content: "群里的" }, context)
-      expect(await diary.read("group:100", dateKey())).toBeTruthy()
-      expect(await diary.read("group:200", dateKey())).toBeUndefined()
+    it("只读写 owner 私聊，不串到别的会话", async () => {
+      const { tools, diary } = await diaryHarness()
+      await tools.get(`${TOOL_NAMESPACE}_diary_write`)?.execute({ content: "私聊里的" }, context)
+      expect(await diary.read("private:200", dateKey())).toBeTruthy()
+      expect(await diary.read("private:201", dateKey())).toBeUndefined()
+      expect(await diary.read("group:100", dateKey())).toBeUndefined()
+    })
+
+    it("非 owner 角色拿不到日记工具", async () => {
+      const harness = await createHarness(privateChat(200), { ownerQQ: 200 })
+      harness.manager.currentRole.mockReturnValue("admin")
+      const result = await harness.tools
+        .get(`${TOOL_NAMESPACE}_diary_write`)
+        ?.execute({ content: "不该写进去" }, context)
+      expect(result?.content).toContain("error")
+      expect(await harness.diary.read("private:200", dateKey())).toBeUndefined()
+    })
+
+    it("owner 在群里也用不了日记", async () => {
+      const harness = await createHarness(group(100), { ownerQQ: 200 })
+      harness.manager.currentRole.mockReturnValue("owner")
+      const result = await harness.tools
+        .get(`${TOOL_NAMESPACE}_diary_write`)
+        ?.execute({ content: "群里的" }, context)
+      expect(result?.content).toContain("error")
+      expect(await harness.diary.read("group:100", dateKey())).toBeUndefined()
+    })
+
+    it("没配 ownerQQ 时日记工具不可用", async () => {
+      const harness = await createHarness(privateChat(200))
+      harness.manager.currentRole.mockReturnValue("owner")
+      const result = await harness.tools
+        .get(`${TOOL_NAMESPACE}_diary_write`)
+        ?.execute({ content: "正文" }, context)
+      expect(result?.content).toContain("error")
+      expect(await harness.diary.read("private:200", dateKey())).toBeUndefined()
     })
   })
 

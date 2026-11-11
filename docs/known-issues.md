@@ -83,3 +83,34 @@ if (!force && state.sessionID && this.verifiedSessions.has(state.sessionID)) {
 - `src/session/manager.ts`：`restoreInflight()`、`deliver()`、`sessionRunning()`、
   `upstreamRunning()`。
 - `src/index.ts`：上游事件订阅、`scheduleMessage`、`handleMessage`。
+
+## 日记总结会话长期复用，上下文只增不减
+
+### 现象
+
+- 每天的自动总结都复用同一个上游会话，提示词叠在旧上下文上。
+- 运行足够久之后，总结请求会因超出模型上下文而持续失败。
+
+### 现状
+
+- 会话 ID 存在 `ctx.storage` 的 `diary-summary-session`，重启后继续复用（`src/diary/summary.ts`）。
+- 目前只有单次总结的 120 秒超时，没有轮次上限，也没有按天重建。
+- 2026-11-11 的审计把它列为低危，未要求本轮修复。
+
+### 候选方案
+
+- 按天重建总结会话，或在每轮结束后清空该会话的历史。
+- 给素材总量加一个字节上限，避免单次提示词本身过大。
+
+## 日记总结超时只放弃等待，不取消上游请求
+
+### 现象
+
+- `summarize()` 超时后当作失败，但请求还在上游跑。
+- 迟到的 `session.text.ended` 可能被下一轮尝试消费，最坏情况一个聊天占住调度器约 250 秒。
+
+### 现状
+
+- 超时逻辑在 `src/diary/summary.ts`，只 resolve `undefined`，没有调用 `ctx.session.interrupt()`。
+- 调度器仍用一把全局互斥串行处理，实例交接时旧实例的在途写入可能与新实例竞争。
+- 2026-11-11 的审计把它列为低危，未要求本轮修复。

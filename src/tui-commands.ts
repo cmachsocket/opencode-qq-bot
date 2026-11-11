@@ -59,7 +59,7 @@ export async function registerTuiCommands(
           }
           const args = splitArgs(input.prompt.text ?? "", name)
           const body = await command.run(
-            { config, manager, policy, overrides, target, toolNames, commands },
+            { config, manager, policy, overrides, target, source: "tui", toolNames, commands },
             args,
           )
           if (body !== undefined) await send(target, body)

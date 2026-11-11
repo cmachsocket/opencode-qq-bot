@@ -12,7 +12,7 @@
 import { ZERO_WIDTH } from "./text"
 
 /** 提示词里的结构标签；群友文本里出现同样字样时换成全角，避免伪造。 */
-const STRUCTURE_TAG = /<\/?(quote|forward|history)>/gi
+const STRUCTURE_TAG = /<\/?(quote|forward|history|chat)>/gi
 
 /** 换行类字符：换行、段分隔符、下一行、垂直制表、换页。 */
 const NEWLINE_LIKE = /[\r\n\u2028\u2029\u0085\u000B\u000C]+/g
@@ -87,6 +87,8 @@ export function sanitizeSenderName(value: string): string {
       .replace(PRIVATE_USE, "")
       .replace(/[【】]/g, (char) => (char === "【" ? "[" : "]"))
       .replace(/[<>]/g, (char) => (char === "<" ? "＜" : "＞"))
+      // 括号是角色标记的写法：群名片里带着括号就能伪造出 `(owner)`。
+      .replace(/[()（）]/g, "")
       .replace(/\s+/g, " ")
       .trim()
   )

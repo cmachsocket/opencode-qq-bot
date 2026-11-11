@@ -49,6 +49,14 @@ export interface ToolPolicyFile {
  */
 const DIARY_DENY = ["qq_diary_*", "qq_send_file"]
 
+/**
+ * 只有 owner 能用的工具。
+ *
+ * owner 与 admin 共用 `admin` 档，所以「admin 不能用日记」只能在这里按角色判定，
+ * 不能写进 `admin` 档的 deny：那会把 owner 一起禁掉。
+ */
+const OWNER_ONLY = ["qq_diary_*"]
+
 /** 内置默认值：普通聊天只留联网搜索、网页抓取和发消息工具，管理档全开。 */
 export function defaultToolPolicy(): ToolPolicyFile {
   return {
@@ -225,7 +233,14 @@ export class ToolPolicy {
     const file = await this.current()
     const profile = file.profiles[profileNameFor(file, role, chatKey)]
     if (!profile) return new Set(names)
-    return new Set(allowedTools(profile, names))
+    const allowed = new Set(allowedTools(profile, names))
+    // 配置档只按工具名分配，日记这类只给 owner 的工具要在这里再按角色收一次。
+    if (role !== "owner") {
+      for (const name of allowed) {
+        if (OWNER_ONLY.some((pattern) => globMatch(pattern, name))) allowed.delete(name)
+      }
+    }
+    return allowed
   }
 
   /** 某个角色在某个聊天里生效的配置档名字，用于管理命令展示。 */

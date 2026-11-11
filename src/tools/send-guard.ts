@@ -6,8 +6,8 @@ import type { SessionManager, Turn } from "../session/manager"
 export const DUPLICATE_SEND_REFUSAL =
   "禁止连续调用发送工具：上一步已经发送过消息，再发可能重复。请先调用其它工具（例如查看消息或整理内容），或直接结束本轮。"
 
-/** 匹配 qq_send_message 等发送工具；钩子里可能带或不带命名空间。 */
-const SEND_TOOL = /^(?:qq_)?send[_-]/
+/** 匹配 qq_send_message 与 qq_delete_message 等出站动作；钩子里可能带或不带命名空间。 */
+const SEND_TOOL = /^(?:qq_)?(?:send[_-]|delete_message$)/
 
 interface LastCall {
   /** 所属轮次；轮次变化时重新计数，避免上一轮的最后一次发送影响下一轮。 */

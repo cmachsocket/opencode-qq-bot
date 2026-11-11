@@ -1,6 +1,6 @@
 import { Mutex } from "async-mutex"
-import { allowedTargets, isTargetAllowed } from "../access"
-import { type ChatTarget, parseTargetKey, targetKey, targetLabel } from "../chat"
+import { isTargetAllowed } from "../access"
+import { type ChatTarget, targetKey, targetLabel } from "../chat"
 import type { QQBotConfig } from "../config"
 import type { Logger } from "../logger"
 import type { OutboundMedia } from "../media-path"
@@ -10,7 +10,8 @@ import type { SensitiveChecker } from "../sensitive"
 import { sendFileMessage, sendPlainMessage } from "../tools/qq"
 import type { DiaryCollector } from "./collector"
 import { dateKey } from "./format"
-import type { DiaryStore } from "./store"
+import { diaryScopeChat } from "./scope"
+import { readDiaryHead, type DiaryStore } from "./store"
 import type { DiarySummarizer } from "./summary"
 
 /** 日记调度器的依赖。 */
@@ -102,18 +103,15 @@ export class DiaryScheduler {
     })
   }
 
-  /** 本轮要处理的目标聊天。 */
+  /** 本轮要处理的目标聊天：日记只服务 owner 自己的私聊。 */
   private targets(): ChatTarget[] {
-    const access = this.deps.config.access
-    const owner = this.deps.config.ownerQQ
-    const configured = this.deps.config.diary.summaryTargets
-      .map((value) => parseTargetKey(value))
-      .filter((value): value is ChatTarget => Boolean(value))
-    if (configured.length > 0) {
-      // 明确配了目标就只认这些，但仍然要过准入判定。
-      return configured.filter((chat) => isTargetAllowed(access, chat, owner))
+    const scope = diaryScopeChat(this.deps.config)
+    if (!scope) {
+      this.deps.logger.warn("没有配置 ownerQQ，日记不做总结也不推送")
+      return []
     }
-    return allowedTargets(access, owner)
+    if (!isTargetAllowed(this.deps.config.access, scope, this.deps.config.ownerQQ)) return []
+    return [scope]
   }
 
   /** 为一个聊天生成当天的日记。 */
@@ -156,6 +154,19 @@ export class DiaryScheduler {
     const verdict = this.deps.sensitive.check(text)
     if (!verdict.allowed) {
       this.deps.logger.warn(`${targetLabel(target)} 的日记推送包含敏感信息，已拦截`)
+      return
+    }
+    // 日记正文是模型写的，可能带进群友原文里的敏感信息；发文件前必须过一遍内容。
+    let body: string
+    try {
+      body = await readDiaryHead(file)
+    } catch (error) {
+      this.deps.logger.error(`${targetLabel(target)} 的日记文件读取失败，放弃推送`, error)
+      return
+    }
+    const bodyVerdict = this.deps.sensitive.check(body)
+    if (!bodyVerdict.allowed) {
+      this.deps.logger.warn(`${targetLabel(target)} 的日记正文包含敏感信息，已拦截`)
       return
     }
     await sendFileMessage(this.deps.client, target, file, {

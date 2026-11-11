@@ -201,6 +201,19 @@ describe("registerSendGuard", () => {
     await expect(harness.before("send_image", "c2")).rejects.toThrow(DUPLICATE_SEND_REFUSAL)
   })
 
+  it("撤回也计入发送，避免同一轮反复操作", async () => {
+    const harness = await createHarness()
+    await harness.before("qq_delete_message", "c1")
+    await expect(harness.before("qq_delete_message", "c2")).rejects.toThrow(DUPLICATE_SEND_REFUSAL)
+    expect(harness.logger.warn).toHaveBeenCalled()
+  })
+
+  it("撤回之后换发送工具同样算连续调用", async () => {
+    const harness = await createHarness()
+    await harness.before("delete_message", "c1")
+    await expect(harness.before("qq_send_message", "c2")).rejects.toThrow(DUPLICATE_SEND_REFUSAL)
+  })
+
   it("dispose 会释放两个钩子", async () => {
     const harness = await createHarness()
     await harness.registration.dispose()

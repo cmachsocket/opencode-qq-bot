@@ -1,5 +1,6 @@
 import type { Plugin } from "@opencode/plugin"
 import type { Location } from "@opencode/schema"
+import { Mutex } from "async-mutex"
 import { delay, unrefTimer } from "../async"
 import type { QQBotConfig } from "../config"
 import type { BotHome } from "../home"
@@ -34,8 +35,11 @@ export function buildDiaryPrompt(date: string, lines: readonly DiaryLine[]): str
   const body = lines
     .map((line) => {
       const stamp = formatClock(line.time)
-      const name = sanitizeUntrustedText(line.name).trim() || "某人"
-      const text = neutralizeStructureTags(sanitizeUntrustedText(line.text)).trim()
+      // 机器人自己的行固定署「机器人」，并去掉 @QQ 号：
+      // 提示词第 4 条要求不出现 QQ 号，自己的 @ 又没有信息量。
+      const name = line.self ? "机器人" : sanitizeUntrustedText(line.name).trim() || "某人"
+      const raw = neutralizeStructureTags(sanitizeUntrustedText(line.text)).trim()
+      const text = line.self ? raw.replace(/@\d+/g, "@某人").trim() : raw
       return `[${stamp}] ${name}：${text}`
     })
     .join("\n")
@@ -122,6 +126,10 @@ export class DiarySummarizer {
   private listener: Promise<void> | undefined
   private sessionID: string | undefined
   private creating: Promise<string> | undefined
+  /** 同一时间只跑一个总结：全局总结会话的缓冲区不能同时承载两份素材。 */
+  private readonly mutex = new Mutex()
+  /** 同一聊天同一天的总结只跑一次；两个入口同时来的时候共享同一个结果。 */
+  private readonly inflight = new Map<string, Promise<string | undefined>>()
 
   constructor(private readonly deps: DiarySummarizerDeps) {}
 
@@ -147,7 +155,8 @@ export class DiarySummarizer {
       const info = await this.deps.ctx.session.get({ sessionID })
       return info?.metadata?.[DIARY_SUMMARY_MARKER] === true
     } catch {
-      return false
+      // 查不出来时按总结会话处理：它的输入是群友可控文本，工具必须摘掉。
+      return true
     }
   }
 
@@ -199,6 +208,8 @@ export class DiarySummarizer {
 
   /** 累加模型输出的一段文本；一轮回复可能拆成多段。 */
   private push(sessionID: string, text: string): void {
+    // 全局事件里夹着所有会话的输出，只留总结会话自己的。
+    if (this.sessionID !== sessionID) return
     const buffer = `${this.buffers.get(sessionID) ?? ""}${text}`
     this.buffers.set(sessionID, buffer)
   }
@@ -209,6 +220,7 @@ export class DiarySummarizer {
     if (!waiters || waiters.length === 0) return
     this.waiters.delete(sessionID)
     const text = this.buffers.get(sessionID) ?? ""
+    this.buffers.delete(sessionID)
     for (const resolve of waiters) resolve(text)
   }
 
@@ -217,6 +229,7 @@ export class DiarySummarizer {
     const waiters = this.waiters.get(sessionID)
     if (!waiters || waiters.length === 0) return
     this.waiters.delete(sessionID)
+    this.buffers.delete(sessionID)
     for (const resolve of waiters) resolve(undefined)
   }
 
@@ -325,6 +338,20 @@ export class DiarySummarizer {
    * @returns 写进去的日记；没有素材或总结失败时返回 undefined。
    */
   async summarize(chat: string, date: string): Promise<string | undefined> {
+    const key = `${chat}#${date}`
+    const existing = this.inflight.get(key)
+    if (existing) return existing
+    const run = this.mutex.runExclusive(() => this.runSummary(chat, date))
+    this.inflight.set(key, run)
+    try {
+      return await run
+    } finally {
+      this.inflight.delete(key)
+    }
+  }
+
+  /** 真正跑总结；同一时间只允许一个总结占用全局总结会话。 */
+  private async runSummary(chat: string, date: string): Promise<string | undefined> {
     if (this.abort.signal.aborted) return undefined
     const lines = await this.deps.collector.read(chat, date)
     if (lines.length === 0) {

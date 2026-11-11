@@ -5,6 +5,7 @@ import { delay } from "../async"
 import { type ChatTarget, targetKey, targetLabel } from "../chat"
 import type { QQBotConfig } from "../config"
 import { dateKey, isDateKey } from "../diary/format"
+import { isDiaryScopeChat } from "../diary/scope"
 import type { DiaryStore } from "../diary/store"
 import {
   CUSTOM_FACE_SUB_TYPE,
@@ -76,6 +77,13 @@ export interface ToolDeps {
   sensitive: SensitiveChecker
   /** 出站媒体的路径与地址把关。 */
   outbound: OutboundMedia
+  /**
+   * 普通成员可用的出站媒体把关，只放开媒体目录。
+   *
+   * owner/admin 用 `outbound`（工作区 + 媒体目录 + 配置的额外目录），
+   * 其他人只能用这个收窄过的实例，避免读到工作区里的源码与配置。
+   */
+  outboundMember?: OutboundMedia
   /** 日记读写，供 qq_diary_* 使用；不传就不注册日记工具。 */
   diary?: DiaryStore
   /** 调用链追踪器；不传就不记追踪。 */
@@ -100,8 +108,6 @@ interface MediaInput {
 }
 
 interface ForwardNodeInput {
-  user_id?: number | string
-  nickname?: string
   content?: string
 }
 
@@ -298,9 +304,16 @@ export async function registerTools(deps: ToolDeps): Promise<{ dispose(): Promis
     limiter,
     sensitive,
     outbound,
+    outboundMember,
     diary,
     tracer,
   } = deps
+
+  /** 按当前会话角色选媒体目录范围：只有 owner/admin 能碰工作区。 */
+  const mediaFor = (sessionID: string): OutboundMedia =>
+    manager.currentRole(sessionID) === "owner" || manager.currentRole(sessionID) === "admin"
+      ? outbound
+      : (outboundMember ?? outbound)
 
   const requireTarget = (sessionID: string): ChatTarget | undefined => {
     const target = manager.targetForSession(sessionID)
@@ -344,8 +357,8 @@ export async function registerTools(deps: ToolDeps): Promise<{ dispose(): Promis
     if (!config.reply.requirePermission) return undefined
     if (target.kind === "private") return undefined
     if (manager.canReply(sessionID)) return undefined
-    logger.warn(`${targetLabel(target)} 本轮还没有回复权限，拒绝发送`, traceMeta(sessionID))
-    return `error: 本轮还没有回复权限。要回复用户，先调用 ${QQ_REQUEST_REPLY_TOOL} 说明为什么要回复；拿到权限后才能调用 qq_send_message。`
+    logger.warn(`${targetLabel(target)} 本轮还没有说明回复理由，拒绝发送`, traceMeta(sessionID))
+    return `error: 本轮还没有说明回复理由。要回复用户，先调用 ${QQ_REQUEST_REPLY_TOOL} 说明为什么要回复；说明之后才能调用 qq_send_message。`
   }
 
   // 同一次工具调用拆出的多段共用一个操作 id：段与段之间不再额外等间隔。
@@ -527,7 +540,7 @@ export async function registerTools(deps: ToolDeps): Promise<{ dispose(): Promis
     }
   }
 
-  return await ctx.tool.transform((editor) => {
+  const result = await ctx.tool.transform((editor) => {
     editor.namespace({
       name: TOOL_NAMESPACE,
       description:
@@ -542,7 +555,7 @@ export async function registerTools(deps: ToolDeps): Promise<{ dispose(): Promis
     editor.add({
       name: "request_reply",
       description:
-        "申请本轮的回复权限。群里默认没有发送权限：要回复用户，先调用这个工具并说明为什么要回复，拿到权限后才能调用 qq_send_message；权限只在本轮有效，轮次结束就收回。私聊默认就有权限，不用申请。",
+        "说明本轮为什么要回复。群里按约定不主动发言：要回复用户，先调用这个工具并说明为什么要回复，说明之后才能调用 qq_send_message；这个约定只在本轮有效，轮次结束就作废。私聊默认直接回复，不用说明。",
       input: {
         type: "object",
         properties: {
@@ -563,13 +576,13 @@ export async function registerTools(deps: ToolDeps): Promise<{ dispose(): Promis
         if (!target) return text("error: 当前会话没有绑定 QQ 群聊或私聊")
         const granted = manager.requestReply(context.sessionID, reason)
         if (!granted.granted) {
-          return text("error: 当前没有进行中的 QQ 消息轮次，拿不到回复权限")
+          return text("error: 当前没有进行中的 QQ 消息轮次，说不了回复理由")
         }
         if (target.kind === "private") {
-          return text("私聊默认就有回复权限，直接调用 qq_send_message 即可。")
+          return text("私聊默认就直接回复，不用说明理由。")
         }
         return text(
-          `已获得本轮的回复权限（理由：${reason}）。现在可以调用 qq_send_message 回复；权限只在本轮有效。`,
+          `已按约定说明本轮回复理由（理由：${reason}）。现在可以调用 qq_send_message 回复；这个约定只在本轮有效。`,
         )
       },
     })
@@ -671,7 +684,7 @@ export async function registerTools(deps: ToolDeps): Promise<{ dispose(): Promis
     editor.add({
       name: "send_image",
       description:
-        "向当前 QQ 群聊或私聊发送一张图片。file 可以是本地路径或 http(s) 图片地址；base64 传 base64:// 形式的数据。本地路径只能取自机器人工作目录、媒体目录和配置放开的目录；http(s) 地址只允许公网地址。",
+        "向当前 QQ 群聊或私聊发送一张图片。file 可以是本地路径或 http(s) 图片地址；base64 传 base64:// 形式的数据。本地路径：owner/admin 可取工作目录、媒体目录和配置放开的目录，普通成员只能取媒体目录；http(s) 地址只允许公网地址。",
       input: {
         type: "object",
         properties: {
@@ -694,10 +707,11 @@ export async function registerTools(deps: ToolDeps): Promise<{ dispose(): Promis
         if (tooLarge) return text(tooLarge)
         if (!isInlineData(file)) guardOutbound(target, file)
         // 路径白名单在这里就判定：不过就不占发送额度。内联数据不涉及路径与网络。
-        const plan = isInlineData(file) ? undefined : await outbound.check(file)
+        const mediaCheck = mediaFor(context.sessionID)
+        const plan = isInlineData(file) ? undefined : await mediaCheck.check(file)
         const verdict = await permit(target, nextOperation())
         if (!verdict.allowed) return refuse(context.sessionID, verdict)
-        const media = plan ? outbound.materialize(plan) : file
+        const media = plan ? mediaCheck.materialize(plan) : file
         const response = await send(target, [{ type: "image", data: { file: media } }])
         trackSent(target, response)
         manager.markMessageSent(context.sessionID)
@@ -714,7 +728,9 @@ export async function registerTools(deps: ToolDeps): Promise<{ dispose(): Promis
         additionalProperties: false,
       },
       options: { namespace: TOOL_NAMESPACE, codemode: false },
-      execute: async () => {
+      execute: async (_raw, context) => {
+        const prepared = prepareQuery(context.sessionID)
+        if (prepared.error) return prepared.error
         const faces = await favorites.list()
         const rows = await favoriteIndex.sync(faces)
         return text(formatFavoriteList(rows))
@@ -773,7 +789,7 @@ export async function registerTools(deps: ToolDeps): Promise<{ dispose(): Promis
     editor.add({
       name: "send_record",
       description:
-        "向当前 QQ 群聊或私聊发送一条语音。file 可以是本地路径或 http(s) 音频地址。本地路径只能取自机器人工作目录、媒体目录和配置放开的目录；http(s) 地址只允许公网地址。",
+        "向当前 QQ 群聊或私聊发送一条语音。file 可以是本地路径或 http(s) 音频地址。本地路径：owner/admin 可取工作目录、媒体目录和配置放开的目录，普通成员只能取媒体目录；http(s) 地址只允许公网地址。",
       input: {
         type: "object",
         properties: {
@@ -793,10 +809,11 @@ export async function registerTools(deps: ToolDeps): Promise<{ dispose(): Promis
         const tooLarge = checkInlineSize(input.file, "语音")
         if (tooLarge) return text(tooLarge)
         if (!isInlineData(input.file)) guardOutbound(target, input.file)
-        const plan = isInlineData(input.file) ? undefined : await outbound.check(input.file)
+        const mediaCheck = mediaFor(context.sessionID)
+        const plan = isInlineData(input.file) ? undefined : await mediaCheck.check(input.file)
         const verdict = await permit(target, nextOperation())
         if (!verdict.allowed) return refuse(context.sessionID, verdict)
-        const media = plan ? outbound.materialize(plan) : input.file
+        const media = plan ? mediaCheck.materialize(plan) : input.file
         const response = await send(target, [{ type: "record", data: { file: media } }])
         trackSent(target, response)
         manager.markMessageSent(context.sessionID)
@@ -807,7 +824,7 @@ export async function registerTools(deps: ToolDeps): Promise<{ dispose(): Promis
     editor.add({
       name: "send_forward",
       description:
-        "向当前 QQ 群聊或私聊发送一条合并转发消息。nodes 为节点列表，每个节点包含 user_id、nickname 和纯文本 content。",
+        "向当前 QQ 群聊或私聊发送一条合并转发消息。nodes 为节点列表，每个节点只包含纯文本 content；发送者统一显示为机器人自己。",
       input: {
         type: "object",
         properties: {
@@ -817,8 +834,6 @@ export async function registerTools(deps: ToolDeps): Promise<{ dispose(): Promis
             items: {
               type: "object",
               properties: {
-                user_id: { type: "string", description: "发送者 QQ 号" },
-                nickname: { type: "string", description: "发送者昵称" },
                 content: { type: "string", description: "节点文本内容" },
               },
               required: ["content"],
@@ -837,23 +852,19 @@ export async function registerTools(deps: ToolDeps): Promise<{ dispose(): Promis
         const target = prepared.target
         const denied = checkReplyPermission(context.sessionID, target)
         if (denied) return text(denied)
+        const identity = await botIdentity()
         const nodes: {
           user_id: number
           nickname: string
           content: { type: string; data: { text: string } }[]
         }[] = []
         for (const node of input.nodes ?? []) {
-          const userId = node.user_id === undefined ? 0 : Number(node.user_id)
-          if (!Number.isInteger(userId) || userId < 0) {
-            return text(`error: 非法 user_id：${String(node.user_id)}`)
-          }
           const body = toPlainText(node.content ?? "").trim()
-          const nickname = node.nickname?.trim() || "未知用户"
-          // 昵称同样发给对方，不能成为凭证外发的盲区。
-          guardOutbound(target, `${nickname}\n${body}`)
+          // 合并转发里每段都要扫：昵称由插件固定，模型只能控制正文。
+          guardOutbound(target, body)
           nodes.push({
-            user_id: userId,
-            nickname,
+            user_id: identity.userId,
+            nickname: identity.nickname,
             content: [{ type: "text", data: { text: body } }],
           })
         }
@@ -913,6 +924,8 @@ export async function registerTools(deps: ToolDeps): Promise<{ dispose(): Promis
         const prepared = await prepareSend(context.sessionID)
         if (prepared.error) return prepared.error
         const target = prepared.target
+        const denied = checkReplyPermission(context.sessionID, target)
+        if (denied) return text(denied)
         if (input.message_id === undefined) return text("error: 缺少 message_id")
         if (!manager.isOutgoing(target, String(input.message_id))) {
           return text("error: 只能撤回机器人自己发送过的消息")
@@ -983,7 +996,9 @@ export async function registerTools(deps: ToolDeps): Promise<{ dispose(): Promis
         additionalProperties: false,
       },
       options: { namespace: TOOL_NAMESPACE, codemode: false },
-      execute: async () => {
+      execute: async (_raw, context) => {
+        const prepared = prepareQuery(context.sessionID)
+        if (prepared.error) return prepared.error
         const info = await client.api.getLoginInfo()
         return text(JSON.stringify(info))
       },
@@ -992,8 +1007,25 @@ export async function registerTools(deps: ToolDeps): Promise<{ dispose(): Promis
     // 日记工具依赖日记存储；没配存储时不注册，免得模型调到一个必然失败的工具。
     const diaryStore = diary
     if (diaryStore) {
-      /** 日记工具的目标：必须是当前会话绑定且放行的那个聊天。 */
-      const diaryTarget = (sessionID: string): ChatTarget | undefined => requireTarget(sessionID)
+      /**
+       * 日记工具的目标：必须是 owner 自己的私聊，且在当前放行名单里。
+       *
+       * owner 与 admin 共用 admin 配置档，只在配置里收权限不够，
+       * 这里按会话实际角色再判一次。
+       */
+      const diaryTarget = (sessionID: string): ChatTarget | undefined => {
+        const target = requireTarget(sessionID)
+        if (!target) return undefined
+        if (!isDiaryScopeChat(config, target)) {
+          logger.warn(`${targetLabel(target)} 不是日记作用域，拒绝日记工具调用`)
+          return undefined
+        }
+        if (manager.currentRole(sessionID) !== "owner") {
+          logger.warn(`${targetLabel(target)} 不是 owner，拒绝日记工具调用`)
+          return undefined
+        }
+        return target
+      }
 
       /** 找不到日记时把可用的日期一起回给模型，省得它来回试。 */
       const diaryMissing = async (chat: string, date: string): Promise<string> => {
@@ -1020,7 +1052,7 @@ export async function registerTools(deps: ToolDeps): Promise<{ dispose(): Promis
         execute: async (raw, context) => {
           const input = (raw ?? {}) as DiaryWriteInput
           const target = diaryTarget(context.sessionID)
-          if (!target) return text("error: 当前会话没有绑定的聊天，无法读写日记")
+          if (!target) return text("error: 日记只在 owner 自己的私聊里可用")
           const content = (input.content ?? "").trim()
           if (!content) return text("error: 缺少 content")
           const date = input.date?.trim() || dateKey()
@@ -1049,7 +1081,7 @@ export async function registerTools(deps: ToolDeps): Promise<{ dispose(): Promis
         execute: async (raw, context) => {
           const input = (raw ?? {}) as DiaryReadInput
           const target = diaryTarget(context.sessionID)
-          if (!target) return text("error: 当前会话没有绑定的聊天，无法读写日记")
+          if (!target) return text("error: 日记只在 owner 自己的私聊里可用")
           const chat = targetKey(target)
           const date = input.date?.trim()
           if (!date) {
@@ -1079,7 +1111,7 @@ export async function registerTools(deps: ToolDeps): Promise<{ dispose(): Promis
         execute: async (raw, context) => {
           const input = (raw ?? {}) as DiaryListInput
           const target = diaryTarget(context.sessionID)
-          if (!target) return text("error: 当前会话没有绑定的聊天，无法读写日记")
+          if (!target) return text("error: 日记只在 owner 自己的私聊里可用")
           const days = Number.isInteger(input.days) && (input.days ?? 0) > 0 ? (input.days ?? 7) : 7
           const entries = await diaryStore.list(targetKey(target), days)
           if (entries.length === 0) return text("这个聊天还没有日记。")
@@ -1091,7 +1123,7 @@ export async function registerTools(deps: ToolDeps): Promise<{ dispose(): Promis
     editor.add({
       name: "send_file",
       description:
-        "向当前 QQ 群聊或私聊发送一个本地文件。file 是文件路径，只能是机器人允许发送的目录里的普通文件；name 是对方看到的文件名，省略时用原文件名。",
+        "向当前 QQ 群聊或私聊发送一个本地文件。file 是文件路径，只能是机器人允许发送的目录里的普通文件；owner/admin 可用工作目录、媒体目录和配置放开的目录，普通成员只能用媒体目录；name 是对方看到的文件名，省略时用原文件名。",
       input: {
         type: "object",
         properties: {
@@ -1113,7 +1145,7 @@ export async function registerTools(deps: ToolDeps): Promise<{ dispose(): Promis
         if (!file) return text("error: 缺少 file")
         let plan
         try {
-          plan = await outbound.check(file)
+          plan = await mediaFor(context.sessionID).check(file)
         } catch (error) {
           return text(`error: ${error instanceof Error ? error.message : String(error)}`)
         }
@@ -1131,4 +1163,23 @@ export async function registerTools(deps: ToolDeps): Promise<{ dispose(): Promis
       },
     })
   })
+
+  // 注册完成后与清单核对一次：新增工具忘了登记，模型就会看到不存在的名字。
+  try {
+    const expected = new Set<string>(QQ_TOOL_NAMES)
+    const actual = (await ctx.tool.list())
+      .map((tool) => tool.id)
+      .filter((id) => id.startsWith("qq_"))
+    // 清单里一个 qq_ 工具都看不到，说明这次 transform 还没落到注册表上：这时候比不出结果。
+    if (actual.length === 0) return result
+    const missing = [...expected].filter((id) => !actual.includes(id))
+    const extra = actual.filter((id) => !expected.has(id))
+    if (missing.length > 0 || extra.length > 0) {
+      logger.warn("QQ 工具清单与实际注册不一致", { missing, extra })
+    }
+  } catch (error) {
+    logger.warn("QQ 工具清单校验失败", error)
+  }
+
+  return result
 }

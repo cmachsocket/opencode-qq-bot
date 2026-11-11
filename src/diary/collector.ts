@@ -2,6 +2,7 @@ import { appendFile, mkdir, readFile, readdir, rm, stat } from "node:fs/promises
 import { join } from "node:path"
 import type { Logger } from "../logger"
 import { chatSlug, dateKey } from "./format"
+import { isInside, realDir, realExisting } from "./paths"
 
 /**
  * 一行聊天素材。
@@ -23,6 +24,16 @@ export interface DiaryLine {
   self: boolean
   /** 是否来自历史回补。 */
   backfilled: boolean
+}
+
+/**
+ * 这条消息是不是机器人自己发的。
+ *
+ * 自己的发言也要进素材：日记写的是当天发生了什么，
+ * 只有模型说话那部分，模型自己看不到。
+ */
+export function isSelfSpeaker(userId: string, selfId: string): boolean {
+  return Boolean(selfId) && userId === selfId
 }
 
 /** 素材收集器的依赖。 */
@@ -95,8 +106,21 @@ export class DiaryCollector {
     }
     const record: DiaryLine = { ...line, text: truncateChars(line.text, this.deps.maxLineChars) }
     try {
-      await mkdir(this.rawDir(chat), { recursive: true })
-      await appendFile(this.rawFile(chat, date), `${JSON.stringify(record)}\n`, "utf8")
+      const dir = this.rawDir(chat)
+      await mkdir(dir, { recursive: true, mode: 0o700 })
+      const root = await realDir(this.deps.root)
+      const realDirectory = await realExisting(dir)
+      if (!realDirectory || !isInside(root, realDirectory)) {
+        this.deps.logger.warn(`${chat} 的素材目录不在日记根目录内，拒绝写入`)
+        return false
+      }
+      const file = this.rawFile(chat, date)
+      const realFile = await realExisting(file)
+      if (realFile && !isInside(root, realFile)) {
+        this.deps.logger.warn(`${chat} ${date} 的素材文件不在日记根目录内，拒绝写入`)
+        return false
+      }
+      await appendFile(file, `${JSON.stringify(record)}\n`, { encoding: "utf8", mode: 0o600 })
     } catch (error) {
       this.deps.logger.warn(`${chat} ${date} 的日记素材写入失败`, error)
       return false
