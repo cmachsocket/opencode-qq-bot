@@ -14,7 +14,7 @@ import type { Tracer } from "../trace"
 import { limitFiles, type PromptFile } from "../naplink/render"
 import type { WakeReason } from "../overrides"
 import { roleForChat, roleOf, type Role } from "../tools/policy"
-import { findSession } from "./find"
+import { findSessions, type ListedSession } from "./find"
 
 /** 插件存储里保存会话与目标绑定的键。 */
 const BINDINGS_KEY = "bindings"
@@ -46,6 +46,8 @@ export const FAILURE_NOTICE_INTERVAL_MS = 5 * 60 * 1000
 export const SESSION_RETIRE_COOLDOWN_MS = 10 * 60 * 1000
 /** 交接时等在途投递落地的最长时间（毫秒）。 */
 const HANDOVER_WAIT_MS = 3_000
+/** 找回历史会话时最多比较几个候选。 */
+const SESSION_CANDIDATES = 5
 
 /** 插件自己往聊天里补话的通道，失败兜底用。 */
 export type FailureNotifier = (target: ChatTarget, text: string) => Promise<void>
@@ -1482,7 +1484,17 @@ export class SessionManager {
         await this.applyOverride(state.sessionID, label, agent, model)
         return state.sessionID
       }
-      this.unbind(state)
+      // 绑定的会话取不到了：先把同一个聊天上还在的历史会话找回，找不到才新建。
+      // 直接新建等于把上百条历史留在库里当孤儿，机器人再也看不见。
+      const stale = state.sessionID
+      const recovered = await this.recoverSession(state, target, stale)
+      if (recovered) {
+        this.logger.info(`${label} 旧会话 ${stale} 不可用，已改用 ${recovered}`)
+        await this.applyOverride(recovered, label, agent, model)
+        return recovered
+      }
+      // 旧会话确实没了：先松开绑定（不落盘），新建成功后一次性写回，避免中途存下空绑定。
+      this.clearBinding(state)
     }
 
     if (this.config.reuseSession) {
@@ -1521,6 +1533,80 @@ export class SessionManager {
     this.scheduleSave()
     this.logger.info(`${label} 新建会话 ${created.id}`)
     return created.id
+  }
+
+  /**
+   * 找回出问题时仍然存在的历史会话。
+   *
+   * 绑定的会话读不到时，如果直接解绑并新建，这个聊天之前积累的上下文就断了；
+   * 历史会话其实还在库里，只要按 QQ 标记在同一目录里找回来就能接上。
+   *
+   * @returns 找回的会话 ID；没有可用的历史会话时返回 `undefined`。
+   */
+  private async recoverSession(
+    state: ChatState,
+    target: ChatTarget,
+    stale: string,
+  ): Promise<string | undefined> {
+    const candidates = await this.findSessionCandidates(target, stale)
+    if (candidates.length === 0) return undefined
+    // 消息最多的那条才是真正聊过的会话：重建出来的空会话消息更少。
+    const best = await this.pickRichestSession(candidates)
+    if (!best) return undefined
+    // 旧绑定先松开，但不能顺手把存储里的绑定抹掉：抹掉就再也找不回来了。
+    this.clearBinding(state)
+    if (!this.bindSession(state, best.id)) return undefined
+    this.verifiedSessions.add(best.id)
+    this.scheduleSave()
+    return best.id
+  }
+
+  /** 同一个聊天上仍然存在的历史会话，按最近优先。 */
+  private async findSessionCandidates(
+    target: ChatTarget,
+    exclude?: string,
+  ): Promise<ListedSession[]> {
+    return await findSessions(
+      this.ctx,
+      this.location.directory,
+      (session) => {
+        const metadata = session.metadata
+        if (!metadata) return false
+        if (metadata["qqTargetKind"] !== target.kind) return false
+        if (metadata["qqTargetId"] !== target.id) return false
+        return session.id !== exclude
+      },
+      this.logger,
+      `查找历史会话失败 ${targetLabel(target)}`,
+      { limit: SESSION_CANDIDATES },
+    )
+  }
+
+  /** 选出消息最多的那条会话。 */
+  private async pickRichestSession(
+    candidates: ListedSession[],
+  ): Promise<ListedSession | undefined> {
+    let best: ListedSession | undefined
+    let bestCount = -1
+    for (const candidate of candidates) {
+      const count = await this.countMessages(candidate.id)
+      if (count > bestCount) {
+        best = candidate
+        bestCount = count
+      }
+    }
+    return best
+  }
+
+  /** 会话里的消息条数；读不到时按 0 算。 */
+  private async countMessages(sessionID: string): Promise<number> {
+    try {
+      const messages = await this.ctx.session.context({ sessionID })
+      return Array.isArray(messages) ? messages.length : 0
+    } catch (error) {
+      this.logger.warn(`读取会话 ${sessionID} 的消息失败`, error)
+      return 0
+    }
   }
 
   /**
@@ -1563,15 +1649,29 @@ export class SessionManager {
       this.verifiedSessions.add(sessionID)
       return true
     } catch (error) {
+      // 直查只认 sessionID，列表查询才按目录过滤：两种口径不一致时，
+      // 明明还在的会话会被当成已删除。直查失败后再按目录确认一次。
+      if (await this.sessionInDirectory(sessionID)) {
+        this.logger.warn(`会话 ${sessionID} 直查失败，但目录列表里仍然存在，继续沿用`)
+        this.verifiedSessions.add(sessionID)
+        return true
+      }
       this.logger.warn(`会话 ${sessionID} 已不存在，将重新建立绑定`, error)
       return false
     }
   }
 
-  private unbind(state: ChatState): void {
-    if (!state.sessionID) return
-    this.clearBinding(state)
-    this.scheduleSave()
+  /** 会话是否还在机器人的工作目录里；直查口径不一致时的兜底判断。 */
+  private async sessionInDirectory(sessionID: string): Promise<boolean> {
+    const found = await findSessions(
+      this.ctx,
+      this.location.directory,
+      (session) => session.id === sessionID,
+      this.logger,
+      `查找会话 ${sessionID} 失败`,
+      { limit: 1 },
+    )
+    return found.length > 0
   }
 
   /** 清掉会话绑定，不动上游会话。 */
@@ -1603,18 +1703,12 @@ export class SessionManager {
     return true
   }
 
-  /** 查找带相同目标标记的历史会话，按最近优先分页查找。 */
+  /** 查找带相同目标标记的历史会话，按消息最多的那条优先。 */
   private async findExistingSession(target: ChatTarget): Promise<string | undefined> {
-    return await findSession(
-      this.ctx,
-      this.location.directory,
-      (session) => {
-        const metadata = session.metadata
-        return metadata?.["qqTargetKind"] === target.kind && metadata["qqTargetId"] === target.id
-      },
-      this.logger,
-      `查找历史会话失败 ${targetLabel(target)}`,
-    )
+    const candidates = await this.findSessionCandidates(target)
+    if (candidates.length === 0) return undefined
+    const best = await this.pickRichestSession(candidates)
+    return best?.id
   }
 
   /** 主动说话：向目标对应的会话投递一条合成消息。 */

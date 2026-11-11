@@ -76,6 +76,7 @@ NapCat（OneBot 11，本机或远端）        ← 不可信边界
 | 20  | 日记与素材只落在 `diary.path` 下：日期必须合法，realpath 越界（含软链接）拒绝读写，目录 `0o700`、文件 `0o600`                                                                      | `src/diary/store.ts`、`src/diary/collector.ts`、`src/diary/paths.ts`                 | `tests/diary.test.ts`                                                          |
 | 21  | 发文件只允许白名单目录里的普通文件，软链接越界一律拒绝                                                                                                                             | `src/media-path.ts`、`src/tools/qq.ts`                                               | `tests/media-path.test.ts`、`tests/tools.test.ts`                              |
 | 22  | 日记推送前扫描文件正文（前 4KB），命中敏感信息时整条推送不发                                                                                                                       | `src/diary/scheduler.ts`、`src/diary/command.ts`                                     | `tests/diary.test.ts`                                                          |
+| 23  | 绑定的会话读不到时不重建：先在机器人工作目录里找回同一个聊天的历史会话（消息最多的那条），确实没有才新建；找回成功时绑定直接换成旧会话，不落空绑定                                 | `src/session/manager.ts`、`src/session/find.ts`                                      | `tests/session-recovery.test.ts`                                               |
 
 已知局限（不是 bug，但改代码时要记住）：
 
