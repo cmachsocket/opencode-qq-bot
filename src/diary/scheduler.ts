@@ -65,19 +65,28 @@ export class DiaryScheduler {
 
   constructor(private readonly deps: DiarySchedulerDeps) {}
 
-  /** 下次调度的时间（毫秒）；还没跑过就是 undefined。 */
+  /** 下次轮询的时间（毫秒）；还没跑过就是 undefined。 */
   nextRunAt(): number | undefined {
     if (this.lastTick === undefined) return undefined
     const seconds = Math.max(60, this.deps.config.diary.tickSeconds)
     return this.lastTick + seconds * 1000
   }
 
-  /** 上次调度的时间（毫秒）。 */
+  /** 上次轮询的时间（毫秒）。 */
   lastRunAt(): number | undefined {
     return this.lastTick
   }
 
-  /** 上次调度结果的说明。 */
+  /** 下次总结时刻（毫秒）：按配置里的时刻算，今天过了就顺延到明天。 */
+  nextSummaryAt(now: Date = new Date()): number {
+    const minutes = minutesOfDay(this.deps.config.diary.summaryTime)
+    const target = new Date(now)
+    target.setHours(Math.floor(minutes / 60), minutes % 60, 0, 0)
+    if (target.getTime() <= now.getTime()) target.setDate(target.getDate() + 1)
+    return target.getTime()
+  }
+
+  /** 上次轮询结果的说明。 */
   lastResult(): string {
     return this.lastOutcome
   }

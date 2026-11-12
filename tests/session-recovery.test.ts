@@ -185,7 +185,7 @@ describe("会话丢了之后不重建", () => {
     expect(session.create).toHaveBeenCalledTimes(1)
   })
 
-  it("打开复用开关时也挑消息最多的那条", async () => {
+  it("打开复用开关时取最近的那条会话", async () => {
     const { manager, session } = createHarness({
       existing: [],
       listed: [
@@ -195,7 +195,9 @@ describe("会话丢了之后不重建", () => {
       reuseSession: true,
     })
 
-    expect(await manager.ensureSession(target)).toBe("ses_rich")
+    // 列表按创建时间倒序，第一条就是「上一次的会话」：复用要的是最近的那条，
+    // 不是消息最多的那条（那是找回路径要的）。
+    expect(await manager.ensureSession(target)).toBe("ses_empty")
     expect(session.create).not.toHaveBeenCalled()
   })
 

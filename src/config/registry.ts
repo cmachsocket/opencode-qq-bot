@@ -576,6 +576,7 @@ function jsonSchemaFor(field: ConfigField): Record<string, unknown> {
   }
   base["x-label"] = field.label
   if (field.description) base["x-description"] = field.description
+  if (field.required && base.type === "string") base.minLength = 1
   base["x-ui"] = {
     type: field.type,
     group: field.group,
@@ -592,14 +593,18 @@ function jsonSchemaFor(field: ConfigField): Record<string, unknown> {
 /** 递归生成 JSON Schema。 */
 function jsonSchemaNode(node: SchemaNode): Record<string, unknown> {
   const properties: Record<string, unknown> = {}
+  const required: string[] = []
   for (const [key, child] of node.children) {
     if (child.field) {
       properties[key] = jsonSchemaFor(child.field)
+      if (child.field.required) required.push(key)
       continue
     }
     properties[key] = jsonSchemaNode(child)
   }
-  return { type: "object", properties }
+  return required.length > 0
+    ? { type: "object", properties, required }
+    : { type: "object", properties }
 }
 
 /**
@@ -619,6 +624,21 @@ export function configJsonSchema(): Record<string, unknown> {
 /** 判定配置里某个字段是否敏感。 */
 export function isSecretField(path: string): boolean {
   return CONFIG_FIELDS.find((field) => field.path === path)?.secret === true
+}
+
+/**
+ * 必填项能不能被删掉。
+ *
+ * 值为 `null` 表示删键；必填项删掉之后配置文件就装不起来，
+ * 所以这里直接给出原因，由调用方拒绝这次改动。
+ *
+ * @returns 出问题的说明；没问题时返回 undefined。
+ */
+export function requiredFieldProblem(path: string, value: unknown): string | undefined {
+  if (value !== null) return undefined
+  const field = CONFIG_FIELDS.find((entry) => entry.path === path)
+  if (!field?.required) return undefined
+  return `${field.label}（${path}）必填，不能删除`
 }
 
 /** 日志级别与日记推送方式的取值集合，供外部复用。 */

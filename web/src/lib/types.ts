@@ -186,6 +186,7 @@ export interface Status {
     summaryTime: string
     nextRunAt?: number
     lastRunAt?: number
+    nextSummaryAt?: number
     lastResult?: string
   }
   /** 工具策略。 */

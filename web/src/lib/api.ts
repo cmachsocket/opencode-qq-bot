@@ -14,11 +14,12 @@ import type {
  * 不需要请求库那一套缓存与失效策略。
  */
 
-/** 接口报错：带上 HTTP 状态码，调用方据此区分「未授权」与其它错误。 */
+/** 接口报错：带上 HTTP 状态码与逐字段的原因，调用方据此标红出问题的字段。 */
 export class ApiError extends Error {
   constructor(
     readonly status: number,
     message: string,
+    readonly fields: Array<{ path: string; message: string }> = [],
   ) {
     super(message)
     this.name = "ApiError"
@@ -37,13 +38,18 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   })
   if (!response.ok) {
     let message = `请求失败（${response.status}）`
+    let fields: Array<{ path: string; message: string }> = []
     try {
-      const body = (await response.json()) as { message?: string }
+      const body = (await response.json()) as {
+        message?: string
+        fields?: Array<{ path: string; message: string }>
+      }
       if (body.message) message = body.message
+      if (Array.isArray(body.fields)) fields = body.fields
     } catch {
       // 响应不是 JSON：用状态码兜底。
     }
-    throw new ApiError(response.status, message)
+    throw new ApiError(response.status, message, fields)
   }
   return (await response.json()) as T
 }

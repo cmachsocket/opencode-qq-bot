@@ -8,7 +8,12 @@ import { secureHeaders } from "hono/secure-headers"
 import { streamSSE } from "hono/streaming"
 import type { ConfigController } from "../config/live"
 import { CONFIG_FIELDS, CONFIG_GROUPS } from "../config/fields"
-import { configJsonSchema, createStrictFieldSchema, getConfigValue } from "../config/registry"
+import {
+  configJsonSchema,
+  createStrictFieldSchema,
+  getConfigValue,
+  requiredFieldProblem,
+} from "../config/registry"
 import { readLogTail, subscribeLogs, type LogEntry } from "../logger"
 import { PanelAuth, SESSION_COOKIE } from "./auth"
 import type { ModelProvider } from "./models"
@@ -321,7 +326,11 @@ function validatePatch(patch: Record<string, unknown>): Array<{ path: string; me
       problems.push({ path, message: "未知配置项" })
       continue
     }
-    if (value === null) continue
+    if (value === null) {
+      const problem = requiredFieldProblem(path, value)
+      if (problem) problems.push({ path, message: problem })
+      continue
+    }
     const schema = createStrictFieldSchema(field)
     const result = schema.safeParse(value)
     if (!result.success) {

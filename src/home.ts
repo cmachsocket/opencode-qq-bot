@@ -1,6 +1,6 @@
 import { mkdir } from "node:fs/promises"
 import { homedir } from "node:os"
-import { isAbsolute, join, normalize } from "node:path"
+import { isAbsolute, join } from "node:path"
 import type { Logger } from "./logger"
 
 /**
@@ -39,10 +39,4 @@ export function expandTilde(value: string): string {
   if (value === "~") return homedir()
   if (value.startsWith("~/")) return join(homedir(), value.slice(2))
   return value
-}
-
-/** 规范化路径：相对路径按工作目录解析。 */
-export function resolvePath(base: string, value: string): string {
-  const expanded = expandTilde(value)
-  return isAbsolute(expanded) ? normalize(expanded) : normalize(join(base, expanded))
 }

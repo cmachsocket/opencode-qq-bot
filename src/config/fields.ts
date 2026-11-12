@@ -42,6 +42,8 @@ export interface ConfigField {
   options?: readonly string[]
   /** 是否属于敏感字段：不回显、掩码显示。 */
   secret?: boolean
+  /** 是否必填：必填项不能删掉，删了配置就装不起来。 */
+  required?: boolean
   /** 保存后是否可以立即生效，不必重启。 */
   hot?: boolean
   /** 下限是否取不到：`min` 变成排他下界。 */
@@ -178,6 +180,7 @@ export const CONFIG_FIELDS: readonly ConfigField[] = [
     label: "NapCat WebSocket 地址",
     description: "正向 WebSocket 地址，必填",
     default: undefined,
+    required: true,
   },
   {
     path: "napcat.token",

@@ -1703,12 +1703,13 @@ export class SessionManager {
     return true
   }
 
-  /** 查找带相同目标标记的历史会话，按消息最多的那条优先。 */
+  /** 查找带相同目标标记的历史会话，取最近的那条。 */
   private async findExistingSession(target: ChatTarget): Promise<string | undefined> {
     const candidates = await this.findSessionCandidates(target)
     if (candidates.length === 0) return undefined
-    const best = await this.pickRichestSession(candidates)
-    return best?.id
+    // 候选按创建时间倒序，第一条就是「上一次的会话」。
+    // 恢复路径要的才是消息最多的那条，两件事不能混。
+    return candidates[0]?.id
   }
 
   /** 主动说话：向目标对应的会话投递一条合成消息。 */

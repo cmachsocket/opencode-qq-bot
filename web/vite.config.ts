@@ -19,7 +19,8 @@ export default defineConfig({
   },
   server: {
     proxy: {
-      "/api": "http://127.0.0.1:7391",
+      // 开发时面板跑在插件进程里：端口跟 config.json 的 panel.port 对齐。
+      "/api": `http://127.0.0.1:${process.env.PANEL_PORT ?? "7391"}`,
     },
   },
 })

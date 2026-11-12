@@ -186,8 +186,14 @@
     if (validateFn(next)) return {}
     const found: Record<string, string> = {}
     for (const issue of validateFn.errors ?? []) {
-      const path = issue.instancePath.replace(/^\//, "").replace(/\//g, ".")
-      if (path) found[path] = issue.message ?? "取值不合法"
+      const parent = issue.instancePath.replace(/^\//, "").replace(/\//g, ".")
+      // 缺必填项时 ajv 报在父对象上，要落到具体字段才标得红。
+      const path =
+        issue.keyword === "required"
+          ? [parent, String(issue.params.missingProperty)].filter(Boolean).join(".")
+          : parent
+      const message = issue.keyword === "required" ? "必填项，不能留空" : (issue.message ?? "取值不合法")
+      if (path) found[path] = message
     }
     return found
   }
@@ -233,6 +239,13 @@
     } catch (cause) {
       if (cause instanceof ApiError) {
         message = cause.message
+        // 后端逐字段给了原因就把字段标红，光有一句「校验不通过」没法定位。
+        if (cause.fields.length > 0) {
+          const next = { ...errors }
+          for (const field of cause.fields) next[field.path] = field.message
+          errors = next
+          message = cause.fields.map((field) => field.message).join("；")
+        }
       } else {
         message = cause instanceof Error ? cause.message : String(cause)
       }

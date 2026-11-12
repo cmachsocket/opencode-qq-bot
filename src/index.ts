@@ -97,12 +97,14 @@ function agentFromOptions(options: unknown): string | undefined {
  * 已知凭证明文：日志逐行打码与出站拦截都靠它。
  *
  * 除了环境变量与 NapCat 令牌，地址查询串里挂着的 token 也要算进来，
- * 否则它会原样落进日志文件。
+ * 否则它会原样落进日志文件。面板令牌同样算进来：它能进日志文件就等于面板失守。
  */
-function knownSecrets(config: QQBotConfig): string[] {
+export function knownSecrets(config: QQBotConfig): string[] {
   return [
     ...collectEnvSecrets(process.env),
     config.napcat.token ?? "",
+    // 面板令牌能进日志文件就等于面板失守，日志里一律掩码。
+    config.panel.token ?? "",
     ...secretsFromUrl(config.napcat.url),
   ].filter((secret) => secret.length > 0)
 }
@@ -151,13 +153,20 @@ export default Plugin.define({
     const bootstrap = createLogger("[qq-bot]", { file: false })
     const version = pluginVersion()
     const warnings: string[] = []
+    // 配置告警的出口：正式日志器就绪前先攒着，就绪之后直接写日志。
+    const sink: { warn: (message: string) => void } = {
+      warn: (message) => {
+        warnings.push(message)
+      },
+    }
     // 工作目录固定：配置文件就在工作目录里，位置固定才不会自举。
     const home = await resolveHome(bootstrap)
     const store = new ConfigStore(join(home.directory, CONFIG_FILE_NAME))
+    const agent = agentFromOptions(ctx.options)
     const controller = new ConfigController({
       store,
-      ...(agentFromOptions(ctx.options) ? { agent: agentFromOptions(ctx.options) } : {}),
-      warn: (message) => warnings.push(message),
+      ...(agent ? { agent } : {}),
+      warn: (message) => sink.warn(message),
     })
 
     let config: QQBotConfig
@@ -178,6 +187,7 @@ export default Plugin.define({
       knownSecrets: knownSecrets(config),
     })
     logger.info(`opencode-qq-bot v${version}`)
+    sink.warn = (message) => logger.warn(message)
     for (const warning of warnings) logger.warn(warning)
     // 正式日志器已经接管，兜底日志器只写控制台，用完就关掉。
     await closeLogger(bootstrap)
@@ -195,7 +205,7 @@ export default Plugin.define({
       if (!config.panel.token) {
         const token = randomBytes(32).toString("hex")
         await controller.applyPatch({ "panel.token": token })
-        logger.warn("面板访问令牌已生成（已写入 config.json）", token)
+        logger.warn("面板访问令牌已生成，请查看 config.json 里的 panel.token")
       } else if (config.panel.token.length < 16) {
         logger.warn("面板访问令牌太短，建议至少 16 个字符")
       }
@@ -211,7 +221,6 @@ export default Plugin.define({
       models: createModelProvider(ctx.model),
       logger,
     })
-    await panel.start().catch((error: unknown) => logger.error("启动状态面板失败", error))
 
     // 配置文件被外部改动时热更新：日志级别这类字段改完立即生效。
     const unsubscribeLevel = controller.onChange((next) => {
@@ -229,6 +238,9 @@ export default Plugin.define({
     )
     if (occupied) {
       logger.warn("本机机器人已绑定到其它工作目录，本实例不会运行", `工作目录：${occupied}`)
+      // 这个实例不会运行：把已经起来的监听停掉，别占着端口和文件监听。
+      controller.stop()
+      unsubscribeLevel()
       await closeLogger(logger)
       return
     }
@@ -296,6 +308,14 @@ export default Plugin.define({
         }),
         delay(CLAIM_RETRY_MS),
       ])
+    }
+
+    // 状态面板：确认自己是有效实例、并且旧实例已经交还端口之后才监听。
+    // 面板没起来不影响机器人主体运行，这里只记日志。
+    if (!disposed) {
+      await panel.start().catch((error: unknown) => {
+        logger.error("启动状态面板失败", error)
+      })
     }
 
     // 保活心跳先起来：等锁的实例也得活着，持有者退出后才能接管。
@@ -414,7 +434,7 @@ export default Plugin.define({
         const unsubscribeSensitive = controller.onChange((next) => {
           sensitive.setEnabled(next.sensitive.enabled)
         })
-        cleanup.add("取消配置订阅", () => unsubscribeSensitive(), CleanupOrder.panel)
+        cleanup.add("取消敏感检查订阅", () => unsubscribeSensitive(), CleanupOrder.panel)
         // 通知缓存：通知不自己起一轮，只在下一次该聊天的上下文里附带出现。
         const noticeStore = new NoticeStore()
         // 工具配置：按聊天与角色决定模型能看到、能调用哪些工具。
@@ -980,12 +1000,20 @@ export default Plugin.define({
           // 先注册监听再连接：NapCat 连接期间推送的消息也会被收到。
           if (!subscribed) {
             subscribed = true
-            client.onGroupMessage(scheduleMessage)
-            client.onPrivateMessage(scheduleMessage)
-            // 通知类事件默认不订阅，避免升级后行为突变。
-            if (config.events.subscribe.includes("notice")) {
-              client.onNotice(scheduleNotice)
-            }
+            // 订阅类别是热配置：监听只注册一次，收到事件时再按当前配置决定要不要处理，
+            // 这样改配置之后不用重连就能生效。
+            client.onGroupMessage((event) => {
+              if (!config.events.subscribe.includes("message")) return
+              scheduleMessage(event)
+            })
+            client.onPrivateMessage((event) => {
+              if (!config.events.subscribe.includes("message")) return
+              scheduleMessage(event)
+            })
+            client.onNotice((event) => {
+              if (!config.events.subscribe.includes("notice")) return
+              scheduleNotice(event)
+            })
           }
           await client.connectSafe()
         }

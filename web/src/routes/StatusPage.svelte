@@ -188,11 +188,15 @@
           <span class="font-mono">{status.diary.summaryTime}</span>
         </div>
         <div class="flex gap-2">
-          <span class="text-muted-foreground w-24">下次运行</span>
+          <span class="text-muted-foreground w-24">下次总结</span>
+          <span>{formatDate(status.diary.nextSummaryAt)}</span>
+        </div>
+        <div class="flex gap-2">
+          <span class="text-muted-foreground w-24">下次轮询</span>
           <span>{formatDate(status.diary.nextRunAt)}</span>
         </div>
         <div class="flex gap-2">
-          <span class="text-muted-foreground w-24">上次运行</span>
+          <span class="text-muted-foreground w-24">上次轮询</span>
           <span>{formatDate(status.diary.lastRunAt)}</span>
         </div>
         <div class="flex gap-2">

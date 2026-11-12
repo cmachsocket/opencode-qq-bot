@@ -9,7 +9,8 @@ web/dist/
 web/node_modules/
 
 # 本地环境文件：含真实令牌与群号，配置已迁至 config.json，仅保留本地备份
-.env
+.env*
+!.env.example
 
 # 本地 OpenCode 配置：含真实群号，只保留 opencode.example.json 模板
 opencode.json

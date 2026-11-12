@@ -1,5 +1,6 @@
 import { applyHotFields, resolveConfig, type ConfigWarning, type QQBotConfig } from "../config"
 import { CONFIG_FIELDS } from "../config/fields"
+import { requiredFieldProblem } from "../config/registry"
 import type { Logger } from "../logger"
 import type { ConfigPatch, ConfigStore } from "./store"
 
@@ -83,14 +84,21 @@ export class ConfigController {
    *
    * 只改动补丁里出现的路径；值为 `null` 表示删掉这个键，回到默认值。
    * 落盘的是权威值，下次启动仍然生效。
+   *
+   * @throws 补丁要删掉必填项，或改完之后配置解析不出来时抛出；此时文件保持原样。
    */
   async applyPatch(patch: ConfigPatch): Promise<ConfigUpdateResult> {
     const live = this.config
     if (!live) throw new Error("配置尚未加载")
+    for (const [path, value] of Object.entries(patch)) {
+      const problem = requiredFieldProblem(path, value)
+      if (problem) throw new Error(problem)
+    }
     const raw = await this.options.store.patch(patch)
+    // 先解析再落盘：配置装不起来时不能把文件改坏，旧配置继续用着。
+    const next = this.resolve(raw)
     await this.options.store.write(raw)
     this.raw = raw
-    const next = this.resolve(raw)
     applyHotFields(live, next)
     this.config = live
     this.notify()

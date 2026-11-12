@@ -83,11 +83,13 @@ export interface StatusSnapshot {
     enabled: boolean
     /** 每天几点生成总结。 */
     summaryTime: string
-    /** 下次运行时间（毫秒）。 */
+    /** 下次轮询时间（毫秒）。 */
     nextRunAt?: number
-    /** 上次运行时间（毫秒）。 */
+    /** 上次轮询时间（毫秒）。 */
     lastRunAt?: number
-    /** 上次运行的结果。 */
+    /** 下次总结时刻（毫秒）。 */
+    nextSummaryAt?: number
+    /** 上次轮询的结果。 */
     lastResult?: string
   }
   /** 工具策略。 */
@@ -166,6 +168,7 @@ export async function collectStatus(runtime: PanelRuntime): Promise<StatusSnapsh
       summaryTime: config.diary.summaryTime,
       ...(diary?.nextRunAt() !== undefined ? { nextRunAt: diary.nextRunAt() } : {}),
       ...(diary?.lastRunAt() !== undefined ? { lastRunAt: diary.lastRunAt() } : {}),
+      ...(diary ? { nextSummaryAt: diary.nextSummaryAt() } : {}),
       ...(diary?.lastResult() ? { lastResult: diary.lastResult() } : {}),
     },
     policy: {
