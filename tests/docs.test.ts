@@ -73,7 +73,7 @@ describe("字段表与注册表一致", () => {
 describe("破坏性变更的记录", () => {
   it("CHANGELOG 记了配置来源的破坏性变更", () => {
     expect(changelog).toContain("config.json")
-    expect(changelog).toMatch(/破坏性变更|BREAKING/)
+    expect(changelog).toMatch(/破坏性变更|BREAKING/i)
   })
 
   it("docs/panel.md 标了实现状态", () => {

@@ -2,9 +2,9 @@
 
 本文件记录 opencode-qq-bot 的重要变更。
 
-## [Unreleased]
+## [0.9.0] - 2026-11-12
 
-### 破坏性变更
+### Breaking Changes
 
 - 配置来源收敛到 `config.json`：文件固定放在 `$XDG_DATA_HOME/opencode-qq-bot/workspace`
   （默认 `~/.local/share/opencode-qq-bot/workspace`），工作目录不可配置。
@@ -26,6 +26,8 @@
   - 安全：令牌或会话 Cookie 鉴权、写接口 Origin/CSRF 校验、CSP、敏感字段不回显、
     `config.json` 权限 `0600`、目录 `0700`。
 - 字段注册表 `src/config/fields.ts`：默认值、zod schema、文件键集合与 JSON Schema 都由它生成。
+- npm 包里带上面板前端产物（`web/dist`）：发布流程会构建前端再打包，装完打开面板就有页面，
+  不需要自己跑 `bun run web:build`。
 
 ### Changed
 

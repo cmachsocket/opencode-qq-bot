@@ -20,8 +20,10 @@
 
 ## 版本现状
 
-- npm 最新：`0.5.1`（`@cmach_socket/opencode-qq-bot`）。
-- 仓库当前：`0.8.0`。
+- npm 最新：`0.8.0`（`@cmach_socket/opencode-qq-bot`）。
+- 仓库当前：`0.9.0`。
+- `0.9.0` 起 npm 包里带上面板前端产物（`web/dist`）：发布工作流会在 `npm stage publish`
+  之前构建前端，`web/dist` 与 `web/node_modules` 都在 `.gitignore` 里，打包不会带上多余文件。
 - `0.7.1` 曾打过 tag，但版本号不合上表的策略（工具入参与日记范围属于不兼容变更），
   实际发布为 `0.8.0`；`0.7.1` 的 tag 与 Release 已撤掉，npm 上那条暂存记录用
   `npm stage reject` 撤掉即可——暂存不影响 registry，用户看不到。
@@ -38,7 +40,10 @@
 
    ```sh
    bun install --frozen-lockfile
+   bun install --cwd web --frozen-lockfile
    bun run ci
+   bun run web:check    # 面板前端类型检查
+   bun run web:build    # 构建 web/dist，npm 包里要带它
    bun run privacy:scan   # 需要本地有 trufflehog；CI 一定会跑
    bun run release:check --tag v0.5.1
    ```
@@ -74,10 +79,10 @@
 
 `.github/workflows/release.yml` 由 `v*` tag 触发，两段：
 
-| job       | 内容                                                                                                                  |
-| --------- | --------------------------------------------------------------------------------------------------------------------- |
-| `verify`  | 冻结锁文件安装 → `typecheck` → `lint` → `format:check` → `test` → `release-check --tag "$GITHUB_REF_NAME"`            |
-| `publish` | 用 `actions/setup-node` 装 npm → `npm stage publish --provenance` → `gh release create --notes-file ... --verify-tag` |
+| job       | 内容                                                                                                                                 |
+| --------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| `verify`  | 冻结锁文件安装 → `typecheck` → `lint` → `format:check` → 面板前端类型检查与构建 → `test` → `release-check --tag "$GITHUB_REF_NAME"`  |
+| `publish` | 用 `actions/setup-node` 装 npm → 构建面板前端 → `npm stage publish --provenance` → `gh release create --notes-file ... --verify-tag` |
 
 - 用 npm 而不是 `bun publish`：`--provenance` 与 staged publishing 都是 npm 的能力。
 - `publish` 的权限只给到 `contents: write`（建 Release）与 `id-token: write`（OIDC / provenance），
