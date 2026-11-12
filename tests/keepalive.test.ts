@@ -32,11 +32,22 @@ interface UpdateInput {
   archived?: boolean
 }
 
-function createHarness(options: { supportArchive?: boolean } = {}) {
+function createHarness(
+  options: { supportArchive?: boolean; notFound?: boolean; updateNotFound?: boolean } = {},
+) {
   const sessions = new Map<string, SessionRecord>()
   const storage = new Map<string, unknown>()
   const updates: UpdateInput[] = []
   let created = 0
+  let updateNotFoundUsed = false
+
+  /** 上游表示“会话不存在”的错误：只有名字，没有 message。 */
+  const missing = (sessionID: string) => {
+    if (!options.notFound && !options.updateNotFound) return new Error(`会话 ${sessionID} 不存在`)
+    const error = new Error()
+    error.name = "Session.NotFoundError"
+    return error
+  }
 
   const ctx = {
     location: { directory: WORKSPACE },
@@ -58,7 +69,7 @@ function createHarness(options: { supportArchive?: boolean } = {}) {
       },
       get: async ({ sessionID }: { sessionID: string }) => {
         const record = sessions.get(sessionID)
-        if (!record) throw new Error(`会话 ${sessionID} 不存在`)
+        if (!record) throw missing(sessionID)
         return {
           ...record,
           location: { directory: record.directory ?? WORKSPACE },
@@ -67,7 +78,13 @@ function createHarness(options: { supportArchive?: boolean } = {}) {
       },
       update: async (input: UpdateInput) => {
         const record = sessions.get(input.sessionID)
-        if (!record) throw new Error(`会话 ${input.sessionID} 不存在`)
+        if (!record) throw missing(input.sessionID)
+        // 上游在写回元数据时发现会话没了，行为和会话被删掉一样。
+        if (options.updateNotFound && input.metadata !== undefined && !updateNotFoundUsed) {
+          updateNotFoundUsed = true
+          sessions.delete(input.sessionID)
+          throw missing(input.sessionID)
+        }
         if (input.metadata !== undefined) record.metadata = input.metadata
         // 上游的插件接口目前忽略 archived，只在支持归档时才生效。
         if (options.supportArchive && input.archived !== undefined) {
@@ -76,7 +93,7 @@ function createHarness(options: { supportArchive?: boolean } = {}) {
         updates.push(input)
       },
       remove: async ({ sessionID }: { sessionID: string }) => {
-        if (!sessions.has(sessionID)) throw new Error(`会话 ${sessionID} 不存在`)
+        if (!sessions.has(sessionID)) throw missing(sessionID)
         sessions.delete(sessionID)
       },
       list: async ({ directory }: { directory?: string } = {}) => ({
@@ -308,5 +325,46 @@ describe("KeepAlive", () => {
 
     expect(logger.warn).toHaveBeenCalled()
     expect(harness.createdCount()).toBe(1)
+  })
+
+  it("上游说会话没了就当场重建，不用等下一个心跳", async () => {
+    const harness = createHarness({ notFound: true })
+    const keepAlive = new KeepAlive(harness.ctx, createConfig(), logger)
+
+    await keepAlive.ping()
+    expect(harness.createdCount()).toBe(1)
+
+    // 上游把保活会话删掉了。
+    harness.sessions.delete("ses_1")
+    await keepAlive.ping()
+
+    expect(harness.createdCount()).toBe(2)
+    expect(harness.storage.get(KEEP_ALIVE_SESSION_KEY)).toBe("ses_2")
+    expect(harness.metadataUpdates().at(-1)?.sessionID).toBe("ses_2")
+    expect(logger.warn).toHaveBeenCalledWith("保活会话 ses_1 已不存在，正在重建")
+  })
+
+  it("写回元数据时上游说会话没了也当场重建", async () => {
+    const harness = createHarness({ updateNotFound: true })
+    const keepAlive = new KeepAlive(harness.ctx, createConfig(), logger)
+
+    await keepAlive.ping()
+
+    expect(harness.createdCount()).toBe(2)
+    expect(harness.storage.get(KEEP_ALIVE_SESSION_KEY)).toBe("ses_2")
+    expect(harness.metadataUpdates().at(-1)?.sessionID).toBe("ses_2")
+    expect(logger.warn).toHaveBeenCalledWith("保活会话 ses_1 已不存在，正在重建")
+    expect(logger.warn).not.toHaveBeenCalledWith("重建保活会话失败", expect.anything())
+  })
+
+  it("存储里的保活会话没了就清掉记录再建一个", async () => {
+    const harness = createHarness({ notFound: true })
+    harness.storage.set(KEEP_ALIVE_SESSION_KEY, "ses_gone")
+    const keepAlive = new KeepAlive(harness.ctx, createConfig(), logger)
+
+    await keepAlive.ping()
+
+    expect(harness.createdCount()).toBe(1)
+    expect(harness.storage.get(KEEP_ALIVE_SESSION_KEY)).toBe("ses_1")
   })
 })

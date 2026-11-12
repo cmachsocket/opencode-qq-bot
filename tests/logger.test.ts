@@ -139,6 +139,23 @@ describe("日志器", () => {
     expect(parsed[1]?.meta).toEqual([{ a: 1 }])
   })
 
+  it("没有 message 的错误用名字顶上", async () => {
+    const dir = tempDir()
+    const logger = createLogger("[test]", { dir })
+    const error = new Error()
+    error.name = "Session.NotFoundError"
+    logger.warn("会话没了", error)
+    await closeLogger()
+    const parsed = JSON.parse(readLogs(dir).trim()) as Record<string, unknown>
+    expect(parsed.meta).toEqual([
+      {
+        name: "Session.NotFoundError",
+        message: "Session.NotFoundError",
+        stack: expect.any(String),
+      },
+    ])
+  })
+
   it("message、meta 与 Error 栈里的凭证都会打码", async () => {
     const dir = tempDir()
     const logger = createLogger("[test]", { dir })

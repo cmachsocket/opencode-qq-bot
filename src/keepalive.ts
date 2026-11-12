@@ -10,6 +10,20 @@ export const KEEP_ALIVE_SESSION_KEY = "keepalive-session"
 export const KEEP_ALIVE_SESSION_MARKER = "qqKeepAliveSession"
 /** 保活会话标题。 */
 export const KEEP_ALIVE_TITLE = "QQ 保活"
+/** 上游表示“会话不存在”的错误名。 */
+const SESSION_NOT_FOUND = "Session.NotFoundError"
+
+/**
+ * 判断错误是不是上游的“会话不存在”。
+ *
+ * 上游的 Session.NotFoundError 没有 message，只有 name 和 _tag，
+ * 所以只能靠名字判断，不然日志里只剩一段没有内容的栈。
+ */
+function isSessionNotFound(error: unknown): boolean {
+  if (typeof error !== "object" || error === null) return false
+  const candidate = error as { name?: unknown; _tag?: unknown }
+  return candidate.name === SESSION_NOT_FOUND || candidate._tag === SESSION_NOT_FOUND
+}
 
 /**
  * 保活心跳：让 OpenCode 不要因为长时间没有会话活动而卸载插件。
@@ -84,7 +98,13 @@ export class KeepAlive {
       const info = await this.ctx.session.get({ sessionID })
       metadata = info?.metadata ?? { [KEEP_ALIVE_SESSION_MARKER]: true }
     } catch (error) {
-      // 会话已经被删除：丢掉缓存，下一次心跳重建一个。
+      if (isSessionNotFound(error)) {
+        // 会话已经被删掉了：当场重建，不等下一个心跳。
+        this.logger.warn(`保活会话 ${sessionID} 已不存在，正在重建`)
+        await this.rebuild(sessionID)
+        return
+      }
+      // 会话暂时读不出来：丢掉缓存，下一次心跳重建一个。
       this.logger.warn("保活会话已失效，将重建", error)
       this.sessionID = undefined
       return
@@ -94,7 +114,35 @@ export class KeepAlive {
       await this.ctx.session.update({ sessionID, metadata })
       this.logger.debug(`保活心跳已刷新会话 ${sessionID}`)
     } catch (error) {
+      if (isSessionNotFound(error)) {
+        this.logger.warn(`保活会话 ${sessionID} 已不存在，正在重建`)
+        await this.rebuild(sessionID)
+        return
+      }
       this.logger.warn("保活心跳失败", error)
+    }
+  }
+
+  /**
+   * 保活会话已经不存在时的重建。
+   *
+   * 不当场重建的话要等到下一个心跳才补上，这段时间里插件可能被 OpenCode 当成空闲卸载，
+   * 保活也就失效了，所以当场重建并刷新一次元数据。
+   */
+  private async rebuild(staleSessionID: string): Promise<void> {
+    this.sessionID = undefined
+    await this.clearStoredSession(staleSessionID)
+    try {
+      const sessionID = await this.resolveSession()
+      if (this.stopped) return
+      const info = await this.ctx.session.get({ sessionID })
+      await this.ctx.session.update({
+        sessionID,
+        metadata: info?.metadata ?? { [KEEP_ALIVE_SESSION_MARKER]: true },
+      })
+      this.logger.debug(`保活心跳已刷新会话 ${sessionID}`)
+    } catch (error) {
+      this.logger.warn("重建保活会话失败", error)
     }
   }
 
@@ -143,6 +191,10 @@ export class KeepAlive {
     try {
       await this.ctx.session.update({ sessionID, archived: true })
     } catch (error) {
+      if (isSessionNotFound(error)) {
+        this.logger.debug(`保活会话 ${sessionID} 已不存在，跳过归档`)
+        return
+      }
       this.logger.debug("归档保活会话失败", error)
       return
     }
@@ -160,8 +212,9 @@ export class KeepAlive {
 
   /** 读取上次保存的保活会话；会话已经不存在或属于别的目录时返回 undefined。 */
   private async readStoredSession(): Promise<string | undefined> {
+    let stored: unknown
     try {
-      const stored = await this.ctx.storage.get(KEEP_ALIVE_SESSION_KEY)
+      stored = await this.ctx.storage.get(KEEP_ALIVE_SESSION_KEY)
       if (typeof stored !== "string" || stored.length === 0) return undefined
       const info = await this.ctx.session.get({ sessionID: stored })
       // 插件存储是机器级共享的，别的目录留下的会话不能拿来用。
@@ -171,6 +224,11 @@ export class KeepAlive {
       }
       return stored
     } catch (error) {
+      if (isSessionNotFound(error)) {
+        this.logger.debug(`存储里的保活会话 ${String(stored)} 已不存在，将新建会话`)
+        await this.clearStoredSession(String(stored))
+        return undefined
+      }
       this.logger.debug("读取保活会话失败，将新建会话", error)
       return undefined
     }

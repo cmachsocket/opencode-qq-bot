@@ -181,7 +181,8 @@ function normalizeValue(value: unknown, depth: number): unknown {
   if (value instanceof Error) {
     return {
       name: value.name,
-      message: value.message,
+      // 有些上游错误（例如 opencode 的 Session.NotFoundError）没有 message，只能用名字顶上。
+      message: value.message || value.name,
       stack: value.stack ? value.stack.replace(/\s*\n\s*/g, " ") : undefined,
     }
   }
