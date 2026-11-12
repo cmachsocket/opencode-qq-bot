@@ -2,7 +2,7 @@
 
 > 状态：审计完成。范围内 6 个提交（配置体系重构 + 状态面板 + 会话恢复改造 + 2 次发布 + 2 份设计文档），
 > 发现 3 个高危、5 个中危、7 个低危问题。高危 3 条与中危 4、5 都实测复现过，复现步骤写在各条里。
-> 修复状态：全部待处理。
+> 修复状态：高危 3 条、中危 5 条与低危 7 条已全部修复，各条末尾记录了做法。
 
 审计范围：`4d053417aca031b1c10876d5686982775bbbd6b2` 之后的全部提交，直到 `50f1ccc`。
 
@@ -22,27 +22,30 @@
 - **新增状态面板**：`src/panel/{api,auth,models,runtime,server,status}.ts` + `web/`（Svelte 5 + Vite + Tailwind v4）。
 - **会话恢复改造**：`src/session/find.ts`、`src/session/manager.ts`。
 
-验证基线（HEAD `50f1ccc`，工作区干净）：
+验证基线（审计时 HEAD `50f1ccc`，工作区干净）：
 
 - `bun run typecheck`（`tsc --noEmit`）通过，无输出。
 - `bun run lint`（`eslint`）通过，无告警。
 - `bun run test`（`vitest run`）44 个文件 / 835 个用例全绿（2.6s）。
 
+修复后的验证：`bun run typecheck`、`bun run lint`、`bun run web:check` 通过；
+`bun run test` 46 个文件 / 847 个用例全绿。
+
 ---
 
 ## 修复状态
 
-| 编号   | 问题                                            | 状态   |
-| ------ | ----------------------------------------------- | ------ |
-| 高危 1 | 面板端口冲突导致 OpenCode 进程崩溃              | 待处理 |
-| 高危 2 | 面板保存可把配置写成「下次启动即死」            | 待处理 |
-| 高危 3 | 面板改过一次端口后配置订阅就断了                | 待处理 |
-| 中危 4 | 面板默认关闭时改配置打开不会生效                | 待处理 |
-| 中危 5 | 多余实例提前启动面板并泄漏监听                  | 待处理 |
-| 中危 6 | `events.subscribe` 标了热字段但实际不热         | 待处理 |
-| 中危 7 | `reuseSession` 找的是「消息最多」不是「上一个」 | 待处理 |
-| 中危 8 | 面板令牌明文进日志文件                          | 待处理 |
-| 低危   | 见下文「低危 / 提示」                           | 待处理 |
+| 编号   | 问题                                            | 状态   | 做法                                                           |
+| ------ | ----------------------------------------------- | ------ | -------------------------------------------------------------- |
+| 高危 1 | 面板端口冲突导致 OpenCode 进程崩溃              | 已修复 | 自建 `http.Server`，`listen` 包 Promise，端口占用重试后 reject |
+| 高危 2 | 面板保存可把配置写成「下次启动即死」            | 已修复 | `applyPatch()` 改为先校验后落盘；必填字段禁删                  |
+| 高危 3 | 面板改过一次端口后配置订阅就断了                | 已修复 | 订阅与 HTTP 监听解耦，`stop()` 不再退订                        |
+| 中危 4 | 面板默认关闭时改配置打开不会生效                | 已修复 | `start()` 无论开关都先订阅，由 `reconcile()` 决定监听          |
+| 中危 5 | 多余实例提前启动面板并泄漏监听                  | 已修复 | 面板启动挪到 `claimInstance()` 之后，`occupied` 分支收尾       |
+| 中危 6 | `events.subscribe` 标了热字段但实际不热         | 已修复 | 事件回调内按当前配置判定订阅类别                               |
+| 中危 7 | `reuseSession` 找的是「消息最多」不是「上一个」 | 已修复 | 复用路径取最近的一条，恢复路径仍取消息最多的                   |
+| 中危 8 | 面板令牌明文进日志文件                          | 已修复 | `panel.token` 进 `knownSecrets`，日志不再打印明文              |
+| 低危   | 见下文「低危 / 提示」                           | 已修复 | 7 条逐条处理，见各条末尾                                       |
 
 ---
 
@@ -81,6 +84,11 @@ UNCAUGHT EXCEPTION: Failed to start server. Is port 7421 in use?
 
 位置：`src/panel/server.ts:104-124`、`src/index.ts:214`
 
+**已修复**：`src/panel/server.ts` 改用 `createAdaptorServer()` + 自己的 `http.Server.listen()`，
+`listen()` 包成 Promise（`'error'` reject、`'listening'` resolve），端口被占用时按 `PORT_RETRY_TIMES` /
+`PORT_RETRY_INTERVAL_MS` 重试，仍失败则 reject —— 不再变成 uncaught exception。
+面板启动同时挪到 `claimInstance()` 之后。复现脚本 `verify-panel4.ts` 现在得到 reject，进程存活。
+
 ### 2. 面板保存可以把配置写成「下次启动即死」
 
 `src/config/live.ts:87-101` 的 `applyPatch()` 顺序是**先落盘、后校验**：
@@ -118,6 +126,11 @@ const next = this.resolve(raw) // ← 这里才校验，可能抛
 
 位置：`src/config/live.ts:87-101`、`src/config/registry.ts`、`web/src/routes/ConfigPage.svelte`
 
+**已修复**：`applyPatch()` 改成**先 `resolve()` 校验、再 `store.write()`**，校验不过就不碰文件；
+注册表新增 `required` 标记（`napcat.url`）与 `requiredFieldProblem()`，必填字段传 `null` 直接被拒，
+面板接口返回 400 而不是 500；`configJsonSchema()` 也补上了 `required` 数组。
+复现脚本 `verify-panel3.ts` 现在返回 400，磁盘文件保持原样。
+
 ### 3. 面板改过一次端口后，配置订阅就断了
 
 `src/panel/server.ts` 把「订阅配置变化」和「HTTP 监听」的生命周期绑在了一起：
@@ -144,6 +157,11 @@ const next = this.resolve(raw) // ← 这里才校验，可能抛
 
 位置：`src/panel/server.ts:59-101`
 
+**已修复**：订阅从 `start()` / `stop()` 里拆出来 —— `start()` 只订阅一次，`stop()` 退订，
+关 HTTP 服务改由私有的 `closeServer()` 负责，换端口走 `closeServer()` + `listen()`，不再经过 `stop()`。
+`reconcile()` 每次先比对令牌再决定监听，轮换令牌在面板关闭时同样生效。
+复现脚本 `verify-panel.ts` 现在三步全部符合预期。
+
 ---
 
 ## 中危
@@ -169,6 +187,9 @@ if (!config.panel.enabled) {
 
 位置：`src/panel/server.ts:59-69`
 
+**已修复**：`start()` 无论 `panel.enabled` 与否都先订阅配置变化，监听与否交给 `reconcile()` 判断。
+复现脚本 `verify-panel2.ts` 现在改完 `enabled` 即启动面板。
+
 ### 5. 多余实例提前启动面板并泄漏监听
 
 `src/index.ts` 的启动顺序：
@@ -191,6 +212,9 @@ if (!config.panel.enabled) {
 建议：把 `claimInstance()` 提到面板启动之前；`occupied` 分支要走完整的 cleanup 流程再返回。
 
 位置：`src/index.ts:214-234`
+
+**已修复**：面板启动挪到 `claimInstance()` 之后（先接管旧实例释放端口再监听）；
+`occupied` 分支补上 `controller.stop()` 与退订，不再留下文件监听与订阅。
 
 ### 6. `events.subscribe` 标了热字段但实际不热
 
@@ -224,6 +248,10 @@ const startConsuming = async () => {
 
 位置：`src/index.ts:978-989`、`src/config/fields.ts`
 
+**已修复**：监听仍然只注册一次，但回调内部按**当前**配置判定类别 ——
+消息事件看 `events.subscribe` 是否含 `message`，通知事件看是否含 `notice`，
+加类别与去类别都不用重连。
+
 ### 7. `reuseSession` 找的是「消息最多」不是「上一个」
 
 `src/session/manager.ts:1706-1712`：
@@ -253,6 +281,10 @@ private async findExistingSession(target: ChatTarget): Promise<string | undefine
 如果确实要按消息数排序，可以只读会话的元数据行数，不要拉全量上下文。
 
 位置：`src/session/manager.ts:1706-1712`、`src/config/fields.ts`（`reuseSession`）
+
+**已修复**：`findExistingSession()` 改回取最近的一条（候选按创建时间倒序，取第一条），
+不再调用 `pickRichestSession()`；恢复路径 `recoverSession()` 仍按「消息最多」换绑，两条路径不再共用同一规则。
+消息路径上也不再为了计数去拉全量上下文。
 
 ### 8. 面板令牌明文进日志文件
 
@@ -284,6 +316,9 @@ config.napcat.token ?? "",
 
 位置：`src/index.ts:102-108`、`src/index.ts:193-202`
 
+**已修复**：`knownSecrets()` 增加 `config.panel.token`，日志里显示为 `[REDACTED]`；
+生成令牌时也不再打印明文，只提示去 `config.json` 里看。
+
 ---
 
 ## 低危 / 提示
@@ -291,21 +326,30 @@ config.napcat.token ?? "",
 1. **`.gitignore` 收窄过头。** 删掉了 `.env.*` 与 `!.env.example`，现在只忽略 `.env`。
    `.env.local`、`.env.production` 这类同样含真实令牌与群号的文件不再被忽略，容易误提交。
    建议保留 `.env*` 并单独 `!.env.example`。
+   **已修复**：改回 `.env*` + `!.env.example`。
 2. **`docs/panel.md:59` 的示例配置带 `"version": 1`**，但注册表里没有 `version` 字段，
    `warnUnknownFileKeys` 每次加载都会告警「未知配置项：version」，且该键会被原样保留在文件里。
    要么把 `version` 注册成字段，要么改文档。
+   **已修复**：示例去掉 `version`，文档改成「格式当前不带版本号，注册表是格式的唯一事实源」。
 3. **`src/home.ts:45` 的 `resolvePath(base, value)` 是死代码**，没有任何调用点（`expandTilde` 仍在被 `src/media-path.ts` 使用）。
+   **已修复**：删除该函数，`expandTilde` 保留。
 4. **NOTICE 与实际依赖不符。** NOTICE 把 `@internationalized/date` 列在「随前端产物分发的依赖」里，
    但 `web/src` 里没有任何地方引用它，它只是 `web/package.json` 的 devDependency。
+   **已修复**：从产物分发表移到构建期依赖说明。
 5. **`web/vite.config.ts` 的 dev proxy 把 `7391` 写死**（`proxy: { "/api": "http://127.0.0.1:7391" }`），
    面板换端口后前端开发模式连不上后端。
+   **已修复**：改读 `PANEL_PORT` 环境变量，默认仍是 7391。
 6. **cleanup 名字重复**：`"取消配置订阅"` 在 `src/index.ts:257` 与 `src/index.ts:417` 各注册一次，
    日志里两条同名步骤无法区分（前者是日志级别订阅，后者是敏感检查开关）。
+   **已修复**：后一条改名「取消敏感检查订阅」。
 7. **两处小瑕疵**：
    - `src/index.ts:159` 的 `agentFromOptions(ctx.options)` 调用了两次；
      `applyPatch` 产生的 warnings 进了数组但那时已经打印完，永远不会输出。
    - `src/diary/scheduler.ts` 的 `lastTick` 在 mutex 内赋值，「还没到总结时刻」也会记成一次 tick，
      状态面板的 `nextRunAt` / `lastRunAt` 因此和真实的总结时间对不上。
+     **已修复**：`agentFromOptions()` 只调一次；配置告警改成「正式日志器就绪前先攒着、就绪后直接写日志」，
+     `applyPatch()` 的告警不再丢失；调度器新增 `nextSummaryAt()`（按 `summaryTime` 算下一次总结时刻），
+     面板把「下次运行 / 上次运行」改称「下次轮询 / 上次轮询」并单列「下次总结」。
 
 ---
 
@@ -331,3 +375,6 @@ config.napcat.token ?? "",
 6. **补 `PanelServer` 的生命周期测试**：`tests/panel.test.ts` 现在只测 `createPanelApp`，
    `start` / `stop` / `reconcile` 一个都没测，高危 1、3、4、中危 4 全都落在这个缺口里。
    至少补：端口占用时 reject 而不是崩进程、改端口后仍能响应配置变化、`enabled` 从 false 变 true 能启动。
+
+以上 6 步全部完成。新增 `tests/panel-server.test.ts`（面板生命周期与配置文件写坏时不落盘）
+与 `tests/known-secrets.test.ts`（已知密钥的收集范围）。

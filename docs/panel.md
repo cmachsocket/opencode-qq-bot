@@ -56,7 +56,6 @@ OpenCode 进程
 
 ```jsonc
 {
-  "version": 1,
   "napcat": { "url": "ws://127.0.0.1:3001", "token": "…" },
   "access": { "allow": { "groups": [123], "users": [] } },
   "log": { "level": "info" },
@@ -66,7 +65,7 @@ OpenCode 进程
 
 - **只存显式值**：文件里没写的字段表示「未配置」，走默认值。不把默认值全量写进去，避免文件被默认值淹没，也让「清空某字段」等价于删除该键。
 - 结构沿用现有配置对象的嵌套形状，现有 zod schema 可以直接复用，不需要第二套解析逻辑。
-- `version` 用于将来的字段迁移。未知字段保留原样并告警，不静默丢弃。
+- 文件格式当前不带版本号：字段注册表就是格式的唯一事实源，需要迁移时再引入版本键。未知字段保留原样并告警，不静默丢弃。
 - 文件权限 `0600`，目录 `0700`；写入用 `write-file-atomic`（临时文件 + fsync + rename，`mode: 0o600`，同路径并发写自动排队），并保留一份 `.bak`。
 - `config.json` 只有插件进程一个写者（面板也在同一进程内），不需要额外的文件锁；仓库里已有的 `@bybrave/proper-lockfile2` 是机器级实例锁，语义不同，不复用。
 
@@ -210,7 +209,7 @@ export type FieldType =
 面板是单用户本地工具，用单令牌模式就够，不需要 JWT 与会话框架：
 
 - **令牌可手动配置**：`panel.token` 是普通配置项，在 `config.json` 里写死即可，手写的令牌原样生效。
-- **未配置时自动生成**：`node:crypto` 的 `randomBytes(32)` 生成随机令牌，明文写回 `config.json` 并在启动日志里打印一次，之后重启不变，用户随时能翻出来用。
+- **未配置时自动生成**：`node:crypto` 的 `randomBytes(32)` 生成随机令牌，明文写回 `config.json`，之后重启不变，用户随时能翻出来用。启动日志只提示「令牌已生成，请查看 `config.json` 里的 `panel.token`」，不打印明文——日志会被外发，令牌不该跟着走。
 - 存储：`config.json` 明文保存（文件 `0600`、目录 `0700`）。和 NapCat 令牌一样，明文只落在本机的受限文件里。
 - 比对：内存里算 sha256，用 `crypto.timingSafeEqual` 比较等长哈希，恒定时间，不泄露长度以外的信息。
 - 浏览器访问：`POST /api/login` 用令牌换取 `HttpOnly` + `SameSite=Strict` 的 Cookie，之后的请求自动带上。Cookie 的读写用 `hono/cookie` 的 `setCookie` / `getCookie`，不手拼 `Set-Cookie`。
@@ -322,7 +321,7 @@ export type FieldType =
 | 会话表     | `SessionManager.snapshot()`               | 合并 `ChatOverrides.for()` 的唤醒方式      |
 | 限流用量   | `SendRateLimiter` 内部计数                | 新增 `snapshot()`，给出每目标分钟/小时用量 |
 | 追踪时间线 | `Tracer.spans()`                          | 无                                         |
-| 日记调度   | `DiaryScheduler`                          | 暴露下次运行时间与上次结果                 |
+| 日记调度   | `DiaryScheduler`                          | 暴露下次总结时刻、下次轮询时间与上次结果   |
 | 工具策略   | `ToolPolicy.current()`、`profileOf()`     | 无                                         |
 | 日志尾部   | 日志器内存环形缓冲                        | 新增缓冲与读取接口                         |
 | 运行时     | 版本、启动时间、home 与日志目录、实例租约 | 聚合 `RuntimeStatus`                       |
@@ -372,9 +371,10 @@ export type FieldType =
 
 ## 保存语义与热更新
 
-保存流程：`PUT /api/config` → 用同一份 zod schema 校验 → 合并进内存配置 → 用 `write-file-atomic` 写入 `config.json` → 推送 SSE。
+保存流程：`PUT /api/config` → 校验补丁 → 合并进原始配置 → 解析成运行时配置（**解析不过就不碰文件**）→ 用 `write-file-atomic` 写入 `config.json` → 热字段就地生效 → 推送 SSE。
 
 - 提交的是**稀疏补丁**：只包含用户改动的字段；把某字段清空表示从文件里删除该键，从而回到默认值。
+- **必填字段不允许删除**：`napcat.url` 这类字段传 `null` 直接被拒（接口返回 400），文件保持原样。
 - 生效分两类：
   - **可热更新**（注册表里 `hot: true`）：放行名单、拒绝名单、事件订阅、限流参数、回复分段与延迟、日志级别、面板自身设置。这些字段在运行时被读取，改完立即生效。
   - **需重启**：NapCat 地址与令牌、角色设定路径、保活间隔、日记路径与保留天数等启动期读取的字段。面板在保存后明确列出这些字段并提示重启。
@@ -385,7 +385,7 @@ export type FieldType =
 ## 安全
 
 - 默认关闭（`panel.enabled=false`），默认只监听 `127.0.0.1`。
-- 必须有令牌：可手动配置，未配置时自动生成随机令牌并明文落盘到 `config.json`（`0600`），启动日志打印一次。
+- 必须有令牌：可手动配置，未配置时自动生成随机令牌并明文落盘到 `config.json`（`0600`），启动日志不打印明文。
 - 令牌只写 `config.json`，**不回写 `opencode.json`**：`opencode.json` 归 OpenCode 管理，插件不写。
 - 手动配置的令牌短于 16 个字符时输出告警，不阻断启动。
 - 浏览器侧用 `HttpOnly` + `SameSite=Strict` 的会话 Cookie，写接口校验 Origin（`hono/csrf`）。
@@ -473,9 +473,9 @@ web/                     Svelte 单页应用（独立 package.json）
   监听走 `chokidar`，外部改动解析成功后热更新。
 - 热更新：`src/config/live.ts` 的 `applyPatch` 只改叶子值并保持中间对象引用，
   `restartRequired` 由注册表的 `hot` 决定；面板保存与文件监听共用同一条解析路径。
-- HTTP：`src/panel/server.ts` 用 `@hono/node-server` 启动，`src/panel/auth.ts` 管理令牌与会话，
-  `src/panel/api.ts` 提供接口。令牌比较用定长摘要比较；未配置时随机生成、明文写回
-  `config.json`，启动日志打印一次。
+- HTTP：`src/panel/server.ts` 用 `@hono/node-server` 的 `createAdaptorServer` 启动，
+  `src/panel/auth.ts` 管理令牌与会话，`src/panel/api.ts` 提供接口。令牌比较用定长摘要比较；
+  未配置时随机生成、明文写回 `config.json`，启动日志不打印明文（令牌按已知密钥掩码）。
 - 状态：`src/panel/status.ts` 汇总连接、会话、限流、追踪、日记与工具策略；
   `/api/status` 与 SSE `status` 事件共用这一份快照。
 - 日志：`src/logger.ts` 维护 500 条环形缓冲与脱敏副本，`/api/logs` 与 SSE `log` 事件读取同一份数据；

@@ -28,17 +28,16 @@
 
 状态面板的构建产物 `web/dist` 随 npm 包分发，里面包含下列依赖的代码：
 
-| 依赖               | 许可        | 版权声明                                                       |
-| ------------------ | ----------- | -------------------------------------------------------------- |
-| svelte             | MIT         | Copyright (c) 2016-present Rich Harris and Svelte contributors |
-| bits-ui            | MIT         | Copyright (c) 2024 Bits UI contributors                         |
-| ajv                | MIT         | Copyright (c) 2010-2014, Guillaume Callebaut                  |
-| svelte-sonner      | MIT         | Copyright (c) 2024 Emil Sjolander                               |
-| lucide-svelte      | ISC         | Copyright (c) 2022 Lucide Contributors                         |
-| @internationalized/date | Apache-2.0 | Copyright 2019 Adobe（仅日期组件用到）                        |
+| 依赖          | 许可 | 版权声明                                                       |
+| ------------- | ---- | -------------------------------------------------------------- |
+| svelte        | MIT  | Copyright (c) 2016-present Rich Harris and Svelte contributors |
+| bits-ui       | MIT  | Copyright (c) 2024 Bits UI contributors                         |
+| ajv           | MIT  | Copyright (c) 2010-2014, Guillaume Callebaut                  |
+| svelte-sonner | MIT  | Copyright (c) 2024 Emil Sjolander                               |
+| lucide-svelte | ISC  | Copyright (c) 2022 Lucide Contributors                         |
 
-`shadcn-svelte` 与 Tailwind CSS 只在构建期使用，不进 npm 包；
-复制进仓库的组件源码属 MIT，保留原文件头的版权声明。
+`shadcn-svelte`、Tailwind CSS 与 `@internationalized/date`（Apache-2.0，Copyright 2019 Adobe）
+只在构建期使用，不进 npm 包；复制进仓库的组件源码属 MIT，保留原文件头的版权声明。
 
 ## 数据流与第三方处理
 
