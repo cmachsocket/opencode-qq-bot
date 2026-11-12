@@ -1,6 +1,7 @@
 import type { Plugin } from "@opencode/plugin"
 import { Mutex } from "async-mutex"
 import type { Logger } from "../logger"
+import type { CollectedSticker } from "./collection"
 import { type CustomFace, faceTag, type FavoriteRow } from "./favorites"
 
 /** 插件存储里收藏表情编号索引的键。 */
@@ -29,6 +30,15 @@ export function favoriteKey(face: CustomFace): string | undefined {
 interface StoredEntry {
   key: string
   id: number
+}
+
+/**
+ * 本机收集的表情的身份键。
+ *
+ * 和收藏表情一样以图片 md5 为准：同一张图只占一个编号。
+ */
+export function collectedKey(sticker: CollectedSticker): string {
+  return `md5:${sticker.md5.trim().toLowerCase()}`
 }
 
 /** 从插件存储里读回编号记录，格式不对就当没有。 */
@@ -70,8 +80,12 @@ export class FavoriteIndex {
    * 读取收藏表情列表并给每个表情配上编号。
    *
    * 返回的顺序按编号从小到大；`md5` 相同的记录视为同一个表情，只保留一条。
+   * 本机收集的表情和 QQ 收藏表情共用一套编号，按图片 md5 认回同一个编号。
    */
-  async sync(faces: readonly CustomFace[]): Promise<FavoriteRow[]> {
+  async sync(
+    faces: readonly CustomFace[],
+    collected: readonly CollectedSticker[] = [],
+  ): Promise<FavoriteRow[]> {
     await this.ensureLoaded()
     const rows: FavoriteRow[] = []
     const seen = new Set<string>()
@@ -94,14 +108,37 @@ export class FavoriteIndex {
       }
       rows.push({ id, face, tag: faceTag(face) })
     }
+    for (const sticker of collected) {
+      const key = collectedKey(sticker)
+      // 和 QQ 收藏表情撞上同一张图时以 QQ 收藏表情为准。
+      if (seen.has(key)) continue
+      seen.add(key)
+      let id = this.entries.get(key)
+      if (id === undefined) {
+        id = nextId
+        nextId += 1
+        this.entries.set(key, id)
+        changed = true
+      }
+      rows.push({
+        id,
+        face: { md5: sticker.md5, url: sticker.file, desc: sticker.description },
+        tag: sticker.description,
+        collected: sticker,
+      })
+    }
     rows.sort((left, right) => left.id - right.id)
     if (changed) await this.persist()
     return rows
   }
 
   /** 按编号找收藏表情；编号不存在时返回 undefined。 */
-  async resolve(faces: readonly CustomFace[], id: number): Promise<FavoriteRow | undefined> {
-    const rows = await this.sync(faces)
+  async resolve(
+    faces: readonly CustomFace[],
+    id: number,
+    collected: readonly CollectedSticker[] = [],
+  ): Promise<FavoriteRow | undefined> {
+    const rows = await this.sync(faces, collected)
     return rows.find((row) => row.id === id)
   }
 

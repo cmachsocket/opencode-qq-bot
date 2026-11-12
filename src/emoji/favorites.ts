@@ -1,6 +1,7 @@
 import { Mutex } from "async-mutex"
 import type { Logger } from "../logger"
 import { sanitizeUntrustedText } from "../model-view"
+import type { CollectedSticker } from "./collection"
 
 /**
  * NapCat 收藏表情（自定义表情）的详情。
@@ -57,6 +58,8 @@ export interface FavoriteRow {
   face: CustomFace
   /** 收藏表情当前的标签。 */
   tag: string
+  /** 本机收集的表情；QQ 收藏表情没有这个字段。 */
+  collected?: CollectedSticker
 }
 
 /**
@@ -66,7 +69,10 @@ export interface FavoriteRow {
  */
 export function formatFavoriteList(rows: readonly FavoriteRow[]): string {
   if (rows.length === 0) return "没有读取到收藏表情。"
-  const lines = rows.map((row) => `${row.id}. ${row.tag || "（未标注）"}`)
+  const lines = rows.map((row) => {
+    const tag = row.tag || "（未标注）"
+    return `${row.id}. ${tag}${row.collected ? "（本机收藏）" : ""}`
+  })
   return [`收藏表情（编号即发送用的 id，共 ${rows.length} 个）`, ...lines].join("\n")
 }
 

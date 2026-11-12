@@ -13,7 +13,16 @@ import { ToolPolicy } from "../src/tools/policy"
 import { tuiCommandName } from "../src/tui-commands"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { mkdtemp, writeFile } from "node:fs/promises"
 import { faceName, QQ_FACE_NAMES, renderFace } from "../src/emoji/faces"
+import {
+  checkDescription,
+  CollectionStore,
+  type CollectionStorage,
+  MAX_COLLECTED_STICKERS,
+  MAX_DESCRIPTION_LENGTH,
+  RecentImages,
+} from "../src/emoji/collection"
 import {
   type CustomFace,
   faceTag,
@@ -752,5 +761,204 @@ describe("emojiCommand", () => {
     })
     expect(harness.labelFace).not.toHaveBeenCalled()
     expect(harness.logger.info).toHaveBeenCalledWith("表情标注已中止")
+  })
+})
+
+describe("checkDescription", () => {
+  it("accepts a plain Chinese name", () => {
+    expect(checkDescription("猫猫跳舞")).toEqual({ ok: true, value: "猫猫跳舞" })
+  })
+
+  it("accepts digits", () => {
+    expect(checkDescription("猫猫2号")).toEqual({ ok: true, value: "猫猫2号" })
+  })
+
+  it("rejects a missing description", () => {
+    const result = checkDescription(undefined)
+    expect(result.ok).toBe(false)
+    expect(result.ok === false && result.reason).toContain("缺少 description")
+  })
+
+  it("rejects an empty description", () => {
+    expect(checkDescription("   ").ok).toBe(false)
+  })
+
+  it("rejects spaces", () => {
+    const result = checkDescription("猫猫 跳舞")
+    expect(result.ok === false && result.reason).toContain("不能有空格")
+  })
+
+  it("rejects punctuation", () => {
+    const result = checkDescription("猫猫，跳手")
+    expect(result.ok === false && result.reason).toContain("只能有文字和数字")
+  })
+
+  it("rejects names longer than the limit", () => {
+    const result = checkDescription("一二三四五六七八九十一二三四")
+    expect(result.ok === false && result.reason).toContain(`${MAX_DESCRIPTION_LENGTH} 个字`)
+  })
+})
+
+describe("CollectionStore", () => {
+  const logger = {
+    debug: vi.fn(),
+    info: vi.fn(),
+    warn: vi.fn(),
+    error: vi.fn(),
+  } as unknown as Logger
+
+  function createStorage(): CollectionStorage {
+    const map = new Map<string, unknown>()
+    return {
+      get: async (key: string) => map.get(key),
+      set: async (key: string, value: unknown) => {
+        map.set(key, value)
+      },
+    } as unknown as CollectionStorage
+  }
+
+  async function createStore(): Promise<{ store: CollectionStore; root: string }> {
+    const root = await mkdtemp(join(tmpdir(), "qq-bot-collection-"))
+    return { store: new CollectionStore(createStorage(), root, logger), root }
+  }
+
+  it("stores the image and its description", async () => {
+    const { store } = await createStore()
+    const source = join(await mkdtemp(join(tmpdir(), "qq-bot-src-")), "sticker.gif")
+    await writeFile(source, "GIF89a")
+    const sticker = await store.add(source, "猫猫跳舞")
+    expect(sticker.description).toBe("猫猫跳舞")
+    expect(sticker.file).toContain("favorites")
+    const items = await store.list()
+    expect(items).toHaveLength(1)
+    expect(items[0]?.md5).toBe(sticker.md5)
+  })
+
+  it("keeps one entry per image and updates the description", async () => {
+    const { store } = await createStore()
+    const source = join(await mkdtemp(join(tmpdir(), "qq-bot-src-")), "sticker.gif")
+    await writeFile(source, "GIF89a")
+    const first = await store.add(source, "猫猫跳舞")
+    const again = await store.add(source, "猫猫摊手")
+    const items = await store.list()
+    expect(items).toHaveLength(1)
+    expect(items[0]?.description).toBe("猫猫摊手")
+    expect(again.createdAt).toBe(first.createdAt)
+  })
+
+  it("restores the list from the storage", async () => {
+    const root = await mkdtemp(join(tmpdir(), "qq-bot-collection-"))
+    const map = new Map<string, unknown>()
+    const storage = {
+      get: async (key: string) => map.get(key),
+      set: async (key: string, value: unknown) => {
+        map.set(key, value)
+      },
+    } as unknown as CollectionStorage
+    const source = join(await mkdtemp(join(tmpdir(), "qq-bot-src-")), "sticker.gif")
+    await writeFile(source, "GIF89a")
+    await new CollectionStore(storage, root, logger).add(source, "猫猫跳舞")
+    const restored = await new CollectionStore(storage, root, logger).list()
+    expect(restored).toHaveLength(1)
+    expect(restored[0]?.description).toBe("猫猫跳舞")
+  })
+
+  it("drops the oldest entries beyond the limit", async () => {
+    const { store } = await createStore()
+    const dir = await mkdtemp(join(tmpdir(), "qq-bot-src-"))
+    for (let index = 0; index <= MAX_COLLECTED_STICKERS; index += 1) {
+      const source = join(dir, `sticker-${index}.gif`)
+      await writeFile(source, `GIF89a-${index}`)
+      await store.add(source, `表情${index}`)
+    }
+    const items = await store.list()
+    expect(items).toHaveLength(MAX_COLLECTED_STICKERS)
+    expect(items[0]?.description).toBe("表情1")
+  })
+})
+
+describe("RecentImages", () => {
+  const target: ChatTarget = { kind: "group", id: 100 }
+
+  it("picks the latest animated image", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "qq-bot-recent-"))
+    const gif = join(dir, "sticker.gif")
+    const png = join(dir, "still.png")
+    await writeFile(gif, "GIF89a")
+    await writeFile(png, "png")
+    const images = new RecentImages()
+    await images.record(target, [{ uri: `file://${gif}`, name: "sticker.gif" }])
+    await images.record(target, [{ uri: `file://${png}`, name: "still.png" }])
+    const latest = images.latest(target, { animated: true })
+    expect(latest?.file).toBe(gif)
+    expect(images.latest(target)?.file).toBe(png)
+  })
+
+  it("ignores images from other chats", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "qq-bot-recent-"))
+    const gif = join(dir, "sticker.gif")
+    await writeFile(gif, "GIF89a")
+    const images = new RecentImages()
+    await images.record({ kind: "group", id: 200 }, [{ uri: `file://${gif}`, name: "sticker.gif" }])
+    expect(images.latest(target, { animated: true })).toBeUndefined()
+  })
+
+  it("drops images outside the retention window", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "qq-bot-recent-"))
+    const gif = join(dir, "sticker.gif")
+    await writeFile(gif, "GIF89a")
+    const images = new RecentImages(0)
+    await images.record(target, [{ uri: `file://${gif}`, name: "sticker.gif" }])
+    expect(images.latest(target, { animated: true })).toBeUndefined()
+  })
+})
+
+describe("FavoriteIndex with collected stickers", () => {
+  const logger = {
+    debug: vi.fn(),
+    info: vi.fn(),
+    warn: vi.fn(),
+    error: vi.fn(),
+  } as unknown as Logger
+
+  function createStorage(): IndexStorage {
+    const map = new Map<string, unknown>()
+    return {
+      get: async (key: string) => map.get(key),
+      set: async (key: string, value: unknown) => {
+        map.set(key, value)
+      },
+    } as unknown as IndexStorage
+  }
+
+  it("gives collected stickers their own ids", async () => {
+    const index = new FavoriteIndex(createStorage(), logger)
+    const rows = await index.sync(
+      [face("猫猫摊手", { resId: "res-0" })],
+      [{ md5: "md5-collected", description: "猫猫跳舞", file: "/tmp/a.gif", createdAt: 1 }],
+    )
+    expect(rows.map((row) => row.id)).toEqual([1, 2])
+    expect(rows[1]?.tag).toBe("猫猫跳舞")
+    expect(rows[1]?.collected?.md5).toBe("md5-collected")
+  })
+
+  it("keeps the id of a collected sticker across syncs", async () => {
+    const index = new FavoriteIndex(createStorage(), logger)
+    const collected = [
+      { md5: "md5-collected", description: "猫猫跳舞", file: "/tmp/a.gif", createdAt: 1 },
+    ]
+    await index.sync([face("猫猫摊手", { resId: "res-0" })], collected)
+    const again = await index.sync([face("猫猫摊手", { resId: "res-0" })], collected)
+    expect(again[1]?.id).toBe(2)
+  })
+
+  it("keeps the QQ favorite when both sides hold the same image", async () => {
+    const index = new FavoriteIndex(createStorage(), logger)
+    const rows = await index.sync(
+      [face("猫猫摊手", { resId: "res-0", md5: "same-md5" })],
+      [{ md5: "same-md5", description: "猫猫跳舞", file: "/tmp/a.gif", createdAt: 1 }],
+    )
+    expect(rows).toHaveLength(1)
+    expect(rows[0]?.collected).toBeUndefined()
   })
 })

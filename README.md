@@ -324,6 +324,7 @@ OpenCode 按 location 统计会话活动，默认空闲 60 分钟后卸载该 lo
 | `qq_send_record`           | 发语音                                                                                      |
 | `qq_send_sticker`          | 发收藏表情（表情包），`id` 填收藏表情编号，编号见 `qq_favorite_list` 或 `/emoji-label list` |
 | `qq_favorite_list`         | 列收藏表情（表情包）的编号与标签                                                            |
+| `qq_collect_sticker`       | 收藏聊天里最近收到的动画表情，`description` 填中文名字（最多 12 个字，只用文字和数字）      |
 | `qq_send_forward`          | 发合并转发，`nodes` 为节点列表                                                              |
 | `qq_send_poke`             | 戳一戳                                                                                      |
 | `qq_delete_message`        | 撤回机器人自己发送过的消息                                                                  |
@@ -500,6 +501,8 @@ QQ 私聊（owner / 管理员）用 `/emoji-label`，TUI 用加前缀的 `/qq-em
 - 标签由模型看图生成：清洗后是 12 个字以内、不带标点的中文短语，例如「猫猫摊手」。
 - 标签写在 NapCat 侧的 `desc` 字段里，插件不保存副本。
 - 标注在一个不绑定 QQ 目标的专用会话里跑，不会触发「必须调用 `qq_send_message`」的角色守则。
+- 模型还能用 `qq_collect_sticker` 收藏群里别人发的动画表情：`description` 必填，要是一个不超过 12 个字、只用文字和数字的中文名字，不合规时工具会把规则原样退回让模型重填。
+- 收藏的动画表情由插件自己存（OneBot 没有「添加收藏表情」的动作），和 QQ 收藏表情共用一套编号，列表里标为「本机收藏」，发送时按普通图片发。
 
 详细说明见 [docs/emoji.md](docs/emoji.md)。
 
@@ -652,6 +655,7 @@ src/
   emoji/faces.ts     QQ 官方表情 ID → 名称
   emoji/favorites.ts 收藏表情读写与编号格式化
   emoji/favorite-index.ts 插件自维护的收藏表情编号索引
+  emoji/collection.ts 收集动画表情：描述校验、本机收藏与最近收到的图片
   emoji/label.ts     用模型给收藏表情起标签
   diary/command.ts   /qq-diary 命令（QQ 私聊里是 /diary）
   diary/collector.ts 日记素材的累积、按天读取与过期清理

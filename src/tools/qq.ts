@@ -8,6 +8,13 @@ import { dateKey, isDateKey } from "../diary/format"
 import { isDiaryScopeChat } from "../diary/scope"
 import type { DiaryStore } from "../diary/store"
 import {
+  checkDescription,
+  type CollectionStore,
+  DESCRIPTION_RULES,
+  MAX_DESCRIPTION_LENGTH,
+  type RecentImages,
+} from "../emoji/collection"
+import {
   CUSTOM_FACE_SUB_TYPE,
   type FavoriteStore,
   formatFavoriteIds,
@@ -53,6 +60,7 @@ export const QQ_TOOL_NAMES = [
   "qq_send_poke",
   "qq_delete_message",
   "qq_favorite_list",
+  "qq_collect_sticker",
   "qq_get_group_member_info",
   "qq_fetch_ptt_text",
   "qq_get_login_info",
@@ -72,6 +80,10 @@ export interface ToolDeps {
   favorites: FavoriteStore
   /** 收藏表情编号索引，供 qq_send_sticker 与 qq_favorite_list 使用。 */
   favoriteIndex: FavoriteIndex
+  /** 本机收集的表情清单，供 qq_collect_sticker 使用。 */
+  collection: CollectionStore
+  /** 各聊天最近收到的图片，供 qq_collect_sticker 找素材。 */
+  recentImages: RecentImages
   /** 出站限流器，所有发送类工具共用一个实例。 */
   limiter: SendRateLimiter
   /** 出站敏感信息检查，命中时整条消息不发送。 */
@@ -122,6 +134,10 @@ interface UserInput {
 
 interface StickerInput {
   id?: number
+}
+
+interface CollectStickerInput {
+  description?: string
 }
 
 interface MessageIdInput {
@@ -302,6 +318,8 @@ export async function registerTools(deps: ToolDeps): Promise<{ dispose(): Promis
     client,
     favorites,
     favoriteIndex,
+    collection,
+    recentImages,
     limiter,
     sensitive,
     outbound,
@@ -722,7 +740,8 @@ export async function registerTools(deps: ToolDeps): Promise<{ dispose(): Promis
 
     editor.add({
       name: "favorite_list",
-      description: "列出收藏表情（表情包）的编号与标签，编号用于 qq_send_sticker 发送。",
+      description:
+        "列出收藏表情（表情包）的编号与标签，编号用于 qq_send_sticker 发送。本机收集的表情也在列表里，标注为「本机收藏」。",
       input: {
         type: "object",
         properties: {},
@@ -733,8 +752,59 @@ export async function registerTools(deps: ToolDeps): Promise<{ dispose(): Promis
         const prepared = prepareQuery(context.sessionID)
         if (prepared.error) return prepared.error
         const faces = await favorites.list()
-        const rows = await favoriteIndex.sync(faces)
+        const rows = await favoriteIndex.sync(faces, await collection.list())
         return text(formatFavoriteList(rows))
+      },
+    })
+
+    editor.add({
+      name: "collect_sticker",
+      description: [
+        "收藏当前聊天里最近收到的一张动画表情（GIF 动图），收进收藏夹；",
+        "收藏后用 qq_send_sticker 按编号把它发回聊天。",
+        `description 必填：给这个表情起一个中文名字。${DESCRIPTION_RULES}`,
+      ].join(""),
+      input: {
+        type: "object",
+        properties: {
+          description: {
+            type: "string",
+            description: `收藏描述：中文名字，最多 ${MAX_DESCRIPTION_LENGTH} 个字，只用文字和数字，不要标点、空格、引号、解释（必填）`,
+          },
+        },
+        required: ["description"],
+        additionalProperties: false,
+      },
+      options: { namespace: TOOL_NAMESPACE, codemode: false },
+      execute: async (raw, context) => {
+        const input = (raw ?? {}) as CollectStickerInput
+        const prepared = prepareQuery(context.sessionID)
+        if (prepared.error) return prepared.error
+        const target = prepared.target
+        const checked = checkDescription(input.description)
+        if (!checked.ok) return text(`error: ${checked.reason}。${DESCRIPTION_RULES}`)
+        const image = recentImages.latest(target, { animated: true })
+        if (!image) {
+          return text("error: 这个聊天最近没有收到动画表情（GIF 动图），无法收藏")
+        }
+        let sticker
+        try {
+          sticker = await collection.add(image.file, checked.value)
+        } catch (error) {
+          logger.warn("收藏表情失败", error)
+          return text(`error: 收藏失败：${error instanceof Error ? error.message : String(error)}`)
+        }
+        const faces = await favorites.list()
+        const rows = await favoriteIndex.sync(faces, await collection.list())
+        // 同一张图本来就在 QQ 收藏里时，编号归那条收藏表情。
+        const row = rows.find((item) => {
+          const md5 = item.collected?.md5 ?? String(item.face.md5 ?? "").toLowerCase()
+          return md5 === sticker.md5
+        })
+        const age = Math.max(0, Math.round((Date.now() - image.at) / 1000))
+        return text(
+          `已收藏「${sticker.description}」，编号 ${row?.id ?? "未知"}（来自 ${age} 秒前收到的动图），之后用 qq_send_sticker 按编号发送。`,
+        )
       },
     })
 
@@ -763,7 +833,7 @@ export async function registerTools(deps: ToolDeps): Promise<{ dispose(): Promis
           return text("error: 缺少 id（收藏表情编号）")
         }
         const faces = await favorites.list()
-        const rows = await favoriteIndex.sync(faces)
+        const rows = await favoriteIndex.sync(faces, await collection.list())
         const row = rows.find((item) => item.id === id)
         if (!row) {
           return text(`error: 没有找到编号 ${id} 的收藏表情，可用编号：${formatFavoriteIds(rows)}`)
@@ -772,15 +842,18 @@ export async function registerTools(deps: ToolDeps): Promise<{ dispose(): Promis
         if (!url) return text(`error: 编号 ${id} 的收藏表情缺少可用地址`)
         guardOutbound(target, url)
         // 收藏表情的地址同样来自外部，要走和图片一致的路径与地址白名单。
-        const plan = await outbound.check(url)
+        let plan
+        try {
+          plan = await outbound.check(url)
+        } catch (error) {
+          return text(`error: ${error instanceof Error ? error.message : String(error)}`)
+        }
         const verdict = await permit(target, nextOperation())
         if (!verdict.allowed) return refuse(context.sessionID, verdict)
-        const response = await send(target, [
-          {
-            type: "image",
-            data: { file: outbound.materialize(plan), sub_type: CUSTOM_FACE_SUB_TYPE },
-          },
-        ])
+        // QQ 收藏表情带 sub_type=1（KCUSTOM）；本机收集的表情不在 QQ 收藏里，按普通图片发。
+        const data: { file: string; sub_type?: number } = { file: outbound.materialize(plan) }
+        if (!row.collected) data.sub_type = CUSTOM_FACE_SUB_TYPE
+        const response = await send(target, [{ type: "image", data }])
         trackSent(target, response)
         manager.markMessageSent(context.sessionID)
         return text(`你已成功发送收藏表情 ${id}「${row.tag || "未标注"}」，可以选择结束对话`)

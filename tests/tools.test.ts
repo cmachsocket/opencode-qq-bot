@@ -8,6 +8,7 @@ import { DEFAULT_CONFIG, type QQBotConfig } from "../src/config"
 import type { ChatTarget } from "../src/chat"
 import { dateKey } from "../src/diary/format"
 import { DiaryStore } from "../src/diary/store"
+import { CollectionStore, type CollectionStorage, RecentImages } from "../src/emoji/collection"
 import type { CustomFace } from "../src/emoji/favorites"
 import { FavoriteIndex, type IndexStorage } from "../src/emoji/favorite-index"
 import type { Logger } from "../src/logger"
@@ -43,6 +44,10 @@ interface Harness {
   logger: Record<keyof Logger, ReturnType<typeof vi.fn>>
   /** 日记存储，供日记工具读写。 */
   diary: DiaryStore
+  /** 本机收藏的表情。 */
+  collection: CollectionStore
+  /** 各聊天最近收到的图片。 */
+  recentImages: RecentImages
   /** 临时工作目录，媒体文件都放在这里。 */
   workspace: string
 }
@@ -173,6 +178,18 @@ async function createHarness(
     root: join(workspace, "diary"),
     logger: logger as unknown as Logger,
   })
+  // 收藏文件放在工作目录里，出站白名单才认它。
+  const collection = new CollectionStore(
+    {
+      get: async (key: string) => storage.get(key),
+      set: async (key: string, value: unknown) => {
+        storage.set(key, value)
+      },
+    } as unknown as CollectionStorage,
+    join(workspace, "media"),
+    logger as unknown as Logger,
+  )
+  const recentImages = new RecentImages()
 
   await registerTools({
     ctx,
@@ -186,6 +203,8 @@ async function createHarness(
     } as unknown as QQClient,
     favorites: favorites as never,
     favoriteIndex,
+    collection,
+    recentImages,
     limiter: new SendRateLimiter(config.rateLimit),
     sensitive: new SensitiveChecker({ enabled: config.sensitive.enabled }),
     outbound,
@@ -195,7 +214,7 @@ async function createHarness(
     diary,
   })
 
-  return { tools, api, favorites, manager, logger, diary, workspace }
+  return { tools, api, favorites, manager, logger, diary, collection, recentImages, workspace }
 }
 
 const context = { sessionID: "session-1" }
@@ -204,6 +223,7 @@ describe("registerTools", () => {
   it("registers every tool under the qq namespace", async () => {
     const { tools } = await createHarness()
     expect([...tools.keys()].sort()).toEqual([
+      "qq_collect_sticker",
       "qq_delete_message",
       "qq_diary_list",
       "qq_diary_read",
@@ -1259,5 +1279,95 @@ describe("registerTools", () => {
       ])
       expect(api["sendGroupMessage"]).not.toHaveBeenCalled()
     })
+  })
+})
+
+describe("qq_collect_sticker", () => {
+  /** 造一张动图并登记为这个聊天最近收到的图片。 */
+  async function receiveGif(
+    harness: Awaited<ReturnType<typeof createHarness>>,
+    name = "sticker.gif",
+  ): Promise<string> {
+    const file = join(harness.workspace, name)
+    await writeFile(file, Buffer.from("GIF89a动图"))
+    await harness.recentImages.record(group(100), [{ uri: `file://${file}`, name }], "9")
+    return file
+  }
+
+  it("收藏聊天里最近收到的动图并给出编号", async () => {
+    const harness = await createHarness()
+    await receiveGif(harness)
+    const result = await harness.tools
+      .get(`${TOOL_NAMESPACE}_collect_sticker`)
+      ?.execute({ description: "猫猫跳舞" }, context)
+    expect(result?.content).toContain("猫猫跳舞")
+    expect(result?.content).toContain("编号 2")
+    const items = await harness.collection.list()
+    expect(items).toHaveLength(1)
+    expect(items[0]?.description).toBe("猫猫跳舞")
+    expect(items[0]?.file).toContain("favorites")
+  })
+
+  it("描述不合规时拒绝收藏并说明规则", async () => {
+    const harness = await createHarness()
+    await receiveGif(harness)
+    const result = await harness.tools
+      .get(`${TOOL_NAMESPACE}_collect_sticker`)
+      ?.execute({ description: "猫猫 跳舞" }, context)
+    expect(result?.content).toContain("error")
+    expect(result?.content).toContain("不能有空格")
+    expect(await harness.collection.list()).toHaveLength(0)
+  })
+
+  it("缺少描述时拒绝收藏", async () => {
+    const harness = await createHarness()
+    await receiveGif(harness)
+    const result = await harness.tools
+      .get(`${TOOL_NAMESPACE}_collect_sticker`)
+      ?.execute({}, context)
+    expect(result?.content).toContain("error")
+    expect(await harness.collection.list()).toHaveLength(0)
+  })
+
+  it("没有动图时拒绝收藏", async () => {
+    const harness = await createHarness()
+    const file = join(harness.workspace, "still.png")
+    await writeFile(file, "not a gif")
+    await harness.recentImages.record(group(100), [{ uri: `file://${file}`, name: "still.png" }])
+    const result = await harness.tools
+      .get(`${TOOL_NAMESPACE}_collect_sticker`)
+      ?.execute({ description: "猫猫跳舞" }, context)
+    expect(result?.content).toContain("error")
+    expect(result?.content).toContain("没有收到动画表情")
+    expect(await harness.collection.list()).toHaveLength(0)
+  })
+
+  it("收藏列表里标出本机收藏的表情", async () => {
+    const harness = await createHarness()
+    await receiveGif(harness)
+    await harness.tools
+      .get(`${TOOL_NAMESPACE}_collect_sticker`)
+      ?.execute({ description: "猫猫跳舞" }, context)
+    const result = await harness.tools.get(`${TOOL_NAMESPACE}_favorite_list`)?.execute({}, context)
+    expect(result?.content).toContain("猫猫跳舞")
+    expect(result?.content).toContain("本机收藏")
+  })
+
+  it("发送本机收藏的表情时按普通图片发", async () => {
+    const harness = await createHarness()
+    await receiveGif(harness)
+    await harness.tools
+      .get(`${TOOL_NAMESPACE}_collect_sticker`)
+      ?.execute({ description: "猫猫跳舞" }, context)
+    const result = await harness.tools
+      .get(`${TOOL_NAMESPACE}_send_sticker`)
+      ?.execute({ id: 2 }, context)
+    expect(result?.content).not.toContain("error")
+    const payload = harness.api["sendGroupMessage"]?.mock.calls[0]?.[1] as {
+      type: string
+      data: { file: string; sub_type?: number }
+    }[]
+    expect(payload[0]?.data.file).toContain("favorites")
+    expect(payload[0]?.data.sub_type).toBeUndefined()
   })
 })

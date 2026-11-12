@@ -72,6 +72,7 @@ import { registerTuiCommands } from "./tui-commands"
 import { pluginVersion } from "./version"
 import { FavoriteStore } from "./emoji/favorites"
 import { FavoriteIndex } from "./emoji/favorite-index"
+import { CollectionStore, RecentImages } from "./emoji/collection"
 import { EmojiLabeler } from "./emoji/label"
 
 const RETRY_DELAY_MS = 1000
@@ -507,6 +508,10 @@ export default Plugin.define({
           logger,
         )
         const favoriteIndex = new FavoriteIndex(ctx.storage, logger)
+        // 本机收集的表情：QQ 收藏表情写不进 NapCat，收集的动图自己存在媒体目录里。
+        const collection = new CollectionStore(ctx.storage, mediaDir, logger)
+        // 各聊天最近收到的图片：收藏表情时从中挑素材。
+        const recentImages = new RecentImages()
         const labeler = new EmojiLabeler({ ctx, config, home, logger, media, favorites })
         cleanup.add("注销表情标注", () => labeler.dispose(), CleanupOrder.labeler)
         // 日记：素材累积在 raw/ 下，成品是按天一个的 Markdown 文件。
@@ -559,6 +564,8 @@ export default Plugin.define({
             client,
             favorites,
             favoriteIndex,
+            collection,
+            recentImages,
             limiter,
             sensitive,
             outbound,
@@ -830,6 +837,8 @@ export default Plugin.define({
             const renderCtx = renderContext(target, selfId)
             const rendered = await renderMessage(renderCtx, event)
             if (!rendered.text.trim()) return
+            // 记下这张消息里的图片：收藏表情时从中挑最近收到的那张动图。
+            await recentImages.record(target, rendered.files, String(event.message_id))
 
             const senderRole = roleOf(config, String(event.user_id))
             const userName = await resolveUserName(renderCtx, String(event.user_id))
