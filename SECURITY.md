@@ -54,7 +54,7 @@ opencode-qq-bot 是一个 OpenCode V2 插件：它从 NapCat（OneBot 11）接�
 
 这些不是建议，是「按设计能成立」的前提：
 
-1. `opencode.json(c)`、`.env`、NapCat 的 token **不进仓库、不进同步盘**。仓库只提交 `opencode.example.json` 与 `.env.example`。
+1. `opencode.json(c)`、`config.json`、NapCat 的 token **不进仓库、不进同步盘**。仓库只提交 `opencode.example.json`；`config.json` 与 `opencode.json` 都由你自己维护。
 2. 配好 `groups` / `users` 白名单；空数组表示「不响应」，不要为了图省事放开全部。
 3. 日志（`$XDG_STATE_HOME/opencode-qq-bot/logs`）、媒体（同目录下 `media`）与机器人工作目录不要放在公开目录或网盘同步目录。
 4. `media.allowedDirs` 只放开真正需要的目录，不要直接给家目录或 `/`。

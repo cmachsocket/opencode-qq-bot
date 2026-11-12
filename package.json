@@ -23,6 +23,7 @@
     "src",
     "souls",
     "web/dist",
+    "config.example.json",
     "tool-profiles.example.json",
     "chat-overrides.example.json",
     "NOTICE",

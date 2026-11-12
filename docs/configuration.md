@@ -39,6 +39,9 @@
 }
 ```
 
+最小模板见仓库里的 [`config.example.json`](../config.example.json)（npm 包里也带了一份）：
+复制到工作目录改名为 `config.json`，再把地址、令牌和群号换成自己的。
+
 `panel.token` 留空时插件启动会随机生成一个，明文写回 `config.json`，并在启动日志里打印一次。
 `config.json` 的文件权限会被收紧到 `0600`，所在目录为 `0700`。
 

@@ -2,6 +2,18 @@
 
 本文件记录 opencode-qq-bot 的重要变更。
 
+## [Unreleased]
+
+### Added
+
+- 最小配置模板 `config.example.json`：复制到工作目录改名成 `config.json` 即可用，npm 包里也带一份。
+
+### Fixed
+
+- 文档里的配置示例回到新结构：README 的安装示例不再把 `napcat` / `access` 写成插件选项，
+  角色设定的示例改用 `config.json` 的 `soulName`；`docs/diary.md` 的日记配置项不再引用
+  已删除的 `QQ_DIARY_*` 环境变量；`SECURITY.md` 不再让人提交 `.env.example`。
+
 ## [0.9.0] - 2026-11-12
 
 ### Breaking Changes

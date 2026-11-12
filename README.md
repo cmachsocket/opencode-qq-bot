@@ -38,21 +38,8 @@ bun install
     {
       "package": "./",
       "options": {
-        // 不配置或留空数组时，对应的群聊或私聊不响应
-        "napcat": {
-          "url": "ws://127.0.0.1:3001",
-          "token": "your-token",
-        },
-        "access": {
-          "allow": {
-            "groups": [123456789],
-            "users": [987654321],
-          },
-          "deny": {
-            "groups": [],
-            "users": [],
-          },
-        },
+        // 插件选项只剩这一项：用哪个 agent 会话；留空跟随 OpenCode 默认
+        "agent": "qq",
       },
     },
   ],
@@ -60,6 +47,9 @@ bun install
 ```
 
 `package` 可以是本地路径，也可以是发布到 npm 的包名。
+
+NapCat 地址、放行名单、面板等其余配置写在 `config.json` 里（见下面「配置」），
+写进插件选项不再生效。
 
 ## 配置
 
@@ -80,6 +70,9 @@ OpenCode 插件选项里只剩 `agent`；`config.json` 不存在时插件直接�
   "access": { "allow": { "groups": [123456789], "users": [987654321] } }
 }
 ```
+
+最小模板在仓库里的 [`config.example.json`](config.example.json)（npm 包里也带了一份）：
+复制到工作目录，改名成 `config.json`，把里面的地址、令牌和群号换成自己的。
 
 ### 基础
 
@@ -307,23 +300,16 @@ OpenCode 按 location 统计会话活动，默认空闲 60 分钟后卸载该 lo
 首次启动时插件把随包分发的默认档复制到这里；之后只读工作目录里的副本，
 升级插件不会覆盖你改过的设定。目录与文件也可以自己新建，插件会直接使用。
 
-```jsonc
+```json
 {
-  "plugins": [
-    {
-      "package": "./",
-      "options": {
-        "soulName": "白羽桃.txt",
-      },
-    },
-  ],
+  "soulName": "白羽桃.txt"
 }
 ```
 
 - `soulName` 填工作目录 `souls` 里的文件名，默认 `default.txt`。
 - `soulPath` 可以直接给文件路径（相对路径按工作目录解析，与项目目录无关），也可以给目录，目录时同样用 `soulName` 选文件。
 - 生效文件的内容改动会被监听，下一轮就用新设定，不需要重启插件。
-- 改 `soulName` 换角色：写进 `opencode.json(c)` 保存后 OpenCode 会重载插件，随即生效。
+- 改 `soulName` 换角色：写进 `config.json` 后重载插件生效。
 
 ## 工具
 
