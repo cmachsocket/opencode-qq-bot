@@ -292,7 +292,7 @@ export const CONFIG_FIELDS: readonly ConfigField[] = [
     group: "proactive",
     type: "numberList",
     label: "主动说话的群号",
-    description: "留空表示不限制",
+    description: "留空表示一个都不主动说话",
     default: [],
   },
   {
@@ -300,7 +300,7 @@ export const CONFIG_FIELDS: readonly ConfigField[] = [
     group: "proactive",
     type: "numberList",
     label: "主动说话的私聊 QQ 号",
-    description: "留空表示不限制",
+    description: "留空表示一个都不主动说话",
     default: [],
   },
 

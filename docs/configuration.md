@@ -101,8 +101,8 @@
 | `proactive.startProbability`        | 数值     | `0.01`  | 重启 | 刚跨过阈值时的单次触发概率；≥ 0；≤ 1    |
 | `proactive.probabilityPerHour`      | 数值     | `0.05`  | 重启 | 每多沉默一小时概率增加多少；≥ 0；≤ 1    |
 | `proactive.tickSeconds`             | 数值     | `3600`  | 重启 | 主动说话心跳的轮询间隔，必须大于 0；≥ 0 |
-| `proactive.allowGroups`             | 数字列表 | `[]`    | 重启 | 留空表示不限制                          |
-| `proactive.allowUsers`              | 数字列表 | `[]`    | 重启 | 留空表示不限制                          |
+| `proactive.allowGroups`             | 数字列表 | `[]`    | 重启 | 留空表示一个都不主动说话                |
+| `proactive.allowUsers`              | 数字列表 | `[]`    | 重启 | 留空表示一个都不主动说话                |
 
 ### 唤醒
 
