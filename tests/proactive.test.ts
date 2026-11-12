@@ -33,11 +33,11 @@ describe("proactiveProbability", () => {
   })
 
   it("聊天写了概率就用聊天自己的", () => {
-    expect(proactiveProbability({ proactiveProbability: 0.3 }, config, 7200)).toBe(0.3)
-    expect(proactiveProbability({ proactiveProbability: 0 }, config, 7200)).toBe(0)
+    expect(proactiveProbability({ "proactive.startProbability": 0.3 }, config, 7200)).toBe(0.3)
+    expect(proactiveProbability({ "proactive.startProbability": 0 }, config, 7200)).toBe(0)
   })
 
   it("沉默没到阈值时一律不主动开口", () => {
-    expect(proactiveProbability({ proactiveProbability: 0.3 }, config, 3000)).toBe(0)
+    expect(proactiveProbability({ "proactive.startProbability": 0.3 }, config, 3000)).toBe(0)
   })
 })

@@ -35,6 +35,8 @@ export function proactiveProbability(
 ): number {
   const silenceHours = (silenceSeconds - config.silenceThresholdSeconds) / 3600
   if (silenceHours <= 0) return 0
-  if (override.proactiveProbability !== undefined) return override.proactiveProbability
+  if (override["proactive.startProbability"] !== undefined) {
+    return override["proactive.startProbability"]
+  }
   return proactiveTickProbability(config, silenceSeconds)
 }

@@ -230,6 +230,19 @@ describe("SoulLibrary", () => {
     library.dispose()
   })
 
+  it("只写名字时取工作目录 souls/ 下的文件", async () => {
+    const home = await makeDir("soul-library-name")
+    await mkdir(soulsDirectory(home))
+    await writeFile(join(soulsDirectory(home), "named.txt"), "按名字取的设定", "utf-8")
+
+    const library = new SoulLibrary(options({ home }), logger)
+    const store = await library.at(undefined, "named.txt")
+    expect(store.path).toBe(join(soulsDirectory(home), "named.txt"))
+    expect(store.text).toBe("按名字取的设定")
+
+    library.dispose()
+  })
+
   it("文件不存在时给出空提示词", async () => {
     const library = new SoulLibrary(options({ soulPath: "/nonexistent/soul.txt" }), logger)
     const store = await library.at("/nonexistent/soul.txt")

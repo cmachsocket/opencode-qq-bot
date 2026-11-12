@@ -222,11 +222,10 @@ export class SoulLibrary {
     return store
   }
 
-  /** 某个路径的角色设定；路径为空时用默认档。 */
-  async at(path: string | undefined): Promise<SoulStore> {
-    const explicit = path?.trim()
-    if (!explicit) return this.loadDefault()
-    const absolute = isAbsolute(explicit) ? explicit : resolve(this.options.home, explicit)
+  /** 某个路径或名字的角色设定；都没给时用默认档。 */
+  async at(path: string | undefined, name?: string): Promise<SoulStore> {
+    if (!path?.trim() && !name?.trim()) return this.loadDefault()
+    const absolute = resolveSoulPath({ ...this.options, soulPath: path, soulName: name })
     const cached = this.#stores.get(absolute)
     if (cached) return cached
     const store = new SoulStore({ ...this.options, soulPath: absolute }, this.logger)

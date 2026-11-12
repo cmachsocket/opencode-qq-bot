@@ -293,7 +293,7 @@ NapCat 连接断开后机器人就不再响应。
 2. 会话覆盖里的 `wake` 优先：`none` 完全不理，`all` 每条都必回。
 3. 消息里直接 @ 了机器人 → 必回（`mention`）。
 4. 群里第一个 @ 指向的是别人 → 这条消息不是跟机器人说的，不唤醒也不插话。
-5. 命中全局前缀 → 必回（`prefix`）；`wake: prefix` 的聊天只看自己写的前缀。
+5. 命中全局前缀 → 必回（`prefix`）；`wake: prefix` 的聊天只看自己的 `wake.prefixes`。
 6. @全体成员 → `wake.ignoreAtAll` 为 `false` 时必回（`at_all`），默认忽略。
 7. 回复了机器人自己 → `wake.replyToSelf` 为 `true` 时必回（`reply`）。
 8. 其余情况不强制回复，模型可以自行决定要不要说话。
@@ -345,8 +345,8 @@ NapCat 连接断开后机器人就不再响应。
 | `proactive.allowUsers`              | `[]`    | 只在这些私聊里主动说话，逗号分隔；留空表示都不主动说话 |
 
 - 白名单按聊天的类型分别生效：群看 `allowGroups`，私聊看 `allowUsers`；**两者默认都为空，表示不主动说话**。
-- 会话覆盖里写死 `proactive: true` 的聊天不受白名单限制，写死 `false` 的一律不主动开口。
-- 会话覆盖里的 `proactiveProbability` 是这个聊天单次心跳的触发概率，写了就用它，
+- 会话覆盖里写死 `proactive.enabled: true` 的聊天不受白名单限制，写死 `false` 的一律不主动开口。
+- 会话覆盖里的 `proactive.startProbability` 是这个聊天单次心跳的触发概率，写了就用它，
   不再随沉默时长增长；沉默阈值对所有聊天一视同仁。
 - 主动说话由配置放行的聊天自动触发，轮次按最低权限的 `proactive` 角色执行（工具档与普通聊天一致，
   不会拿到 `admin` 档的全工具）；因模型未发送而补的提醒沿用被提醒那一轮的角色。
@@ -494,29 +494,33 @@ NapCat 连接断开后机器人就不再响应。
 
 ### 全局项与会话项对照
 
-| 会话字段               | 覆盖的全局项                                                  | 取值                                  | 说明                                                       |
-| ---------------------- | ------------------------------------------------------------- | ------------------------------------- | ---------------------------------------------------------- |
-| `wake`                 | `wake.*`                                                      | `all` / `mention` / `prefix` / `none` | 群聊的唤醒条件                                             |
-| `prefix`               | `wake.prefixes`                                               | 字符串                                | `wake` 为 `prefix` 时使用的前缀                            |
-| `proactive`            | `proactive.enabled`                                           | 布尔                                  | `false` 关闭该聊天的主动说话；不写时跟随全局               |
-| `proactiveProbability` | `proactive.startProbability` / `proactive.probabilityPerHour` | 0 到 1                                | 该聊天单次心跳的触发概率，不写时用全局公式                 |
-| `agent`                | `agent`                                                       | 字符串                                | 覆盖该聊天使用的 OpenCode agent                            |
-| `model`                | `model`                                                       | `provider/model[/variant]`            | 覆盖该聊天使用的模型                                       |
-| `soul`                 | `soulPath` / `soulName`                                       | 文件路径                              | 覆盖该聊天使用的角色设定文件，相对路径按机器人工作目录解析 |
+| 会话字段                     | 覆盖的全局项                                                  | 取值                                  | 说明                                                   |
+| ---------------------------- | ------------------------------------------------------------- | ------------------------------------- | ------------------------------------------------------ |
+| `wake`                       | 无（会话专有）                                                | `all` / `mention` / `prefix` / `none` | 群聊的唤醒条件；`prefix` 用下面的前缀                  |
+| `wake.prefixes`              | `wake.prefixes`                                               | 字符串数组                            | `wake` 为 `prefix` 时使用，命中任意一个前缀即必回      |
+| `proactive.enabled`          | `proactive.enabled`                                           | 布尔                                  | `false` 关闭该聊天的主动说话；不写时跟随全局           |
+| `proactive.startProbability` | `proactive.startProbability` / `proactive.probabilityPerHour` | 0 到 1                                | 该聊天单次心跳的触发概率，不写时用全局公式             |
+| `agent`                      | `agent`                                                       | 字符串                                | 覆盖该聊天使用的 OpenCode agent                        |
+| `model`                      | `model`                                                       | `provider/model[/variant]`            | 覆盖该聊天使用的模型                                   |
+| `soulPath`                   | `soulPath`                                                    | 文件或目录路径                        | 覆盖该聊天使用的角色设定，相对路径按机器人工作目录解析 |
+| `soulName`                   | `soulName`                                                    | 文件名                                | 覆盖该聊天使用的角色设定文件名，取 `souls/` 下的文件   |
+
+会话字段只覆盖同名的全局项，不再另起一套别名；没写的字段继续用全局值。
 
 ### 覆盖行为
 
 - `wake`：`all` 每条消息都必回，`mention` 被 @ 才必回（默认），
   `prefix` 命中前缀或被 @ 才必回，`none` 这个群完全不响应群消息。
-- `wake` / `prefix` 只作用于群聊；私聊永远回复，不受这两项影响。
-- `proactive` 只能把该聊天的主动说话关小：`false` 一定不主动开口；不写时跟随
-  `proactive.enabled`；全局 `proactive.enabled` 为 `false` 时心跳不运行，会话写 `true`
+- `wake` / `wake.prefixes` 只作用于群聊；私聊永远回复，不受这两项影响。
+- `proactive.enabled` 只能把该聊天的主动说话关小：`false` 一定不主动开口；不写时跟随
+  全局 `proactive.enabled`；全局 `proactive.enabled` 为 `false` 时心跳不运行，会话写 `true`
   也不会重新开启。`wake: none` 同样会关掉主动说话。
-- `proactiveProbability` 是这个聊天单次心跳的触发概率（0 到 1），写了就用它，
+- `proactive.startProbability` 是这个聊天单次心跳的触发概率（0 到 1），写了就用它，
   不再随沉默时长增长；没写就按全局公式算。沉默阈值两边一视同仁。
 - `agent` / `model` 覆盖优先于全局配置：会话首次建立时直接带上覆盖值，之后覆盖变化时
   对已有会话调用 `switchAgent` / `switchModel` 切换，值没变就不切。
-- `soul` 覆盖 `soulPath` / `soulName` 选出的默认文件，按 mtime 热加载，改完下一轮生效。
+- `soulPath` / `soulName` 覆盖全局选出的默认文件：`soulPath` 优先，指向目录时取目录下的
+  `soulName`；按 mtime 热加载，改完下一轮生效。
 - 必回与否写进提示词：命中时明确要求模型回复，没命中时允许它不回复；
   群里第一条 @ 的是别人时，提示词会明确说「这条消息不是在跟你说话，不要回复」。
 - 文件缺失按默认走；单个字段写错只忽略这一项并告警；整份文件解析失败沿用上一份配置。
@@ -569,7 +573,7 @@ TUI 侧执行时结果发到该会话绑定的 QQ 聊天，没有绑定就发第
 
 - `soulName` 默认 `default.txt`。
 - 首次启动时把随包分发的初始文件复制到工作目录；已有的同名文件不会被覆盖，升级插件不影响改过的设定。
-- `soulPath` 与 `soul` 的相对路径都按机器人工作目录解析，与加载插件的项目目录无关。
+- `soulPath` 的相对路径按机器人工作目录解析（全局配置与会话覆盖一致），与加载插件的项目目录无关。
 - 文件内容改动会被监听，下一轮立即用新设定；文件稍后创建也会被捡到。
 - 换角色改 `soulName`：写进 `config.json` 后重载插件生效（该字段不在热更新范围内）。
 

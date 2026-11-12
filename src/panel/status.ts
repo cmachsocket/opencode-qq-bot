@@ -194,7 +194,9 @@ async function collectSessions(runtime: PanelRuntime): Promise<SessionRow[]> {
       buffered: item.buffered,
       pending: item.pending,
       ...(override?.wake ? { wake: override.wake } : {}),
-      ...(override?.proactive !== undefined ? { proactive: override.proactive } : {}),
+      ...(override?.["proactive.enabled"] !== undefined
+        ? { proactive: override["proactive.enabled"] }
+        : {}),
     })
   }
   return result

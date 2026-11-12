@@ -4,6 +4,12 @@
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- `chat-overrides.json` 的会话键改成与全局配置项同名：`prefix` → `wake.prefixes`（字符串数组）、
+  `proactive` → `proactive.enabled`、`proactiveProbability` → `proactive.startProbability`、
+  `soul` → `soulPath` / `soulName`。旧键名直接失效，没有迁移层。
+
 ### Fixed
 
 - 面板的保存按钮恢复可用：面板 CSP 是 `script-src 'self'`，而前端用 `ajv` 编译 JSON Schema

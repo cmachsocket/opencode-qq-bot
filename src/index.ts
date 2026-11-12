@@ -657,9 +657,9 @@ export default Plugin.define({
             }
             return
           }
-          // 角色设定可以按聊天覆盖：先看覆盖里写的路径，没有就用默认档。
+          // 角色设定可以按聊天覆盖：先看覆盖里写的 soulPath / soulName，没有就用默认档。
           const override = await overrides.for(target)
-          const soul = await souls.at(override.soul)
+          const soul = await souls.at(override.soulPath, override.soulName)
           event.system.push({ type: "text", text: soul.prompt })
           event.system.push({ type: "text", text: `当前时间：${currentTimeText()}` })
           const active = manager.activeTurn(event.sessionID)

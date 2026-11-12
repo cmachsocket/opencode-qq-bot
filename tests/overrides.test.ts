@@ -51,24 +51,32 @@ describe("parseChatOverrides", () => {
   it("读取合法的覆盖项", () => {
     const warn = vi.fn()
     const file = parseChatOverrides(
-      { chats: { "group:100": { wake: "prefix", prefix: "bot,", proactive: false } } },
+      {
+        chats: {
+          "group:100": { wake: "prefix", "wake.prefixes": ["bot,"], "proactive.enabled": false },
+        },
+      },
       warn,
     )
-    expect(file.chats["group:100"]).toEqual({ wake: "prefix", prefix: "bot,", proactive: false })
+    expect(file.chats["group:100"]).toEqual({
+      wake: "prefix",
+      "wake.prefixes": ["bot,"],
+      "proactive.enabled": false,
+    })
     expect(warn).not.toHaveBeenCalled()
   })
 
   it("写错的字段只忽略这一项", () => {
     const warn = vi.fn()
     const file = parseChatOverrides(
-      { chats: { "group:100": { wake: "loud", proactive: "yes" } } },
+      { chats: { "group:100": { wake: "loud", "proactive.enabled": "yes" } } },
       warn,
     )
     expect(file.chats["group:100"]).toEqual({})
     expect(warn).toHaveBeenCalledTimes(2)
   })
 
-  it("读取 agent、model 与 soul 覆盖", () => {
+  it("读取 agent、model 与 soulPath 覆盖", () => {
     const warn = vi.fn()
     const file = parseChatOverrides(
       {
@@ -76,7 +84,7 @@ describe("parseChatOverrides", () => {
           "group:100": {
             agent: "reviewer",
             model: "anthropic/claude-sonnet-4",
-            soul: "souls/reviewer.txt",
+            soulPath: "souls/reviewer.txt",
           },
         },
       },
@@ -85,8 +93,15 @@ describe("parseChatOverrides", () => {
     expect(file.chats["group:100"]).toEqual({
       agent: "reviewer",
       model: { providerID: "anthropic", id: "claude-sonnet-4" },
-      soul: "souls/reviewer.txt",
+      soulPath: "souls/reviewer.txt",
     })
+    expect(warn).not.toHaveBeenCalled()
+  })
+
+  it("会话键与全局项同名：soulName 也能覆盖", () => {
+    const warn = vi.fn()
+    const file = parseChatOverrides({ chats: { "group:100": { soulName: "reviewer.txt" } } }, warn)
+    expect(file.chats["group:100"]).toEqual({ soulName: "reviewer.txt" })
     expect(warn).not.toHaveBeenCalled()
   })
 
@@ -103,12 +118,12 @@ describe("parseChatOverrides", () => {
     })
   })
 
-  it("写错的 agent、model 与 soul 只忽略这一项", () => {
+  it("写错的 agent、model 与 soulPath 只忽略这一项", () => {
     const warn = vi.fn()
     const file = parseChatOverrides(
       {
         chats: {
-          "group:100": { agent: "", model: "没有斜杠", soul: "  " },
+          "group:100": { agent: "", model: "没有斜杠", soulPath: "  " },
         },
       },
       warn,
@@ -121,16 +136,32 @@ describe("parseChatOverrides", () => {
     const warn = vi.fn()
     const file = parseChatOverrides({ chats: { "group:100": { wake: "prefix" } } }, warn)
     expect(file.chats["group:100"]).toEqual({})
-    expect(warn).toHaveBeenCalledWith(expect.stringContaining("prefix"))
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("wake.prefixes"))
+  })
+
+  it("wake.prefixes 不是字符串数组时忽略", () => {
+    const warn = vi.fn()
+    const file = parseChatOverrides(
+      {
+        chats: {
+          "group:100": { "wake.prefixes": "bot," },
+          "group:200": { "wake.prefixes": ["  "] },
+        },
+      },
+      warn,
+    )
+    expect(file.chats["group:100"]).toEqual({})
+    expect(file.chats["group:200"]).toEqual({})
+    expect(warn).toHaveBeenCalledTimes(2)
   })
 
   it("读取主动说话概率", () => {
     const warn = vi.fn()
     const file = parseChatOverrides(
-      { chats: { "group:100": { proactiveProbability: 0.25 } } },
+      { chats: { "group:100": { "proactive.startProbability": 0.25 } } },
       warn,
     )
-    expect(file.chats["group:100"]).toEqual({ proactiveProbability: 0.25 })
+    expect(file.chats["group:100"]).toEqual({ "proactive.startProbability": 0.25 })
     expect(warn).not.toHaveBeenCalled()
   })
 
@@ -139,8 +170,8 @@ describe("parseChatOverrides", () => {
     const file = parseChatOverrides(
       {
         chats: {
-          "group:100": { proactiveProbability: 1.5 },
-          "group:200": { proactiveProbability: "abc" },
+          "group:100": { "proactive.startProbability": 1.5 },
+          "group:200": { "proactive.startProbability": "abc" },
         },
       },
       warn,
@@ -191,7 +222,7 @@ describe("wakeDecision", () => {
   })
 
   it("prefix 只在前缀命中时必回，被 @ 也算", () => {
-    const override = { wake: "prefix" as const, prefix: "bot," }
+    const override = { wake: "prefix" as const, "wake.prefixes": ["bot,"] }
     expect(wakeDecision(override, group(100), ctx({ text: "bot, 查一下" }))).toEqual({
       required: true,
       reason: "prefix",
@@ -207,6 +238,19 @@ describe("wakeDecision", () => {
       required: true,
       reason: "mention",
     })
+  })
+
+  it("wake.prefixes 可写多个，命中任意一个都必回", () => {
+    const override = { wake: "prefix" as const, "wake.prefixes": ["bot,", "小助手"] }
+    expect(wakeDecision(override, group(100), ctx({ text: "小助手 在吗" }))).toEqual({
+      required: true,
+      reason: "prefix",
+    })
+    expect(wakeDecision(override, group(100), ctx({ text: "bot, 查一下" }))).toEqual({
+      required: true,
+      reason: "prefix",
+    })
+    expect(wakeDecision(override, group(100), ctx({ text: "闲聊" }))).toEqual({ required: false })
   })
 
   it("全局前缀命中时必回", () => {
@@ -283,7 +327,7 @@ describe("proactiveAllowed", () => {
 
   it("显式关掉后不主动说话", () => {
     const scope = { allowGroups: [100], allowUsers: [] }
-    expect(proactiveAllowed({ proactive: false }, group(100), scope)).toBe(false)
+    expect(proactiveAllowed({ "proactive.enabled": false }, group(100), scope)).toBe(false)
   })
 
   it("静音的群也不主动说话", () => {
@@ -305,19 +349,21 @@ describe("proactiveAllowed", () => {
 
   it("写死打开的聊天不受白名单限制", () => {
     const scope = { allowGroups: [100], allowUsers: [] }
-    expect(proactiveAllowed({ proactive: true }, group(200), scope)).toBe(true)
+    expect(proactiveAllowed({ "proactive.enabled": true }, group(200), scope)).toBe(true)
     // 写死关掉的聊天永远不主动说话。
-    expect(proactiveAllowed({ proactive: false }, group(100), scope)).toBe(false)
+    expect(proactiveAllowed({ "proactive.enabled": false }, group(100), scope)).toBe(false)
   })
 })
 
 describe("describeOverride", () => {
   it("说明唤醒方式与主动说话", () => {
     expect(describeOverride({})).toBe("唤醒 mention（默认），主动说话跟随白名单")
-    expect(describeOverride({ wake: "prefix", prefix: "bot," })).toBe(
+    expect(describeOverride({ wake: "prefix", "wake.prefixes": ["bot,"] })).toBe(
       "唤醒 prefix，前缀 bot,，主动说话跟随白名单",
     )
-    expect(describeOverride({ proactive: false })).toBe("唤醒 mention（默认），不主动说话")
+    expect(describeOverride({ "proactive.enabled": false })).toBe(
+      "唤醒 mention（默认），不主动说话",
+    )
   })
 
   it("说明 agent、模型与角色设定", () => {
@@ -325,7 +371,7 @@ describe("describeOverride", () => {
       describeOverride({
         agent: "reviewer",
         model: { providerID: "anthropic", id: "claude-sonnet-4" },
-        soul: "souls/reviewer.txt",
+        soulPath: "souls/reviewer.txt",
       }),
     ).toBe(
       "唤醒 mention（默认），主动说话跟随白名单，agent reviewer，模型 anthropic/claude-sonnet-4，角色设定 souls/reviewer.txt",
@@ -333,8 +379,17 @@ describe("describeOverride", () => {
   })
 
   it("说明主动说话概率", () => {
-    expect(describeOverride({ proactiveProbability: 0.2 })).toBe(
+    expect(describeOverride({ "proactive.startProbability": 0.2 })).toBe(
       "唤醒 mention（默认），主动说话跟随白名单，主动概率 0.2",
+    )
+  })
+
+  it("soulPath 优先于 soulName", () => {
+    expect(describeOverride({ soulPath: "souls/a.txt", soulName: "b.txt" })).toBe(
+      "唤醒 mention（默认），主动说话跟随白名单，角色设定 souls/a.txt",
+    )
+    expect(describeOverride({ soulName: "b.txt" })).toBe(
+      "唤醒 mention（默认），主动说话跟随白名单，角色设定 b.txt",
     )
   })
 })
@@ -352,13 +407,13 @@ describe("ChatOverrides", () => {
     await writeFile(
       path,
       JSON.stringify({
-        chats: { "group:100": { wake: "all" }, "private:200": { proactive: false } },
+        chats: { "group:100": { wake: "all" }, "private:200": { "proactive.enabled": false } },
       }),
       "utf8",
     )
     const overrides = new ChatOverrides(path, logger)
     expect(await overrides.for(group(100))).toEqual({ wake: "all" })
-    expect(await overrides.for(priv(200))).toEqual({ proactive: false })
+    expect(await overrides.for(priv(200))).toEqual({ "proactive.enabled": false })
     expect(await overrides.for(group(999))).toEqual({})
   })
 

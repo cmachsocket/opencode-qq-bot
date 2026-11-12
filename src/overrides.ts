@@ -54,22 +54,28 @@ export interface ProactiveScope {
   allowUsers: number[]
 }
 
-/** 单个聊天的行为覆盖。 */
+/**
+ * 单个聊天的行为覆盖。
+ *
+ * 键名与全局配置项一致：会话能改哪一项，就用那一项在 `config.json` 里的名字。
+ */
 export interface ChatOverride {
-  /** 唤醒方式，缺省按被 @ 才必回。 */
+  /** 唤醒方式，缺省按被 @ 才必回；全局没有对应项，只在会话层出现。 */
   wake?: WakeMode
-  /** 唤醒前缀，`wake` 为 `prefix` 时用。 */
-  prefix?: string
-  /** 是否允许主动说话，false 表示这个聊天不主动开口。 */
-  proactive?: boolean
-  /** 这个聊天主动说话的概率，0 到 1；缺省按全局公式计算。 */
-  proactiveProbability?: number
+  /** 唤醒前缀，`wake` 为 `prefix` 时用；与全局 `wake.prefixes` 同名同形。 */
+  "wake.prefixes"?: string[]
+  /** 是否允许主动说话，对应全局 `proactive.enabled`。 */
+  "proactive.enabled"?: boolean
+  /** 这个聊天单次心跳的触发概率，对应全局 `proactive.startProbability`。 */
+  "proactive.startProbability"?: number
   /** 覆盖该聊天使用的 OpenCode agent。 */
   agent?: string
   /** 覆盖该聊天使用的模型，格式 `provider/model[/variant]`。 */
   model?: ModelRef
-  /** 覆盖该聊天使用的角色设定文件路径。 */
-  soul?: string
+  /** 覆盖该聊天使用的角色设定文件或目录，对应全局 `soulPath`。 */
+  soulPath?: string
+  /** 覆盖该聊天使用的角色设定文件名，对应全局 `soulName`。 */
+  soulName?: string
 }
 
 /** `chat-overrides.json` 的结构。 */
@@ -123,23 +129,28 @@ export function parseChatOverrides(
         warn(`会话覆盖 ${key} 的 wake 只能是 ${WAKE_MODES.join(" / ")}，已忽略`)
       }
     }
-    if (record.prefix !== undefined) {
-      if (typeof record.prefix === "string") {
-        const prefix = record.prefix.trim()
-        if (prefix) override.prefix = prefix
+    if (record["wake.prefixes"] !== undefined) {
+      const raw = record["wake.prefixes"]
+      if (!Array.isArray(raw)) {
+        warn(`会话覆盖 ${key} 的 wake.prefixes 必须是字符串数组，已忽略`)
       } else {
-        warn(`会话覆盖 ${key} 的 prefix 必须是字符串，已忽略`)
+        const prefixes = raw
+          .filter((item): item is string => typeof item === "string")
+          .map((item) => item.trim())
+          .filter((item) => item.length > 0)
+        if (prefixes.length > 0) override["wake.prefixes"] = prefixes
+        else warn(`会话覆盖 ${key} 的 wake.prefixes 至少要有一个非空前缀，已忽略`)
       }
     }
-    if (record.proactive !== undefined) {
-      if (typeof record.proactive === "boolean") {
-        override.proactive = record.proactive
+    if (record["proactive.enabled"] !== undefined) {
+      if (typeof record["proactive.enabled"] === "boolean") {
+        override["proactive.enabled"] = record["proactive.enabled"]
       } else {
-        warn(`会话覆盖 ${key} 的 proactive 必须是布尔值，已忽略`)
+        warn(`会话覆盖 ${key} 的 proactive.enabled 必须是布尔值，已忽略`)
       }
     }
-    if (record.proactiveProbability !== undefined) {
-      const raw = record.proactiveProbability
+    if (record["proactive.startProbability"] !== undefined) {
+      const raw = record["proactive.startProbability"]
       const value =
         typeof raw === "number"
           ? raw
@@ -147,9 +158,9 @@ export function parseChatOverrides(
             ? Number(raw.trim())
             : Number.NaN
       if (Number.isFinite(value) && value >= 0 && value <= 1) {
-        override.proactiveProbability = value
+        override["proactive.startProbability"] = value
       } else {
-        warn(`会话覆盖 ${key} 的 proactiveProbability 必须是 0 到 1 之间的数字，已忽略`)
+        warn(`会话覆盖 ${key} 的 proactive.startProbability 必须是 0 到 1 之间的数字，已忽略`)
       }
     }
     if (record.agent !== undefined) {
@@ -164,16 +175,23 @@ export function parseChatOverrides(
       if (model) override.model = model
       else warn(`会话覆盖 ${key} 的 model 必须是 provider/model[/variant]，已忽略`)
     }
-    if (record.soul !== undefined) {
-      if (typeof record.soul === "string" && record.soul.trim()) {
-        override.soul = record.soul.trim()
+    if (record.soulPath !== undefined) {
+      if (typeof record.soulPath === "string" && record.soulPath.trim()) {
+        override.soulPath = record.soulPath.trim()
       } else {
-        warn(`会话覆盖 ${key} 的 soul 必须是非空字符串，已忽略`)
+        warn(`会话覆盖 ${key} 的 soulPath 必须是非空字符串，已忽略`)
       }
     }
-    if (override.wake === "prefix" && !override.prefix) {
+    if (record.soulName !== undefined) {
+      if (typeof record.soulName === "string" && record.soulName.trim()) {
+        override.soulName = record.soulName.trim()
+      } else {
+        warn(`会话覆盖 ${key} 的 soulName 必须是非空字符串，已忽略`)
+      }
+    }
+    if (override.wake === "prefix" && !override["wake.prefixes"]?.length) {
       // 没有前缀就没法判断，改回被 @ 才必回，别让群变成完全不回话。
-      warn(`会话覆盖 ${key} 使用 prefix 唤醒但没有写 prefix，已按被 @ 才必回处理`)
+      warn(`会话覆盖 ${key} 使用 prefix 唤醒但没有写 wake.prefixes，已按被 @ 才必回处理`)
       delete override.wake
     }
     chats[key] = override
@@ -250,8 +268,9 @@ export function wakeDecision(
   if (policy.ignoreAtOthers && context.atOthersFirst) return { required: false, suppress: true }
   // 前缀模式只看这个聊天自己的前缀。
   if (override.wake === "prefix") {
-    const prefix = override.prefix
-    return prefix && context.text.trimStart().startsWith(prefix)
+    const text = context.text.trimStart()
+    const prefixes = override["wake.prefixes"] ?? []
+    return prefixes.some((prefix) => prefix && text.startsWith(prefix))
       ? { required: true, reason: "prefix" }
       : { required: false }
   }
@@ -272,17 +291,17 @@ export function wakeDecision(
  * 这个聊天允不允许主动说话。
  *
  * 默认拒绝：白名单为空表示一个都不放行，必须显式配置才会主动开口。
- * 聊天自己的覆盖里写了 `proactive: true` 才算显式打开，那一条不受白名单限制。
+ * 聊天自己的覆盖里写了 `proactive.enabled: true` 才算显式打开，那一条不受白名单限制。
  */
 export function proactiveAllowed(
   override: ChatOverride,
   target: ChatTarget,
   scope: ProactiveScope,
 ): boolean {
-  if (override.proactive === false) return false
+  if (override["proactive.enabled"] === false) return false
   if (chatMuted(override, target)) return false
   // 写死打开的聊天不受白名单限制。
-  if (override.proactive === true) return true
+  if (override["proactive.enabled"] === true) return true
   const list = target.kind === "group" ? scope.allowGroups : scope.allowUsers
   // 名单为空表示这一类一个都不放行。
   if (list.length === 0) return false
@@ -293,19 +312,23 @@ export function proactiveAllowed(
 export function describeOverride(override: ChatOverride): string {
   const parts: string[] = []
   parts.push(override.wake ? `唤醒 ${override.wake}` : "唤醒 mention（默认）")
-  if (override.wake === "prefix") parts.push(`前缀 ${override.prefix ?? "（未设置）"}`)
+  if (override.wake === "prefix") {
+    const prefixes = override["wake.prefixes"]?.join(" / ")
+    parts.push(`前缀 ${prefixes ?? "（未设置）"}`)
+  }
   parts.push(
-    override.proactive === true
+    override["proactive.enabled"] === true
       ? "主动说话"
-      : override.proactive === false
+      : override["proactive.enabled"] === false
         ? "不主动说话"
         : "主动说话跟随白名单",
   )
-  if (override.proactiveProbability !== undefined) {
-    parts.push(`主动概率 ${override.proactiveProbability}`)
+  if (override["proactive.startProbability"] !== undefined) {
+    parts.push(`主动概率 ${override["proactive.startProbability"]}`)
   }
   if (override.agent) parts.push(`agent ${override.agent}`)
   if (override.model) parts.push(`模型 ${override.model.providerID}/${override.model.id}`)
-  if (override.soul) parts.push(`角色设定 ${override.soul}`)
+  if (override.soulPath) parts.push(`角色设定 ${override.soulPath}`)
+  else if (override.soulName) parts.push(`角色设定 ${override.soulName}`)
   return parts.join("，")
 }
