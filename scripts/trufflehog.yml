@@ -61,6 +61,11 @@ detectors:
       - xxxxxxxx
       # 测试里的假凭证，避免把 fixture 当泄漏。
       - abcdefghijklmnop
+      # 面板测试里的假令牌（面板令牌、NapCat 令牌、地址查询串凭证）。
+      - panel-token-for-tests
+      - panel-token-value
+      - napcat-token-value
+      - query-token-value
 
   # PEM 私钥
   - name: PrivateKeyBlock
