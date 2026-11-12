@@ -54,6 +54,27 @@ describe("配置来源", () => {
   })
 })
 
+/** README 只列常用配置项，完整字段表在 docs/configuration.md。 */
+const README_KEY_FIELDS = [
+  "ownerQQ",
+  "admins",
+  "model",
+  "napcat.url",
+  "napcat.token",
+  "access.allow.groups",
+  "access.allow.users",
+  "access.deny.groups",
+  "access.deny.users",
+  "access.allowAllWhenEmpty",
+  "keepAlive.enabled",
+  "panel.enabled",
+  "panel.host",
+  "panel.port",
+  "soulName",
+  "reply.requirePermission",
+  "events.subscribe",
+]
+
 describe("字段表与注册表一致", () => {
   it("docs/configuration.md 覆盖全部配置项", () => {
     for (const field of CONFIG_FIELDS) {
@@ -63,10 +84,11 @@ describe("字段表与注册表一致", () => {
     }
   })
 
-  it("README 的配置表覆盖全部配置项", () => {
-    for (const field of CONFIG_FIELDS) {
-      expect(readme, `${field.path} 没有写进 README`).toContain(`\`${field.path}\``)
+  it("README 覆盖常用配置项并指向完整字段表", () => {
+    for (const path of README_KEY_FIELDS) {
+      expect(readme, `${path} 没有写进 README`).toContain(`\`${path}\``)
     }
+    expect(readme).toContain("docs/configuration.md")
   })
 })
 
