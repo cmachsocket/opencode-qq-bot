@@ -1,5 +1,4 @@
 <script lang="ts">
-  import Ajv from "ajv"
   import { onMount } from "svelte"
   import { RotateCcw, Save, Search } from "lucide-svelte"
   import { api, ApiError } from "$lib/api"
@@ -10,7 +9,7 @@
   import * as Select from "$lib/components/ui/select"
   import { Switch } from "$lib/components/ui/switch"
   import TagInput from "$lib/components/TagInput.svelte"
-  import { listValue, numberValue, setPath } from "$lib/fields"
+  import { listValue, numberValue } from "$lib/fields"
   import type {
     ConfigResponse,
     FieldMeta,
@@ -27,8 +26,6 @@
   }
 
   let { config, onrestart }: Props = $props()
-
-  const ajv = new Ajv({ allErrors: true, strict: false })
 
   let schema = $state<SchemaResponse>()
   let models = $state<ModelInfo[]>([])
@@ -167,37 +164,6 @@
     }
   }
 
-  /** 组装校验用的完整候选对象。 */
-  function candidate(): Record<string, unknown> {
-    const result: Record<string, unknown> = {}
-    for (const field of schema?.fields ?? []) {
-      if (field.secret) continue
-      const value = values[field.path]
-      if (value === undefined || value === null || value === "") continue
-      setPath(result, field.path, value)
-    }
-    return result
-  }
-
-  /** 用服务端给的 JSON Schema 校验，规则只有一份。 */
-  function validate(next: Record<string, unknown>): Record<string, string> {
-    if (!schema) return {}
-    const validateFn = ajv.compile(schema.jsonSchema)
-    if (validateFn(next)) return {}
-    const found: Record<string, string> = {}
-    for (const issue of validateFn.errors ?? []) {
-      const parent = issue.instancePath.replace(/^\//, "").replace(/\//g, ".")
-      // 缺必填项时 ajv 报在父对象上，要落到具体字段才标得红。
-      const path =
-        issue.keyword === "required"
-          ? [parent, String(issue.params.missingProperty)].filter(Boolean).join(".")
-          : parent
-      const message = issue.keyword === "required" ? "必填项，不能留空" : (issue.message ?? "取值不合法")
-      if (path) found[path] = message
-    }
-    return found
-  }
-
   /** 保存：只提交改过的字段。 */
   async function save(): Promise<void> {
     if (dirty.length === 0) {
@@ -211,20 +177,14 @@
       if (!field) continue
       const value = normalize(field, values[path])
       if (value === undefined) continue
-      patch[path] = field.secret ? value : value
+      patch[path] = value
     }
     if (Object.keys(patch).length === 0) {
       message = "没有需要保存的改动"
       tone = "ok"
       return
     }
-    const found = validate(candidate())
-    if (Object.keys(found).length > 0) {
-      errors = found
-      message = "校验不通过，请检查标红的字段"
-      tone = "error"
-      return
-    }
+    // 校验只放在服务端：面板的 CSP 不允许 eval，浏览器里编译不了 JSON Schema 校验器。
     busy = true
     try {
       const result = await api.save(patch)
@@ -293,7 +253,7 @@
         <RotateCcw class="size-4" />
         还原
       </Button>
-      <Button size="sm" disabled={busy || dirty.length === 0} onclick={() => void save()}>
+      <Button size="sm" disabled={busy || dirty.length === 0} onclick={() => void save().catch(fail)}>
         <Save class="size-4" />
         保存
       </Button>

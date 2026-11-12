@@ -2,6 +2,14 @@
 
 本文件记录 opencode-qq-bot 的重要变更。
 
+## [Unreleased]
+
+### Fixed
+
+- 面板的保存按钮恢复可用：面板 CSP 是 `script-src 'self'`，而前端用 `ajv` 编译 JSON Schema
+  校验器需要 `eval`，点击保存只会抛 `EvalError` 并被吞掉。现在前端不再做本地校验，
+  由后端 zod 校验并返回逐字段原因——本来就以后端为准。
+
 ## [0.9.2] - 2026-11-13
 
 ### Added

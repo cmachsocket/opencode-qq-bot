@@ -181,19 +181,19 @@ export type FieldType =
 
 原则：能用现成的就不自己写；自己写的部分只保留「没有现成轮子」的部分。
 
-| 需求                  | 选型                                        | 说明                                                           |
-| --------------------- | ------------------------------------------- | -------------------------------------------------------------- |
-| HTTP / 静态 / SSE     | `hono` + `@hono/node-server`                | 内置中间件覆盖路由、`streamSSE`、`serve-static`、Cookie、CSRF  |
-| 原子写配置            | `write-file-atomic`                         | 自带临时文件、fsync、rename、文件权限                          |
-| 监听配置改动          | `chokidar`                                  | 面板能感知外部编辑，提示重新加载                               |
-| 随机令牌              | `node:crypto` 的 `randomBytes`              | 平台原生，无须三方库                                           |
-| 令牌比对              | `node:crypto` 的 `timingSafeEqual`          | 恒定时间比较，平台原生                                         |
-| 配置校验              | `zod`（已在依赖里）                         | 后端权威判定，`z.toJSONSchema()` 出 JSON Schema                |
-| 前端 JSON Schema 校验 | `ajv` 8.20.0（MIT）                         | 直接吃 `/api/config/schema` 的 JSON Schema，前端不复制校验规则 |
-| UI 组件               | `shadcn-svelte` + `bits-ui`                 | 组件源码进仓库，样式走 Tailwind 变量主题                       |
-| 图标                  | `lucide-svelte` 1.0.1（ISC）                | shadcn 生态标配，不手画 SVG                                    |
-| 提示条                | `svelte-sonner` 1.2.3（MIT）                | shadcn 的 toast 组件基于它，不自己写通知条                     |
-| 时间与数字格式化      | `Intl.DateTimeFormat` / `Intl.NumberFormat` | 平台原生，自带中文本地化，不引 moment/date-fns                 |
+| 需求              | 选型                                        | 说明                                                          |
+| ----------------- | ------------------------------------------- | ------------------------------------------------------------- |
+| HTTP / 静态 / SSE | `hono` + `@hono/node-server`                | 内置中间件覆盖路由、`streamSSE`、`serve-static`、Cookie、CSRF |
+| 原子写配置        | `write-file-atomic`                         | 自带临时文件、fsync、rename、文件权限                         |
+| 监听配置改动      | `chokidar`                                  | 面板能感知外部编辑，提示重新加载                              |
+| 随机令牌          | `node:crypto` 的 `randomBytes`              | 平台原生，无须三方库                                          |
+| 令牌比对          | `node:crypto` 的 `timingSafeEqual`          | 恒定时间比较，平台原生                                        |
+| 配置校验          | `zod`（已在依赖里）                         | 后端权威判定，`z.toJSONSchema()` 出 JSON Schema               |
+| 前端校验          | 无（交给服务端）                            | 面板 CSP 禁止 `eval`，浏览器里编译不了 JSON Schema 校验器     |
+| UI 组件           | `shadcn-svelte` + `bits-ui`                 | 组件源码进仓库，样式走 Tailwind 变量主题                      |
+| 图标              | `lucide-svelte` 1.0.1（ISC）                | shadcn 生态标配，不手画 SVG                                   |
+| 提示条            | `svelte-sonner` 1.2.3（MIT）                | shadcn 的 toast 组件基于它，不自己写通知条                    |
+| 时间与数字格式化  | `Intl.DateTimeFormat` / `Intl.NumberFormat` | 平台原生，自带中文本地化，不引 moment/date-fns                |
 
 刻意用平台原生 API 的地方：`fetch`（数据请求）、`EventSource`（SSE，自带重连，只补连接状态显示）、`node:crypto`、`Intl`。这些是运行时自带能力，引入库反而多一层封装。
 
@@ -228,7 +228,7 @@ export type FieldType =
 
 - `zod` 4.6.7（已在依赖里）：`z.toJSONSchema()` 内置生成 JSON Schema，不需要 `zod-to-json-schema`。
 - 不引入 `@hono/zod-validator`：现有 `resolveConfig` 有「非法值回退默认值 + 告警」的语义，需要自己调用 schema 解析，中间件的 fail-fast 语义不合适。
-- 前端用 `ajv` 8.20.0 直接校验 `/api/config/schema` 返回的 JSON Schema，规则只有一份，前端不另写一套 min/max/enum 判断。
+- 校验只在服务端：面板的 CSP 是 `script-src 'self'`，不含 `unsafe-eval`，`ajv` 编译 schema 会用 `new Function`，在浏览器里直接抛 `EvalError`。保存时把补丁交给后端，后端返回逐字段原因。
 
 ### 前端
 
@@ -244,7 +244,6 @@ export type FieldType =
 | 样式        | `tailwindcss`                  | 4.3.5  |
 | 样式构建    | `@tailwindcss/vite`            | 4.3.5  |
 | 无样式原语  | `bits-ui`                      | 2.21.0 |
-| Schema 校验 | `ajv`                          | 8.20.0 |
 | 图标        | `lucide-svelte`                | 1.0.1  |
 | 提示条      | `svelte-sonner`                | 1.2.3  |
 
@@ -252,15 +251,15 @@ export type FieldType =
 - UI 用 `shadcn-svelte`：CLI 把组件源码复制进 `web/src/lib/components/ui/`，代码归仓库所有，不作为运行时依赖；底层是 `bits-ui`（无样式原语），样式走 Tailwind v4 + CSS 变量主题，明暗色内置。
 - 需要的组件：`Button`、`Input`、`Textarea`、`Label`、`Field`、`Switch`、`Checkbox`、`RadioGroup`、`Select`、`Combobox`、`Slider`、`Card`、`Table`、`Tabs`、`Dialog`、`AlertDialog`、`Sheet`、`Popover`、`DropdownMenu`、`Alert`、`Badge`、`Skeleton`、`Spinner`、`Toast`、`Tooltip`、`ScrollArea`、`Pagination`、`Separator`、`Progress`、`Meter`、`Kbd`、`ToggleGroup`。用 `bunx shadcn-svelte@latest add <name>` 按需添加，缺失组件再补。
 - 图标用 `lucide-svelte`，提示条用 `svelte-sonner`（shadcn 的 toast 组件基于它），不手画 SVG、不自己写通知条。
-- 校验用 `ajv` 按服务端 JSON Schema 走，前端不另写一套规则。
-- 依赖分层：Tailwind 与 CLI 只在构建期；前端运行时依赖为 `bits-ui`（MIT）、`ajv`（MIT）、`lucide-svelte`（ISC）、`svelte-sonner`（MIT）及 `bits-ui` 的 peer `@internationalized/date`（Apache-2.0，仅日期组件用得到）。`web/dist` 预计 150 KB（gzip）左右。
+- 校验只放服务端：前端把改动提交给 `/api/config`，后端用 zod 校验并返回逐字段原因，前端照着标红。
+- 依赖分层：Tailwind 与 CLI 只在构建期；前端运行时依赖为 `bits-ui`（MIT）、`lucide-svelte`（ISC）、`svelte-sonner`（MIT）及 `bits-ui` 的 peer `@internationalized/date`（Apache-2.0，仅日期组件用得到）。`web/dist` 预计 150 KB（gzip）左右。
 - 许可：CLI 与 Tailwind 是构建期工具，不进 npm 包；复制进 `web/src` 的组件源码属 MIT，保留原文件头版权声明；`bits-ui` 产物随包分发，`NOTICE` 补一行；`lucide-svelte` 是 ISC，需按 ISC 声明；若 bundle 带入 `@internationalized/date` 代码，再补一条 Apache-2.0。
 
 ### 版本与许可
 
 - 运行时新增 `hono`、`@hono/node-server`（MIT）、`write-file-atomic`（ISC）、`chokidar`（MIT），`NOTICE` 各补一行。
 - `svelte` 的编译产物随 `web/dist` 分发（Svelte 为 MIT），`NOTICE` 也要提一句。
-- 前端新增 `bits-ui`（MIT）、`ajv`（MIT）、`svelte-sonner`（MIT）、`lucide-svelte`（ISC），产物随 `web/dist` 分发，`NOTICE` 各补一行；复制进仓库的 shadcn 组件源码保留原版权头。
+- 前端新增 `bits-ui`（MIT）、`svelte-sonner`（MIT）、`lucide-svelte`（ISC），产物随 `web/dist` 分发，`NOTICE` 各补一行；复制进仓库的 shadcn 组件源码保留原版权头。
 - 包管理统一用 `bun`；`web/` 作为独立 `package.json`，根 `package.json` 增加 `web:dev` 与 `web:build` 脚本。
 
 ## HTTP 服务
@@ -342,7 +341,7 @@ export type FieldType =
 
 技术选型：Svelte 5（runes）+ Vite + TypeScript + Tailwind v4。UI 用 `shadcn-svelte`：组件源码由 CLI 生成到 `web/src/lib/components/ui/`，样式走 Tailwind 变量主题，不手写控件。SSE 用 `EventSource`（自带重连），只补连接状态显示。
 
-校验权威在后端 zod；前端用 `ajv` 按 `/api/config/schema` 返回的 JSON Schema 校验，规则只有一份，前端不复制校验逻辑。
+校验权威在后端 zod；前端不做本地校验，保存时由后端返回逐字段原因（面板 CSP 不含 `unsafe-eval`，浏览器里跑不了 `ajv` 的代码生成）。
 
 ### 类型到控件的映射
 
@@ -503,7 +502,7 @@ web/                     Svelte 单页应用（独立 package.json）
   `web/src/lib/components/ui/`；构建产物 `web/dist` 随 npm 包发布（`files` 已包含）。
 - 数据层只用原生 `fetch` 与 `EventSource`（`web/src/lib/api.ts`），不引入请求库。
 - 表单由 `/api/config/schema` 驱动：字段名、分组、控件类型、枚举候选、数值范围与
-  敏感字段全部来自注册表，前端不写死字段名；`ajv` 用同一份 JSON Schema 做提交前校验。
+  敏感字段全部来自注册表，前端不写死字段名；提交后由后端校验，逐字段原因回给前端标红。
 - 页面：配置（分组表单、搜索、待保存标记、需重启提示）、状态（连接、会话、限流、日记、策略）、
   日志（环形缓冲、级别过滤、搜索、暂停与自动滚动）、追踪（最近节点与属性）。
 

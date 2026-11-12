@@ -57,7 +57,7 @@ export interface SchemaResponse {
   groups: GroupMeta[]
   /** 字段元数据。 */
   fields: FieldMeta[]
-  /** JSON Schema：前端按它校验，规则只有一份。 */
+  /** JSON Schema：与字段注册表同源，供外部客户端校验。 */
   jsonSchema: Record<string, unknown>
 }
 

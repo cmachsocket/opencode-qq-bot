@@ -32,7 +32,6 @@
 | ------------- | ---- | -------------------------------------------------------------- |
 | svelte        | MIT  | Copyright (c) 2016-present Rich Harris and Svelte contributors |
 | bits-ui       | MIT  | Copyright (c) 2024 Bits UI contributors                         |
-| ajv           | MIT  | Copyright (c) 2010-2014, Guillaume Callebaut                  |
 | svelte-sonner | MIT  | Copyright (c) 2024 Emil Sjolander                               |
 | lucide-svelte | ISC  | Copyright (c) 2022 Lucide Contributors                         |
 
