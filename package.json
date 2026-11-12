@@ -22,6 +22,7 @@
   "files": [
     "src",
     "souls",
+    "web/dist",
     "tool-profiles.example.json",
     "chat-overrides.example.json",
     "NOTICE",
@@ -33,6 +34,9 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "test": "vitest run",
+    "web:build": "bun run --cwd web build",
+    "web:dev": "bun run --cwd web dev",
+    "web:check": "bun run --cwd web check",
     "ci": "bun run typecheck && bun run lint && bun run test && bun run format:check",
     "privacy:scan": "trufflehog git file://. --config=scripts/trufflehog.yml --include-detectors=CustomRegex --no-verification --no-update --fail",
     "release:check": "bun scripts/release-check.ts"
@@ -48,20 +52,25 @@
   "license": "CC-BY-NC-SA-4.0",
   "dependencies": {
     "@bybrave/proper-lockfile2": "5.1.0",
+    "@hono/node-server": "2.1.7",
     "@naplink/naplink": "1.2.0",
     "@opencode/plugin": "2.2.5",
     "@opencode/schema": "2.2.5",
     "async-mutex": "0.5.0",
+    "chokidar": "6.0.0",
     "flare-redact": "1.6.1",
+    "hono": "4.13.18",
     "ipaddr.js": "2.5.0",
     "remove-markdown": "0.8.0",
     "request-filtering-agent": "3.2.1",
     "winston": "3.19.0",
     "winston-daily-rotate-file": "5.0.0",
+    "write-file-atomic": "8.0.0",
     "zod": "4.6.7"
   },
   "devDependencies": {
     "@types/bun": "1.4.4",
+    "@types/write-file-atomic": "4.0.3",
     "@vitest/coverage-v8": "5.1.0",
     "eslint": "10.14.0",
     "prettier": "3.9.10",

@@ -93,6 +93,10 @@ export class QQClient {
   private readonly link: NapLink
   private botId: string | undefined
   private botIdRequest: Promise<void> | undefined
+  /** 重连次数。 */
+  private reconnectCount = 0
+  /** 最后一次重连的时间（毫秒）。 */
+  private lastReconnect: number | undefined
 
   constructor(
     private readonly config: NapcatConfig,
@@ -126,6 +130,8 @@ export class QQClient {
       this.logger.warn("NapCat 连接断开", describeEvent(event))
     })
     this.link.on("reconnecting", (event: unknown) => {
+      this.reconnectCount += 1
+      this.lastReconnect = Date.now()
       this.logger.info("NapCat 正在重连", describeEvent(event))
     })
     this.link.on("connection:restored", (event: unknown) => {
@@ -152,6 +158,16 @@ export class QQClient {
 
   get connected(): boolean {
     return this.link.isConnected()
+  }
+
+  /** 重连次数。 */
+  get reconnects(): number {
+    return this.reconnectCount
+  }
+
+  /** 最后一次重连的时间（毫秒）。 */
+  get lastReconnectAt(): number | undefined {
+    return this.lastReconnect
   }
 
   async connect(): Promise<void> {

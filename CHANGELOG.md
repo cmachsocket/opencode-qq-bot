@@ -2,6 +2,36 @@
 
 本文件记录 opencode-qq-bot 的重要变更。
 
+## [Unreleased]
+
+### 破坏性变更
+
+- 配置来源收敛到 `config.json`：文件固定放在 `$XDG_DATA_HOME/opencode-qq-bot/workspace`
+  （默认 `~/.local/share/opencode-qq-bot/workspace`），工作目录不可配置。
+  `config.json` 不存在或 JSON 非法时插件直接报错退出，不再用默认值静默启动。
+- 环境变量整体退出配置体系：`NAPCAT_*`、`QQ_*` 等旧变量不再读取，`.env.example` 已删除。
+- OpenCode 插件选项只剩 `agent`；`napcat`、`access` 等其余选项不再生效，也不会有迁移提示。
+- 没有兼容层、迁移工具或新旧字段对照表：升级时必须按
+  [docs/configuration.md](docs/configuration.md) 的字段表手写一份 `config.json`。
+- `home` 不再是配置项，工作目录固定；`agent` 只从 `opencode.json` 的插件选项读取，
+  `model` 改为 `config.json` 里的偏好。
+
+### Added
+
+- 配置中心与状态面板：默认关闭，启用后默认只监听 `127.0.0.1:7391`，用令牌登录。
+  - 配置表单由字段注册表自动生成，支持保存、热更新与「需重启」提示。
+  - 状态页展示连接、会话、限流、日记调度与工具策略；日志页读取环形缓冲；追踪页展示最近节点。
+  - 接口：`/api/login`、`/api/config/schema`、`/api/config`、`/api/models`、`/api/status`、
+    `/api/logs` 与 SSE `/api/stream`。
+  - 安全：令牌或会话 Cookie 鉴权、写接口 Origin/CSRF 校验、CSP、敏感字段不回显、
+    `config.json` 权限 `0600`、目录 `0700`。
+- 字段注册表 `src/config/fields.ts`：默认值、zod schema、文件键集合与 JSON Schema 都由它生成。
+
+### Changed
+
+- 日志新增 500 条环形缓冲与脱敏副本，面板可以直接读最近日志；`log.level` 保存后立即生效。
+- 配置文件改为原子写并保留 `.bak`，外部改动由 `chokidar` 监听后热更新。
+
 ## [0.8.0] - 2026-11-11
 
 ### Fixed

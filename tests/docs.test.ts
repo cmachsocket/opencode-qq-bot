@@ -1,50 +1,82 @@
+import { existsSync, readFileSync } from "node:fs"
 import { describe, expect, it } from "vitest"
-import { readFileSync } from "node:fs"
-import { ENV_VARS } from "../src/config"
+import { CONFIG_FIELDS } from "../src/config/fields"
 
-const envExample = readFileSync(new URL("../.env.example", import.meta.url), "utf8")
-const readme = readFileSync(new URL("../README.md", import.meta.url), "utf8")
-const known = new Set<string>(Object.values(ENV_VARS))
+const read = (name: string): string => readFileSync(new URL(`../${name}`, import.meta.url), "utf8")
 
-/** 取出 `.env.example` 里声明过的环境变量名。 */
-function envExampleNames(): string[] {
-  return [...envExample.matchAll(/^#?\s*([A-Z][A-Z0-9_]+)=/gm)]
-    .map((match) => match[1])
-    .filter((name): name is string => name !== undefined)
+const configuration = read("docs/configuration.md")
+const readme = read("README.md")
+const panel = read("docs/panel.md")
+const changelog = read("CHANGELOG.md")
+const example = JSON.parse(read("opencode.example.json")) as {
+  plugins: Array<{ options: Record<string, unknown> }>
 }
 
-/** 取出 README 配置表里声明过的环境变量名。 */
-function readmeNames(): string[] {
-  return [...readme.matchAll(/^\|\s*`[^`]+`\s*\|\s*`([A-Z][A-Z0-9_]+)`\s*\|/gm)]
-    .map((match) => match[1])
-    .filter((name): name is string => name !== undefined)
-}
+/** 已经移除的环境变量名：文档里不该再出现。 */
+const REMOVED_ENV = [
+  "NAPCAT_WS_URL",
+  "NAPCAT_WS_TOKEN",
+  "QQ_ALLOW_GROUPS",
+  "QQ_ALLOW_USERS",
+  "QQ_DENY_GROUPS",
+  "QQ_DENY_USERS",
+  "QQ_OWNER_QQ",
+  "QQ_ADMINS",
+  "QQ_BOT_HOME",
+  "QQ_BOT_MODEL",
+  "QQ_BOT_AGENT",
+  "QQ_EVENT_SUBSCRIBE",
+  "QQ_LOG_LEVEL",
+  "QQ_TARGET_GROUPS",
+]
 
-describe("环境变量文档", () => {
-  it("`.env.example` 只列出代码里真实存在的环境变量", () => {
-    for (const name of envExampleNames()) {
-      expect(known.has(name), `${name} 不在 config.ts 的 ENV_VARS 里`).toBe(true)
+describe("配置来源", () => {
+  it(".env.example 已删除：环境变量不再是配置来源", () => {
+    expect(existsSync(new URL("../.env.example", import.meta.url))).toBe(false)
+  })
+
+  it("插件选项只剩 agent", () => {
+    const options = example.plugins[0]?.options ?? {}
+    expect(Object.keys(options)).toEqual(["agent"])
+  })
+
+  it("文档不再出现旧的环境变量名", () => {
+    for (const name of REMOVED_ENV) {
+      expect(configuration, `${name} 不该再出现在 docs/configuration.md`).not.toContain(name)
+      expect(readme, `${name} 不该再出现在 README`).not.toContain(name)
     }
   })
 
-  it("`.env.example` 覆盖全部环境变量", () => {
-    const documented = new Set(envExampleNames())
-    for (const name of known) {
-      expect(documented.has(name), `${name} 没有写进 .env.example`).toBe(true)
+  it("文档写明配置文件的位置", () => {
+    expect(configuration).toContain("config.json")
+    expect(readme).toContain("config.json")
+    expect(configuration).toContain("$XDG_DATA_HOME/opencode-qq-bot/workspace")
+  })
+})
+
+describe("字段表与注册表一致", () => {
+  it("docs/configuration.md 覆盖全部配置项", () => {
+    for (const field of CONFIG_FIELDS) {
+      expect(configuration, `${field.path} 没有写进 docs/configuration.md`).toContain(
+        `\`${field.path}\``,
+      )
     }
   })
 
-  it("README 配置表覆盖全部环境变量", () => {
-    const documented = new Set(readmeNames())
-    for (const name of known) {
-      expect(documented.has(name), `${name} 没有写进 README 的配置表`).toBe(true)
+  it("README 的配置表覆盖全部配置项", () => {
+    for (const field of CONFIG_FIELDS) {
+      expect(readme, `${field.path} 没有写进 README`).toContain(`\`${field.path}\``)
     }
   })
+})
 
-  it("已移除的配置项不会残留在文档里", () => {
-    for (const name of ["QQ_BUSY_TIMEOUT_MS"]) {
-      expect(envExample).not.toContain(name)
-      expect(readme).not.toContain(name)
-    }
+describe("破坏性变更的记录", () => {
+  it("CHANGELOG 记了配置来源的破坏性变更", () => {
+    expect(changelog).toContain("config.json")
+    expect(changelog).toMatch(/破坏性变更|BREAKING/)
+  })
+
+  it("docs/panel.md 标了实现状态", () => {
+    expect(panel).toContain("已实现")
   })
 })

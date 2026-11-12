@@ -32,7 +32,7 @@ const noLintDisable = {
 
 export default tseslint.config(
   {
-    ignores: ["node_modules/**", "dist/**", "coverage/**"],
+    ignores: ["node_modules/**", "dist/**", "coverage/**", "web/**"],
   },
   ...tseslint.configs.recommended,
   {

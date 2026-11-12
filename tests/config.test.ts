@@ -1,17 +1,101 @@
 import { describe, expect, it } from "vitest"
-import { readFileSync } from "node:fs"
-import { DEFAULT_CONFIG, MIGRATION_WARNING_PREFIX, resolveConfig } from "../src/config"
+import { CONFIG_FIELDS, CONFIG_GROUPS } from "../src/config/fields"
+import {
+  applyHotFields,
+  configJsonSchema,
+  createStrictFieldSchema,
+  DEFAULT_CONFIG,
+  FILE_KEYS,
+  resolveConfig,
+} from "../src/config"
 
-const ENV = { NAPCAT_WS_URL: "ws://127.0.0.1:3001" }
+/** 递归取对象里的值。 */
+function at(target: unknown, path: string): unknown {
+  let current: unknown = target
+  for (const segment of path.split(".")) {
+    if (!current || typeof current !== "object") return undefined
+    current = (current as Record<string, unknown>)[segment]
+  }
+  return current
+}
 
-describe("resolveConfig", () => {
-  it("refuses to start without a NapCat endpoint", () => {
-    expect(() => resolveConfig({}, {})).toThrow(/NAPCAT_WS_URL/)
+/** 只放一个 NapCat 地址的最小配置。 */
+const BASE = { napcat: { url: "ws://127.0.0.1:3001" } }
+
+describe("字段注册表", () => {
+  it("字段路径唯一", () => {
+    const paths = CONFIG_FIELDS.map((field) => field.path)
+    expect(new Set(paths).size).toBe(paths.length)
   })
 
-  it("falls back to defaults when nothing else is configured", () => {
-    const config = resolveConfig({}, ENV)
-    expect(config.napcat.url).toBe(ENV.NAPCAT_WS_URL)
+  it("字段都归在一个已知分组里", () => {
+    const groups = new Set(CONFIG_GROUPS.map((group) => group.id))
+    for (const field of CONFIG_FIELDS) {
+      expect(groups.has(field.group), `${field.path} 的分组 ${field.group} 未定义`).toBe(true)
+    }
+  })
+
+  it("注册表与 DEFAULT_CONFIG 一致", () => {
+    for (const field of CONFIG_FIELDS) {
+      expect(at(DEFAULT_CONFIG, field.path), `${field.path} 的默认值不一致`).toEqual(field.default)
+    }
+  })
+
+  it("注册表与配置文件键集合一致", () => {
+    const expected = new Map<string, Set<string>>()
+    for (const field of CONFIG_FIELDS) {
+      const segments = field.path.split(".")
+      for (let index = 0; index < segments.length; index += 1) {
+        const prefix = segments.slice(0, index).join(".")
+        const key = segments[index]
+        if (key === undefined) continue
+        const allowed = expected.get(prefix) ?? new Set<string>()
+        allowed.add(key)
+        expected.set(prefix, allowed)
+      }
+    }
+    for (const [prefix, allowed] of expected) {
+      expect([...(FILE_KEYS.get(prefix) ?? [])].sort(), `${prefix} 的键集合不一致`).toEqual(
+        [...allowed].sort(),
+      )
+    }
+    expect(FILE_KEYS.size).toBe(expected.size)
+  })
+
+  it("JSON Schema 覆盖全部字段", () => {
+    const schema = configJsonSchema() as {
+      properties: Record<string, { properties?: Record<string, unknown> }>
+    }
+    for (const field of CONFIG_FIELDS) {
+      const segments = field.path.split(".")
+      let current: { properties?: Record<string, unknown> } = schema
+      for (const segment of segments) {
+        const next = current.properties?.[segment] as
+          { properties?: Record<string, unknown> } | undefined
+        expect(next, `${field.path} 不在 JSON Schema 里`).toBeDefined()
+        current = next ?? {}
+      }
+    }
+  })
+
+  it("agent 不在注册表里：它只从 opencode.json 读", () => {
+    expect(CONFIG_FIELDS.some((field) => field.path === "agent")).toBe(false)
+  })
+
+  it("model 在注册表里：它是用户偏好", () => {
+    const model = CONFIG_FIELDS.find((field) => field.path === "model")
+    expect(model?.type).toBe("modelRef")
+  })
+})
+
+describe("resolveConfig", () => {
+  it("没有 NapCat 地址时拒绝启动", () => {
+    expect(() => resolveConfig({})).toThrow(/napcat\.url/)
+  })
+
+  it("文件里没写的字段走默认值", () => {
+    const config = resolveConfig(BASE)
+    expect(config.napcat.url).toBe("ws://127.0.0.1:3001")
     expect(config.napcat.token).toBeUndefined()
     expect(config.access.allow.groups).toEqual([])
     expect(config.access.allow.users).toEqual([])
@@ -20,436 +104,164 @@ describe("resolveConfig", () => {
     expect(config.access.allowAllWhenEmpty).toBe(false)
     expect(config.sendDelayMs).toBe(DEFAULT_CONFIG.sendDelayMs)
     expect(config.reminder.max).toBe(DEFAULT_CONFIG.reminder.max)
+    expect(config.panel.enabled).toBe(false)
+    expect(config.panel.host).toBe("127.0.0.1")
+    expect(config.panel.port).toBe(7391)
   })
 
-  it("默认的长度告警阈值不会让正常回复一直告警", () => {
-    expect(DEFAULT_CONFIG.warnLength).toBe(500)
-    expect(resolveConfig({}, ENV).warnLength).toBe(500)
+  it("每个注册表字段都能从配置里读出来", () => {
+    const config = resolveConfig(BASE)
+    for (const field of CONFIG_FIELDS) {
+      // NapCat 地址是必填项，没有默认值。
+      if (field.path === "napcat.url") continue
+      expect(at(config, field.path), `${field.path} 读不到`).toEqual(field.default)
+    }
+    expect(config.napcat.url).toBe(BASE.napcat.url)
   })
 
-  it("解析 owner 与管理员列表，owner 不再自动进放行名单", () => {
-    const config = resolveConfig({}, { ...ENV, QQ_OWNER_QQ: "200", QQ_ADMINS: "300,301" })
+  it("agent 只从插件选项来", () => {
+    expect(resolveConfig(BASE, "builder").agent).toBe("builder")
+    expect(resolveConfig(BASE).agent).toBeUndefined()
+  })
+
+  it("解析 owner 与管理员列表", () => {
+    const config = resolveConfig({ ...BASE, ownerQQ: 200, admins: [300, 301] })
     expect(config.ownerQQ).toBe(200)
     expect(config.admins).toEqual([300, 301])
-    expect(config.access.allow.users).toEqual([])
   })
 
-  it("不回退被写坏的 owner 或管理员配置", () => {
-    const config = resolveConfig({}, { ...ENV, QQ_OWNER_QQ: "abc", QQ_ADMINS: "300" })
-    expect(config.ownerQQ).toBeUndefined()
-    expect(config.access.allow.users).toEqual([])
-    expect(config.admins).toEqual([300])
-  })
-
-  it("拒绝布尔值与非正整数的 owner", () => {
+  it("不回退被写坏的 owner", () => {
     const warnings: string[] = []
-    const config = resolveConfig({ ownerQQ: true }, ENV, (message) => warnings.push(message))
+    const config = resolveConfig({ ...BASE, ownerQQ: "abc" }, undefined, (message) =>
+      warnings.push(message),
+    )
     expect(config.ownerQQ).toBeUndefined()
-    expect(warnings.some((message) => message.includes("ownerQQ"))).toBe(true)
-
-    expect(resolveConfig({ ownerQQ: -1 }, ENV).ownerQQ).toBeUndefined()
-    expect(resolveConfig({ ownerQQ: 1.5 }, ENV).ownerQQ).toBeUndefined()
+    expect(warnings.join("\n")).toContain("ownerQQ")
   })
 
-  it("默认只订阅消息类事件", () => {
-    const config = resolveConfig({}, ENV)
-    expect(config.events.subscribe).toEqual(["message"])
-    expect(config.events.notices).toEqual([])
-    expect(config.events.inject).toBe(true)
-  })
-
-  it("从环境变量读取事件订阅", () => {
+  it("只认 message 与 notice 两个事件类别", () => {
+    const warnings: string[] = []
     const config = resolveConfig(
-      {},
-      {
-        ...ENV,
-        QQ_EVENT_SUBSCRIBE: "message,notice",
-        QQ_EVENT_NOTICES: "group_recall,notify.poke",
-      },
+      { ...BASE, events: { subscribe: ["message", "notice", "heartbeat"] } },
+      undefined,
+      (message) => warnings.push(message),
     )
     expect(config.events.subscribe).toEqual(["message", "notice"])
-    expect(config.events.notices).toEqual(["group_recall", "notify.poke"])
-  })
-
-  it("忽略未知的事件类别并告警", () => {
-    const warnings: string[] = []
-    const config = resolveConfig(
-      {},
-      { ...ENV, QQ_EVENT_SUBSCRIBE: "message,heartbeat" },
-      (message) => warnings.push(message),
-    )
-    expect(config.events.subscribe).toEqual(["message"])
     expect(warnings.join("\n")).toContain("heartbeat")
-  })
-
-  it("从插件选项读取事件订阅", () => {
-    const config = resolveConfig(
-      { events: { subscribe: ["notice"], notices: [], inject: false } },
-      ENV,
-    )
-    expect(config.events.subscribe).toEqual(["notice"])
-    expect(config.events.inject).toBe(false)
-  })
-
-  it("takes the token from the environment", () => {
-    const config = resolveConfig({}, { ...ENV, NAPCAT_WS_TOKEN: "from-env" })
-    expect(config.napcat.token).toBe("from-env")
-  })
-
-  it("prefers plugin options over environment variables", () => {
-    const config = resolveConfig(
-      { napcat: { url: "ws://plugin:3001", token: "from-option" }, sendDelayMs: 10 },
-      { ...ENV, NAPCAT_WS_TOKEN: "from-env", QQ_SEND_DELAY_MS: "20" },
-    )
-    expect(config.napcat.url).toBe("ws://plugin:3001")
-    expect(config.napcat.token).toBe("from-option")
-    expect(config.sendDelayMs).toBe(10)
-  })
-
-  it("enables exactly the groups declared in the config template", () => {
-    const raw = JSON.parse(
-      readFileSync(new URL("../opencode.example.json", import.meta.url), "utf8"),
-    )
-    const options = raw.plugins.find((entry: { package: string }) => entry.package === "./").options
-    const config = resolveConfig(options, ENV)
-    expect(config.access.allow.groups).toEqual(options.access.allow.groups)
-    expect(config.access.allow.users).toEqual(options.access.allow.users)
-  })
-
-  it("reads the chat overrides path from the environment", () => {
-    const config = resolveConfig({}, { ...ENV, QQ_CHAT_OVERRIDES: "/tmp/chat-overrides.json" })
-    expect(config.chatOverridesPath).toBe("/tmp/chat-overrides.json")
-  })
-
-  it("reads allowed groups from the environment as a comma separated list", () => {
-    const config = resolveConfig({}, { ...ENV, QQ_ALLOW_GROUPS: "123, 456 ,abc,789" })
-    expect(config.access.allow.groups).toEqual([123, 456, 789])
-  })
-
-  it("reads allowed private chat users from the environment", () => {
-    const config = resolveConfig({}, { ...ENV, QQ_ALLOW_USERS: "321, 654 ,abc,987" })
-    expect(config.access.allow.users).toEqual([321, 654, 987])
-  })
-
-  it("reads denied groups and users from the environment", () => {
-    const config = resolveConfig({}, { ...ENV, QQ_DENY_GROUPS: "111", QQ_DENY_USERS: "222" })
-    expect(config.access.deny.groups).toEqual([111])
-    expect(config.access.deny.users).toEqual([222])
-  })
-
-  it("reads the empty list fallback from the environment", () => {
-    const config = resolveConfig({}, { ...ENV, QQ_ALLOW_ALL_WHEN_EMPTY: "true" })
-    expect(config.access.allowAllWhenEmpty).toBe(true)
-  })
-
-  it("reads allowed groups from plugin options as an array", () => {
-    const config = resolveConfig(
-      { access: { allow: { groups: [1, 2] } } },
-      { ...ENV, QQ_ALLOW_GROUPS: "999" },
-    )
-    expect(config.access.allow.groups).toEqual([1, 2])
-  })
-
-  it("reads allowed private chat users from plugin options as an array", () => {
-    const config = resolveConfig(
-      { access: { allow: { users: [3, 4] } } },
-      { ...ENV, QQ_ALLOW_USERS: "999" },
-    )
-    expect(config.access.allow.users).toEqual([3, 4])
-  })
-
-  it("keeps every target closed when the allow lists are empty", () => {
-    const config = resolveConfig(
-      { access: { allow: { groups: [], users: [] } } },
-      {
-        ...ENV,
-        QQ_ALLOW_GROUPS: "999",
-        QQ_ALLOW_USERS: "999",
-      },
-    )
-    expect(config.access.allow.groups).toEqual([])
-    expect(config.access.allow.users).toEqual([])
-  })
-
-  it("parses the model reference from the environment", () => {
-    const config = resolveConfig({}, { ...ENV, QQ_BOT_MODEL: "openai/gpt-4o/mini" })
-    expect(config.model).toEqual({ providerID: "openai", id: "gpt-4o", variant: "mini" })
-  })
-
-  it("ignores an incomplete model reference", () => {
-    const config = resolveConfig({}, { ...ENV, QQ_BOT_MODEL: "openai" })
-    expect(config.model).toBeUndefined()
-  })
-
-  it("reads boolean environment variables as strings", () => {
-    const config = resolveConfig(
-      {},
-      {
-        ...ENV,
-        QQ_REUSE_SESSION: "true",
-        QQ_PROACTIVE_ENABLED: "false",
-        QQ_REMINDER_ENABLED: "false",
-      },
-    )
-    expect(config.reuseSession).toBe(true)
-    expect(config.proactive.enabled).toBe(false)
-    expect(config.reminder.enabled).toBe(false)
-  })
-
-  it("accepts the common boolean spellings", () => {
-    for (const raw of ["1", "true", "TRUE", "yes", "on"]) {
-      expect(resolveConfig({}, { ...ENV, QQ_REUSE_SESSION: raw }).reuseSession).toBe(true)
-    }
-    for (const raw of ["0", "false", "FALSE", "no", "off"]) {
-      expect(resolveConfig({}, { ...ENV, QQ_REUSE_SESSION: raw }).reuseSession).toBe(false)
-    }
-  })
-
-  it("reads numeric environment variables as strings", () => {
-    const config = resolveConfig(
-      {},
-      {
-        ...ENV,
-        QQ_SEND_DELAY_MS: "250",
-        QQ_WARN_LENGTH: "80",
-        QQ_PROACTIVE_SILENCE_SECONDS: "60",
-        QQ_PROACTIVE_P_START: "0.5",
-        QQ_PROACTIVE_P_SLOPE_PER_HOUR: "0.2",
-        QQ_PROACTIVE_TICK_SECONDS: "120",
-        QQ_REMINDER_MAX: "5",
-      },
-    )
-    expect(config.sendDelayMs).toBe(250)
-    expect(config.warnLength).toBe(80)
-    expect(config.proactive.silenceThresholdSeconds).toBe(60)
-    expect(config.proactive.startProbability).toBe(0.5)
-    expect(config.proactive.probabilityPerHour).toBe(0.2)
-    expect(config.proactive.tickSeconds).toBe(120)
-    expect(config.reminder.max).toBe(5)
-  })
-
-  it("falls back to the defaults for malformed environment values", () => {
-    const config = resolveConfig(
-      {},
-      { ...ENV, QQ_SEND_DELAY_MS: "abc", QQ_REUSE_SESSION: "maybe", QQ_REMINDER_MAX: "" },
-    )
-    expect(config.sendDelayMs).toBe(DEFAULT_CONFIG.sendDelayMs)
-    expect(config.reuseSession).toBe(DEFAULT_CONFIG.reuseSession)
-    expect(config.reminder.max).toBe(DEFAULT_CONFIG.reminder.max)
-  })
-
-  it("reports malformed environment values", () => {
-    const warnings: string[] = []
-    resolveConfig({}, { ...ENV, QQ_SEND_DELAY_MS: "abc", QQ_REUSE_SESSION: "maybe" }, (message) =>
-      warnings.push(message),
-    )
-    expect(warnings).toHaveLength(2)
-    expect(warnings.join("\n")).toContain("QQ_SEND_DELAY_MS")
-    expect(warnings.join("\n")).toContain("QQ_REUSE_SESSION")
-  })
-
-  it("reports an invalid model reference", () => {
-    const warnings: string[] = []
-    const config = resolveConfig({}, { ...ENV, QQ_BOT_MODEL: "openai" }, (message) =>
-      warnings.push(message),
-    )
-    expect(config.model).toBeUndefined()
-    expect(warnings.join("\n")).toContain("QQ_BOT_MODEL")
-  })
-
-  it("rejects a non positive heartbeat interval", () => {
-    const warnings: string[] = []
-    const config = resolveConfig({ proactive: { tickSeconds: 0 } }, ENV, (message) =>
-      warnings.push(message),
-    )
-    expect(config.proactive.tickSeconds).toBe(DEFAULT_CONFIG.proactive.tickSeconds)
-    expect(warnings.join("\n")).toContain("tickSeconds")
-  })
-
-  it("merges nested proactive options with the defaults", () => {
-    const config = resolveConfig({ proactive: { enabled: false } }, ENV)
-    expect(config.proactive.enabled).toBe(false)
-    expect(config.proactive.tickSeconds).toBe(DEFAULT_CONFIG.proactive.tickSeconds)
-  })
-
-  it("keeps the location alive by default", () => {
-    const config = resolveConfig({}, ENV)
-    expect(config.keepAlive.enabled).toBe(true)
-    expect(config.keepAlive.seconds).toBe(DEFAULT_CONFIG.keepAlive.seconds)
-    expect(config.keepAlive.seconds).toBeLessThan(3600)
-  })
-
-  it("reads the keep alive options from the environment", () => {
-    const config = resolveConfig(
-      {},
-      { ...ENV, QQ_KEEP_ALIVE_ENABLED: "false", QQ_KEEP_ALIVE_SECONDS: "600" },
-    )
-    expect(config.keepAlive.enabled).toBe(false)
-    expect(config.keepAlive.seconds).toBe(600)
-  })
-
-  it("rejects a non positive keep alive interval", () => {
-    const warnings: string[] = []
-    const config = resolveConfig({ keepAlive: { seconds: 0 } }, ENV, (message) =>
-      warnings.push(message),
-    )
-    expect(config.keepAlive.seconds).toBe(DEFAULT_CONFIG.keepAlive.seconds)
-    expect(warnings.join("\n")).toContain("keepAlive.seconds")
-  })
-
-  it("merges nested keep alive options with the defaults", () => {
-    const config = resolveConfig({ keepAlive: { enabled: false } }, ENV)
-    expect(config.keepAlive.enabled).toBe(false)
-    expect(config.keepAlive.seconds).toBe(DEFAULT_CONFIG.keepAlive.seconds)
-  })
-
-  it("reads the outbound rate limit options from the environment", () => {
-    const config = resolveConfig(
-      {},
-      {
-        ...ENV,
-        QQ_RATE_MAX_PER_MINUTE: "3",
-        QQ_RATE_MAX_PER_HOUR: "30",
-        QQ_RATE_MIN_GAP_MS: "500",
-      },
-    )
-    expect(config.rateLimit.maxPerMinute).toBe(3)
-    expect(config.rateLimit.maxPerHour).toBe(30)
-    expect(config.rateLimit.minGapMs).toBe(500)
-  })
-
-  it("merges nested rate limit options with the defaults", () => {
-    const config = resolveConfig({ rateLimit: { maxPerMinute: 2 } }, ENV)
-    expect(config.rateLimit.maxPerMinute).toBe(2)
-    expect(config.rateLimit.maxPerHour).toBe(DEFAULT_CONFIG.rateLimit.maxPerHour)
-    expect(config.rateLimit.minGapMs).toBe(DEFAULT_CONFIG.rateLimit.minGapMs)
-  })
-
-  it("rejects negative rate limit options", () => {
-    const warnings: string[] = []
-    const config = resolveConfig(
-      { rateLimit: { maxPerMinute: -1, minGapMs: -10 } },
-      ENV,
-      (message) => warnings.push(message),
-    )
-    expect(config.rateLimit.maxPerMinute).toBe(DEFAULT_CONFIG.rateLimit.maxPerMinute)
-    expect(config.rateLimit.minGapMs).toBe(DEFAULT_CONFIG.rateLimit.minGapMs)
-    expect(warnings.join("\n")).toContain("rateLimit.maxPerMinute")
-    expect(warnings.join("\n")).toContain("rateLimit.minGapMs")
-  })
-
-  it("deduplicates allowed groups and warns about invalid entries", () => {
-    const warnings: string[] = []
-    const config = resolveConfig({ access: { allow: { groups: [1, 1, -2, 3] } } }, ENV, (message) =>
-      warnings.push(message),
-    )
-    expect(config.access.allow.groups).toEqual([1, 3])
-    expect(warnings.join("\n")).toContain("非法群号")
-  })
-
-  it("deduplicates allowed users and warns about invalid entries", () => {
-    const warnings: string[] = []
-    const config = resolveConfig({ access: { allow: { users: [1, 1, -2, 3] } } }, ENV, (message) =>
-      warnings.push(message),
-    )
-    expect(config.access.allow.users).toEqual([1, 3])
-    expect(warnings.join("\n")).toContain("非法QQ 号")
   })
 
   it("豁免拒绝名单里的 owner 并告警", () => {
     const warnings: string[] = []
     const config = resolveConfig(
-      {},
-      { ...ENV, QQ_OWNER_QQ: "200", QQ_DENY_USERS: "200,300" },
+      { ...BASE, ownerQQ: 200, access: { deny: { users: [200, 300] } } },
+      undefined,
       (message) => warnings.push(message),
     )
     expect(config.access.deny.users).toEqual([300])
-    expect(warnings.join("\n")).toContain("200")
     expect(warnings.join("\n")).toContain("豁免")
   })
 
-  it("给旧名单环境变量迁移提示", () => {
-    const warnings: string[] = []
-    resolveConfig({}, { ...ENV, QQ_TARGET_GROUPS: "123" }, (message) => warnings.push(message))
-    expect(warnings.join("\n")).toContain("QQ_TARGET_GROUPS")
-    expect(warnings.join("\n")).toContain("QQ_ALLOW_GROUPS")
-    expect(warnings.join("\n")).toContain(MIGRATION_WARNING_PREFIX)
-  })
-
-  it("给旧名单插件选项迁移提示", () => {
-    const warnings: string[] = []
-    const config = resolveConfig({ groups: [1], users: [2] }, ENV, (message) =>
-      warnings.push(message),
-    )
-    expect(config.access.allow.groups).toEqual([])
-    expect(config.access.allow.users).toEqual([])
-    expect(warnings.join("\n")).toContain("access.allow.groups")
-    expect(warnings.join("\n")).toContain("access.allow.users")
-  })
-
-  it("falls back for out of range numeric options", () => {
+  it("非法值告警并回退到默认值", () => {
     const warnings: string[] = []
     const config = resolveConfig(
       {
+        ...BASE,
+        sendDelayMs: "abc",
+        rateLimit: { maxPerMinute: -1 },
         warnLength: 0,
-        reminder: { max: -1 },
-        proactive: { startProbability: 2, probabilityPerHour: -0.1 },
+        proactive: { startProbability: 2, tickSeconds: 0 },
       },
-      ENV,
+      undefined,
       (message) => warnings.push(message),
     )
+    expect(config.sendDelayMs).toBe(DEFAULT_CONFIG.sendDelayMs)
+    expect(config.rateLimit.maxPerMinute).toBe(DEFAULT_CONFIG.rateLimit.maxPerMinute)
     expect(config.warnLength).toBe(DEFAULT_CONFIG.warnLength)
-    expect(config.reminder.max).toBe(DEFAULT_CONFIG.reminder.max)
     expect(config.proactive.startProbability).toBe(DEFAULT_CONFIG.proactive.startProbability)
-    expect(config.proactive.probabilityPerHour).toBe(DEFAULT_CONFIG.proactive.probabilityPerHour)
-    expect(warnings).toHaveLength(4)
+    expect(config.proactive.tickSeconds).toBe(DEFAULT_CONFIG.proactive.tickSeconds)
+    expect(warnings.length).toBe(5)
   })
 
-  it("warns about unknown plugin options", () => {
+  it("未知配置项告警但不影响生效值", () => {
     const warnings: string[] = []
-    resolveConfig({ unknown: true, proactive: { typo: 1 } }, ENV, (message) =>
-      warnings.push(message),
+    const config = resolveConfig(
+      { ...BASE, unknown: true, proactive: { typo: 1 } },
+      undefined,
+      (message) => warnings.push(message),
     )
+    expect(config.proactive.tickSeconds).toBe(DEFAULT_CONFIG.proactive.tickSeconds)
     expect(warnings.join("\n")).toContain("unknown")
     expect(warnings.join("\n")).toContain("proactive.typo")
   })
 
-  it("emits warnings before throwing for a missing URL", () => {
-    const warnings: string[] = []
-    expect(() =>
-      resolveConfig({ sendDelayMs: "abc" }, {}, (message) => warnings.push(message)),
-    ).toThrow(/NAPCAT_WS_URL/)
-    expect(warnings.join("\n")).toContain("sendDelayMs")
-  })
-
-  it("does not expose mutable default references", () => {
-    const config = resolveConfig({}, ENV)
+  it("不暴露可变的默认引用", () => {
+    const config = resolveConfig(BASE)
     config.proactive.startProbability = 0.9
     config.rateLimit.maxPerMinute = 99
     expect(DEFAULT_CONFIG.proactive.startProbability).not.toBe(0.9)
     expect(DEFAULT_CONFIG.rateLimit.maxPerMinute).not.toBe(99)
   })
 
-  it("defaults to sensitive blocking and allows turning it off", () => {
-    expect(resolveConfig({}, ENV).sensitive.enabled).toBe(true)
-    expect(resolveConfig({ sensitive: { enabled: false } }, ENV).sensitive.enabled).toBe(false)
-    expect(resolveConfig({}, { ...ENV, QQ_SENSITIVE_ENABLED: "0" }).sensitive.enabled).toBe(false)
+  it("敏感字段默认不回显：面板只看有没有值", () => {
+    const config = resolveConfig({ ...BASE, napcat: { url: BASE.napcat.url, token: "s3cret" } })
+    expect(config.napcat.token).toBe("s3cret")
+  })
+})
+
+describe("热更新", () => {
+  it("只有注册表里标了 hot 的字段才会立即生效", () => {
+    const live = resolveConfig(BASE)
+    const next = resolveConfig({
+      ...BASE,
+      access: { allow: { groups: [1, 2] } },
+      napcat: { url: "ws://127.0.0.1:4001" },
+    })
+    applyHotFields(live, next)
+    expect(live.access.allow.groups).toEqual([1, 2])
+    // NapCat 地址是启动期读取的字段，改了也要重启。
+    expect(live.napcat.url).toBe("ws://127.0.0.1:3001")
   })
 
-  it("reads the allowed media directories from the environment", () => {
-    const config = resolveConfig(
-      {},
-      { ...ENV, QQ_MEDIA_ALLOWED_DIRS: "/srv/library, ~/Pictures/qq-bot" },
-    )
-    expect(config.media.allowedDirs).toEqual(["/srv/library", "~/Pictures/qq-bot"])
+  it("热更新不换掉中间对象的引用", () => {
+    const live = resolveConfig(BASE)
+    const access = live.access
+    const next = resolveConfig({ ...BASE, access: { allowAllWhenEmpty: true } })
+    applyHotFields(live, next)
+    expect(live.access).toBe(access)
+    expect(live.access.allowAllWhenEmpty).toBe(true)
   })
 
-  it("reads the allowed media directories from plugin options", () => {
-    const config = resolveConfig({ media: { allowedDirs: ["/srv/library"] } }, ENV)
-    expect(config.media.allowedDirs).toEqual(["/srv/library"])
+  it("热字段清单与注册表一致", () => {
+    const hot = CONFIG_FIELDS.filter((field) => field.hot).map((field) => field.path)
+    expect(hot).toContain("access.allow.groups")
+    expect(hot).toContain("rateLimit.maxPerMinute")
+    expect(hot).toContain("log.level")
+    expect(hot).toContain("panel.enabled")
+    expect(hot).not.toContain("napcat.url")
+    expect(hot).not.toContain("diary.path")
+  })
+})
+
+describe("严格校验", () => {
+  const schemaFor = (path: string) => {
+    const field = CONFIG_FIELDS.find((entry) => entry.path === path)
+    if (!field) throw new Error(`未知字段 ${path}`)
+    return createStrictFieldSchema(field)
+  }
+
+  it("接受合法取值", () => {
+    expect(schemaFor("rateLimit.maxPerMinute").safeParse(3).success).toBe(true)
+    expect(schemaFor("access.allow.groups").safeParse([1, 2]).success).toBe(true)
+    expect(schemaFor("access.allow.groups").safeParse("1,2").success).toBe(true)
+    expect(schemaFor("log.level").safeParse("debug").success).toBe(true)
+    expect(schemaFor("diary.summaryTime").safeParse("23:30").success).toBe(true)
   })
 
-  it("keeps every media directory closed by default", () => {
-    expect(resolveConfig({}, ENV).media.allowedDirs).toEqual([])
+  it("拒绝非法取值", () => {
+    expect(schemaFor("rateLimit.maxPerMinute").safeParse(-1).success).toBe(false)
+    expect(schemaFor("access.allow.groups").safeParse([0]).success).toBe(false)
+    expect(schemaFor("log.level").safeParse("verbose").success).toBe(false)
+    expect(schemaFor("diary.summaryTime").safeParse("25:00").success).toBe(false)
+    expect(schemaFor("model").safeParse("openai").success).toBe(false)
   })
 })

@@ -1,24 +1,44 @@
 # NOTICE
 
 本项目自身采用 [CC-BY-NC-SA-4.0](LICENSE) 许可。
-下列第三方依赖以 MIT 许可分发。多数依赖的完整许可文本随依赖一起提供
+下列第三方依赖按各自的 MIT 或 ISC 许可分发。多数依赖的完整许可文本随依赖一起提供
 （`node_modules/<包名>/LICENSE`）；`@opencode/plugin` 与 `@opencode/schema` 未附带许可文件，
 它们的 `package.json` 标注为 MIT，许可全文见下方。
 
-| 依赖                                | 版权声明                                                                                  |
-| ----------------------------------- | ----------------------------------------------------------------------------------------- |
-| @bybrave/proper-lockfile2           | Copyright (c) 2018 Made With MOXY Lda \<hello@moxy.studio\> (original proper-lockfile)     |
-| @naplink/naplink                    | Copyright (c) 2024 NapLink Contributors                                                     |
-| @opencode/plugin                    | MIT License，<https://github.com/anomalyco/opencode>                                      |
-| @opencode/schema                    | MIT License，<https://github.com/anomalyco/opencode>                                      |
-| async-mutex                         | Copyright (c) 2016 Christian Speckner \<cnspeckn@googlemail.com\>                          |
-| flare-redact                        | Copyright (c) 2026 Umud Hasanli                                                            |
-| ipaddr.js                           | Copyright (C) 2011-2017 whitequark \<whitequark@whitequark.org\>                           |
-| remove-markdown                     | Copyright (c) 2015 Stian Grytøyr                                                            |
-| request-filtering-agent             | Copyright (c) 2019 azu                                                                       |
-| winston                             | Copyright (c) 2010 Charlie Robbins                                                          |
-| winston-daily-rotate-file           | Copyright (c) 2015-2024 winstonjs                                                            |
-| zod                                 | Copyright (c) 2025 Colin McDonnell                                                          |
+| 依赖                                | 许可   | 版权声明                                                                                  |
+| ----------------------------------- | ------ | ----------------------------------------------------------------------------------------- |
+| @bybrave/proper-lockfile2           | MIT    | Copyright (c) 2018 Made With MOXY Lda \<hello@moxy.studio\> (original proper-lockfile)     |
+| @hono/node-server                   | MIT    | Copyright (c) 2023-present Hono Authors \<https://github.com/honojs\>                       |
+| @naplink/naplink                    | MIT    | Copyright (c) 2024 NapLink Contributors                                                     |
+| @opencode/plugin                    | MIT    | MIT License，<https://github.com/anomalyco/opencode>                                      |
+| @opencode/schema                    | MIT    | MIT License，<https://github.com/anomalyco/opencode>                                      |
+| async-mutex                         | MIT    | Copyright (c) 2016 Christian Speckner \<cnspeckn@googlemail.com\>                          |
+| chokidar                            | MIT    | Copyright (c) 2013-present, Mark Volkovets \<mark.volkovets@gmail.com\>                    |
+| flare-redact                        | MIT    | Copyright (c) 2026 Umud Hasanli                                                            |
+| hono                                | MIT    | Copyright (c) 2023-present Hono Authors \<https://github.com/honojs\>                       |
+| ipaddr.js                           | MIT    | Copyright (C) 2011-2017 whitequark \<whitequark@whitequark.org\>                           |
+| remove-markdown                     | MIT    | Copyright (c) 2015 Stian Grytøyr                                                            |
+| request-filtering-agent             | MIT    | Copyright (c) 2019 azu                                                                       |
+| winston                             | MIT    | Copyright (c) 2010 Charlie Robbins                                                          |
+| winston-daily-rotate-file           | MIT    | Copyright (c) 2015-2024 winstonjs                                                            |
+| write-file-atomic                   | ISC    | Copyright (c) 2015-2024, Isaac Z. Schlueter and Contributors                              |
+| zod                                 | MIT    | Copyright (c) 2025 Colin McDonnell                                                          |
+
+## 随前端产物分发的依赖
+
+状态面板的构建产物 `web/dist` 随 npm 包分发，里面包含下列依赖的代码：
+
+| 依赖               | 许可        | 版权声明                                                       |
+| ------------------ | ----------- | -------------------------------------------------------------- |
+| svelte             | MIT         | Copyright (c) 2016-present Rich Harris and Svelte contributors |
+| bits-ui            | MIT         | Copyright (c) 2024 Bits UI contributors                         |
+| ajv                | MIT         | Copyright (c) 2010-2014, Guillaume Callebaut                  |
+| svelte-sonner      | MIT         | Copyright (c) 2024 Emil Sjolander                               |
+| lucide-svelte      | ISC         | Copyright (c) 2022 Lucide Contributors                         |
+| @internationalized/date | Apache-2.0 | Copyright 2019 Adobe（仅日期组件用到）                        |
+
+`shadcn-svelte` 与 Tailwind CSS 只在构建期使用，不进 npm 包；
+复制进仓库的组件源码属 MIT，保留原文件头的版权声明。
 
 ## 数据流与第三方处理
 
@@ -67,3 +87,17 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+## ISC License
+
+Permission to use, copy, modify, and/or distribute this software for any
+purpose with or without fee is hereby granted, provided that the above
+copyright notice and this permission notice appear in all copies.
+
+THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES WITH
+REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY
+AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY SPECIAL, DIRECT,
+INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES WHATSOEVER RESULTING FROM
+LOSS OF USE, DATA OR PROFITS, WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR
+OTHER TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR
+PERFORMANCE OF THIS SOFTWARE.

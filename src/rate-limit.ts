@@ -135,6 +135,52 @@ export class SendRateLimiter {
     return Math.min(minuteLeft, hourLeft)
   }
 
+  /** 各目标的用量快照，供状态面板展示。 */
+  snapshot(): Array<{
+    scope: string
+    maxPerMinute: number
+    maxPerHour: number
+    usedPerMinute: number
+    usedPerHour: number
+    minuteLeft: number
+    hourLeft: number
+  }> {
+    const now = this.currentTime
+    const scopes = new Set<string>([...this.records.keys(), ...this.locks.keys()])
+    const result: Array<{
+      scope: string
+      maxPerMinute: number
+      maxPerHour: number
+      usedPerMinute: number
+      usedPerHour: number
+      minuteLeft: number
+      hourLeft: number
+    }> = []
+    for (const scope of [...scopes].sort()) {
+      const records = this.recent(scope, now)
+      const usedPerMinute = records.filter((record) => now - record.at < MINUTE_MS).length
+      const usedPerHour = records.length
+      const minuteLeft =
+        this.config.maxPerMinute > 0
+          ? Math.max(0, this.config.maxPerMinute - usedPerMinute)
+          : Number.POSITIVE_INFINITY
+      const hourLeft =
+        this.config.maxPerHour > 0
+          ? Math.max(0, this.config.maxPerHour - usedPerHour)
+          : Number.POSITIVE_INFINITY
+      result.push({
+        scope,
+        maxPerMinute: this.config.maxPerMinute,
+        maxPerHour: this.config.maxPerHour,
+        usedPerMinute,
+        usedPerHour,
+        minuteLeft,
+        hourLeft,
+      })
+    }
+    return result
+  }
+
   /** 判定并记账一次发送。 */
   private async admit(
     scope: string,

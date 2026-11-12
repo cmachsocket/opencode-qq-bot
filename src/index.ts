@@ -1,4 +1,5 @@
 import { join, resolve } from "node:path"
+import { randomBytes } from "node:crypto"
 import { Plugin } from "@opencode/plugin"
 import type { GroupMessageEvent, MessageEvent, NoticeEvent } from "@naplink/naplink"
 import { Mutex } from "async-mutex"
@@ -6,7 +7,9 @@ import { delay, unrefTimer } from "./async"
 import { acquireBotLock, type BotLock, botLockPath } from "./bot-lock"
 import { type ChatTarget, targetKey, targetLabel } from "./chat"
 import { allowedTargets, isTargetAllowed } from "./access"
-import { MIGRATION_WARNING_PREFIX, resolveConfig, type QQBotConfig } from "./config"
+import type { QQBotConfig } from "./config"
+import { ConfigController } from "./config/live"
+import { ConfigStore, CONFIG_FILE_NAME } from "./config/store"
 import { DiaryCollector, isSelfSpeaker } from "./diary/collector"
 import { createDiaryRunner, diaryCommand } from "./diary/command"
 import { DiaryScheduler } from "./diary/scheduler"
@@ -16,7 +19,7 @@ import { DiarySummarizer } from "./diary/summary"
 import { resolveHome } from "./home"
 import { claimInstance, takeHandover } from "./instance"
 import { KeepAlive } from "./keepalive"
-import { createLogger, closeLogger, defaultLogDir, flushLogger, type Logger } from "./logger"
+import { createLogger, closeLogger, defaultLogDir, flushLogger, setLogLevel } from "./logger"
 import { defaultMediaDir, OutboundMedia } from "./media-path"
 import { formatModelMessage } from "./model-view"
 import { QQClient } from "./naplink/client"
@@ -29,6 +32,9 @@ import {
   resolveUserName,
   shouldProcess,
 } from "./naplink/render"
+import { PanelRuntime } from "./panel/runtime"
+import { createModelProvider } from "./panel/models"
+import { PanelServer } from "./panel/server"
 import { SendRateLimiter } from "./rate-limit"
 import { startClaimTimer } from "./runtime/claim"
 import { RuntimeStart } from "./runtime/start"
@@ -73,12 +79,18 @@ const RETRY_DELAY_MS = 1000
 /** 机器人连接被别的实例占用时，多久重试一次接管。 */
 const CLAIM_RETRY_MS = 30_000
 
-/** 迁移类告警用 error 级别输出，其余保持 warn。 */
-function reportWarnings(warnings: readonly string[], logger: Logger): void {
-  for (const warning of warnings) {
-    if (warning.startsWith(MIGRATION_WARNING_PREFIX)) logger.error(warning)
-    else logger.warn(warning)
-  }
+/**
+ * 从插件选项里取 agent。
+ *
+ * `opencode.json` 里只有 agent 一项会被读：agent 是 OpenCode 侧的路由语义，
+ * 其余插件选项一律忽略，不生效也不告警。
+ */
+function agentFromOptions(options: unknown): string | undefined {
+  if (!options || typeof options !== "object" || Array.isArray(options)) return undefined
+  const agent = (options as Record<string, unknown>).agent
+  if (typeof agent !== "string") return undefined
+  const trimmed = agent.trim()
+  return trimmed.length > 0 ? trimmed : undefined
 }
 
 /**
@@ -138,13 +150,21 @@ export default Plugin.define({
     // 配置还没解析出来，先用一个只写控制台的日志器兜底，解析完再换成正式日志器。
     const bootstrap = createLogger("[qq-bot]", { file: false })
     const version = pluginVersion()
-    let config: QQBotConfig
     const warnings: string[] = []
+    // 工作目录固定：配置文件就在工作目录里，位置固定才不会自举。
+    const home = await resolveHome(bootstrap)
+    const store = new ConfigStore(join(home.directory, CONFIG_FILE_NAME))
+    const controller = new ConfigController({
+      store,
+      ...(agentFromOptions(ctx.options) ? { agent: agentFromOptions(ctx.options) } : {}),
+      warn: (message) => warnings.push(message),
+    })
+
+    let config: QQBotConfig
     try {
-      config = resolveConfig(ctx.options, process.env, (message) => warnings.push(message))
+      config = await controller.load()
     } catch (error) {
       bootstrap.info(`opencode-qq-bot v${version}`)
-      reportWarnings(warnings, bootstrap)
       bootstrap.error(error instanceof Error ? error.message : String(error))
       await closeLogger(bootstrap)
       return
@@ -158,7 +178,7 @@ export default Plugin.define({
       knownSecrets: knownSecrets(config),
     })
     logger.info(`opencode-qq-bot v${version}`)
-    reportWarnings(warnings, logger)
+    for (const warning of warnings) logger.warn(warning)
     // 正式日志器已经接管，兜底日志器只写控制台，用完就关掉。
     await closeLogger(bootstrap)
 
@@ -167,13 +187,39 @@ export default Plugin.define({
       config.access.allow.users.length === 0 &&
       !config.access.allowAllWhenEmpty
     ) {
-      logger.warn(
-        "未配置放行目标，插件不会响应任何消息（请设置 access.allow 或 QQ_ALLOW_GROUPS/QQ_ALLOW_USERS）",
-      )
+      logger.warn("未配置放行目标，插件不会响应任何消息（请在 config.json 里配置 access.allow）")
     }
 
-    // 机器人固定服务的工作目录：配置优先，否则固定使用 XDG 数据目录下的工作区。
-    const home = await resolveHome(config.home, logger)
+    // 面板令牌：没配就随机生成，明文写回配置文件，之后重启不变。
+    if (config.panel.enabled) {
+      if (!config.panel.token) {
+        const token = randomBytes(32).toString("hex")
+        await controller.applyPatch({ "panel.token": token })
+        logger.warn("面板访问令牌已生成（已写入 config.json）", token)
+      } else if (config.panel.token.length < 16) {
+        logger.warn("面板访问令牌太短，建议至少 16 个字符")
+      }
+    }
+
+    // 状态面板：默认关闭，启用后自带 HTTP 服务。
+    const panelRuntime = new PanelRuntime({ config, home, logger })
+    panelRuntime.version = version
+    panelRuntime.agent = config.agent
+    const panel = new PanelServer({
+      controller,
+      runtime: panelRuntime,
+      models: createModelProvider(ctx.model),
+      logger,
+    })
+    await panel.start().catch((error: unknown) => logger.error("启动状态面板失败", error))
+
+    // 配置文件被外部改动时热更新：日志级别这类字段改完立即生效。
+    const unsubscribeLevel = controller.onChange((next) => {
+      setLogLevel(logger, next.log.level)
+    })
+    await controller.startWatching().catch((error: unknown) => {
+      logger.warn("监听配置文件失败，配置文件改动不会自动生效", error)
+    })
 
     // 同一台机器只允许一个插件实例：OpenCode 可能为不同项目目录加载插件，
     // 新实例接管旧实例并让旧实例整体卸载，避免多条 NapCat 连接与重复投递。
@@ -206,6 +252,15 @@ export default Plugin.define({
       await cleanup.run(logger)
     }
     lease.setDispose(dispose)
+    cleanup.add("停止状态面板", () => panel.stop(), CleanupOrder.panel)
+    cleanup.add("停止配置监听", () => controller.stop(), CleanupOrder.panel)
+    cleanup.add(
+      "取消配置订阅",
+      () => {
+        unsubscribeLevel()
+      },
+      CleanupOrder.panel,
+    )
     cleanup.add(
       "记录卸载日志",
       () =>
@@ -317,6 +372,7 @@ export default Plugin.define({
 
         const client = new QQClient(config.napcat, logger)
         cleanup.add("断开 NapCat", () => client.dispose(), CleanupOrder.napcat)
+        panelRuntime.client = client
         const mediaDir = defaultMediaDir()
         const media = await createMediaStore(logger, { root: mediaDir })
         // 出站媒体把关：只允许工作目录、媒体目录和配置里放开的目录，远端地址只允许公网。
@@ -348,11 +404,17 @@ export default Plugin.define({
         })
         // 出站限流：模型驱动的发送与插件自己发的消息共用一个限流器。
         const limiter = new SendRateLimiter(config.rateLimit)
+        panelRuntime.limiter = limiter
         // 出站敏感信息拦截：环境变量里的凭证与 NapCat 令牌都当作已知凭证。
         const sensitive = new SensitiveChecker({
           enabled: config.sensitive.enabled,
           knownSecrets: knownSecrets(config),
         })
+        // 敏感拦截开关是热字段：改完立即生效。
+        const unsubscribeSensitive = controller.onChange((next) => {
+          sensitive.setEnabled(next.sensitive.enabled)
+        })
+        cleanup.add("取消配置订阅", () => unsubscribeSensitive(), CleanupOrder.panel)
         // 通知缓存：通知不自己起一轮，只在下一次该聊天的上下文里附带出现。
         const noticeStore = new NoticeStore()
         // 工具配置：按聊天与角色决定模型能看到、能调用哪些工具。
@@ -364,6 +426,7 @@ export default Plugin.define({
           await seedFile(join(packageRoot, "tool-profiles.example.json"), profilesPath, logger)
         }
         const policy = new ToolPolicy(profilesPath, logger)
+        panelRuntime.policy = policy
         // 会话行为覆盖：按聊天决定怎么唤醒、要不要主动说话。
         const overridesPath = config.chatOverridesPath
           ? resolve(home.directory, config.chatOverridesPath)
@@ -372,6 +435,7 @@ export default Plugin.define({
           await seedFile(join(packageRoot, "chat-overrides.example.json"), overridesPath, logger)
         }
         const overrides = new ChatOverrides(overridesPath, logger)
+        panelRuntime.overrides = overrides
         // 调用链追踪：一条入站消息拿一个 trace_id，事后能把这轮串起来。
         // 追踪文件与日志放在一起，容量与保留天数都有上限。
         const tracer = config.trace.enabled
@@ -383,6 +447,7 @@ export default Plugin.define({
             })
           : undefined
         await tracer?.prune()
+        panelRuntime.tracer = tracer
         const manager = new SessionManager(
           ctx,
           config,
@@ -397,6 +462,7 @@ export default Plugin.define({
           tracer,
         )
         cleanup.add("停止会话管理", () => manager.dispose(), CleanupOrder.manager)
+        panelRuntime.manager = manager
         cleanup.add("落盘会话状态", () => manager.flush(), CleanupOrder.persist)
         // 交接在途状态最先做：接管方要拿到上一轮还在跑的状态。
         cleanup.add(
@@ -469,6 +535,7 @@ export default Plugin.define({
           summarizer: diarySummarizer,
         })
         cleanup.add("停止日记调度", () => diaryScheduler.dispose(), CleanupOrder.events)
+        panelRuntime.diary = diaryScheduler
         // QQ 工具只有持有机器级锁的实例才注册：工具表在进程内共享，
         // 没锁的实例注册了会覆盖持有者的实现，模型就会调到没有连接的那一份。
         let toolRegistration: { dispose(): Promise<void> } | undefined

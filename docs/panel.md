@@ -1,6 +1,6 @@
 # 配置中心与状态面板
 
-> 状态：设计稿，未实现。目标是用一个 Svelte 单页应用接管全局配置的查看与修改，并提供机器人运行状态的实时面板。
+> 状态：已实现。Svelte 单页应用接管全局配置的查看与修改，并提供机器人运行状态的实时面板；落地细节见文末「落地说明」。
 
 ## 目标
 
@@ -458,3 +458,64 @@ web/                     Svelte 单页应用（独立 package.json）
 
 - 工作目录固定为 `$XDG_DATA_HOME/opencode-qq-bot/workspace` 且不可配置。
 - `agent` 留在 `opencode.json`（OpenCode 侧路由语义），`model` 作为偏好写进 `config.json`（可用模型列表来自 OpenCode）。
+
+## 落地说明
+
+阶段 0~6 已按本设计稿实现，没有引入额外的配置来源或兼容层。
+
+### 后端
+
+- 字段注册表：`src/config/fields.ts` 定义全部字段、分组、类型、默认值、约束与 `hot`；
+  `src/config/registry.ts` 由它生成 `DEFAULT_CONFIG`、zod schema、文件键集合与 JSON Schema，
+  `src/config.ts` 只负责把文件内容解析成运行时对象。
+- 配置文件：`src/config/store.ts` 负责原子写（`write-file-atomic`，保留 `.bak`）、
+  目录 `0700`、文件 `0600`；文件不存在抛 `ConfigMissingError`，JSON 非法抛 `ConfigParseError`。
+  监听走 `chokidar`，外部改动解析成功后热更新。
+- 热更新：`src/config/live.ts` 的 `applyPatch` 只改叶子值并保持中间对象引用，
+  `restartRequired` 由注册表的 `hot` 决定；面板保存与文件监听共用同一条解析路径。
+- HTTP：`src/panel/server.ts` 用 `@hono/node-server` 启动，`src/panel/auth.ts` 管理令牌与会话，
+  `src/panel/api.ts` 提供接口。令牌比较用定长摘要比较；未配置时随机生成、明文写回
+  `config.json`，启动日志打印一次。
+- 状态：`src/panel/status.ts` 汇总连接、会话、限流、追踪、日记与工具策略；
+  `/api/status` 与 SSE `status` 事件共用这一份快照。
+- 日志：`src/logger.ts` 维护 500 条环形缓冲与脱敏副本，`/api/logs` 与 SSE `log` 事件读取同一份数据；
+  `setLogLevel` 让 `log.level` 保存后立即生效，`Logger` 的四个方法签名保持不变。
+
+### 接口
+
+| 方法   | 路径                 | 说明                                                               |
+| ------ | -------------------- | ------------------------------------------------------------------ |
+| `POST` | `/api/login`         | 用令牌换会话 Cookie（`qqbot_session`，HttpOnly + SameSite=Strict） |
+| `GET`  | `/api/config/schema` | 分组、字段元数据与 JSON Schema                                     |
+| `GET`  | `/api/config`        | 每字段生效值、文件值与来源                                         |
+| `PUT`  | `/api/config`        | 提交稀疏补丁；只收 JSON，校验失败返回 `fields[].path`              |
+| `GET`  | `/api/models`        | OpenCode 可用模型与默认模型标记                                    |
+| `GET`  | `/api/status`        | 运行状态快照                                                       |
+| `GET`  | `/api/logs`          | 环形缓冲尾部，支持 `limit` 与 `level`                              |
+| `GET`  | `/api/stream`        | SSE：`status` / `log` / `config`                                   |
+
+鉴权支持 `Authorization: Bearer <token>` 与会话 Cookie 两条路；写接口校验 `Origin`，
+并用 `hono/csrf` 兜底表单类请求；响应带 CSP 等安全头，静态资源由同一个服务托管。
+
+### 前端
+
+- `web/` 是独立的 Svelte 5 + Vite + Tailwind v4 工程，shadcn-svelte 组件源码在
+  `web/src/lib/components/ui/`；构建产物 `web/dist` 随 npm 包发布（`files` 已包含）。
+- 数据层只用原生 `fetch` 与 `EventSource`（`web/src/lib/api.ts`），不引入请求库。
+- 表单由 `/api/config/schema` 驱动：字段名、分组、控件类型、枚举候选、数值范围与
+  敏感字段全部来自注册表，前端不写死字段名；`ajv` 用同一份 JSON Schema 做提交前校验。
+- 页面：配置（分组表单、搜索、待保存标记、需重启提示）、状态（连接、会话、限流、日记、策略）、
+  日志（环形缓冲、级别过滤、搜索、暂停与自动滚动）、追踪（最近节点与属性）。
+
+### 安全与运维
+
+- 面板默认关闭；启用后默认只监听 `127.0.0.1:7391`。监听地址改成非本机前请确认网络边界。
+- 敏感字段（如 `napcat.token`、`panel.token`）不回显，只返回 `hasValue`；留空表示不修改。
+- 卸载插件时 `cleanup` 会关闭 HTTP 服务、SSE 连接与文件监听，不留残留端口。
+- 日志与状态都来自当前进程：重启前的日志仍需查日志文件，跨重启的历史不在面板范围内。
+
+### 验证
+
+- `bun run typecheck`、`bun run lint`、`bun run test`、`bun run web:build` 均可通过。
+- `tests/` 覆盖注册表一致性、配置文件读写与原子写、热更新与重启字段划分、鉴权与 CSRF、
+  各接口、状态快照、日志环形缓冲与脱敏。

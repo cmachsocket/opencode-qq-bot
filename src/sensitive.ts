@@ -278,7 +278,7 @@ export interface SensitiveCheckerOptions {
  * 命中就整条拦截：出站消息要么原样发出去，要么不发。
  */
 export class SensitiveChecker {
-  private readonly enabled: boolean
+  private enabled: boolean
   private readonly knownSecrets: string[]
   private readonly custom: Detector[]
   private readonly only: string[]
@@ -291,6 +291,11 @@ export class SensitiveChecker {
     const known = knownSecretDetector(this.knownSecrets)
     this.custom = known ? [known, SENSITIVE_PATH_DETECTOR] : [SENSITIVE_PATH_DETECTOR]
     this.only = [...SECRET_DETECTORS, ...this.custom.map((detector) => detector.id)]
+  }
+
+  /** 打开或关闭检查：开关是热字段，改完立即生效。 */
+  setEnabled(enabled: boolean): void {
+    this.enabled = enabled
   }
 
   /**

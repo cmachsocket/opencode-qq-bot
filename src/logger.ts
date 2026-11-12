@@ -22,6 +22,18 @@ export interface Logger {
   error(message: string, ...meta: unknown[]): void
 }
 
+/** 环形缓冲里的一条日志。 */
+export interface LogEntry {
+  /** 时间（ISO 字符串）。 */
+  time: string
+  /** 级别。 */
+  level: LogLevel
+  /** 正文。 */
+  message: string
+  /** 附加信息。 */
+  meta: unknown[]
+}
+
 /** 日志器选项。 */
 export interface LoggerOptions {
   /** 最低输出级别，默认 info。 */
@@ -51,6 +63,77 @@ const FILE_NAME = "qq-bot-%DATE%.log"
 const MAX_META_DEPTH = 4
 /** 关闭日志时最多等多久（毫秒），避免卸载卡死。 */
 const CLOSE_TIMEOUT_MS = 2000
+/** 进程内日志环形缓冲的容量。 */
+const LOG_BUFFER_SIZE = 500
+/** 日志级别的大小顺序。 */
+const LEVEL_ORDER: readonly LogLevel[] = ["debug", "info", "warn", "error"]
+
+/** 进程内的日志环形缓冲：面板直接看日志，不必去翻文件。 */
+const logBuffer: LogEntry[] = []
+/** 日志订阅者：面板的 SSE 增量推送用。 */
+const logSubscribers = new Set<(entry: LogEntry) => void>()
+
+/**
+ * 读取最近的日志。
+ *
+ * @param options `limit` 取多少条，`level` 只看某个级别。
+ */
+export function readLogTail(options: { limit?: number; level?: LogLevel } = {}): LogEntry[] {
+  const limit = Math.max(1, Math.min(options.limit ?? 200, LOG_BUFFER_SIZE))
+  const level = options.level
+  const filtered = level ? logBuffer.filter((entry) => entry.level === level) : logBuffer
+  return filtered.slice(-limit)
+}
+
+/**
+ * 订阅新写入的日志。
+ *
+ * @param listener 每条新日志调用一次。
+ * @returns 取消订阅的函数。
+ */
+export function subscribeLogs(listener: (entry: LogEntry) => void): () => void {
+  logSubscribers.add(listener)
+  return () => {
+    logSubscribers.delete(listener)
+  }
+}
+
+/** 给缓冲里的副本打码：文件里打码了，面板里也必须打码。 */
+function maskEntry(value: unknown, knownSecrets: string[]): unknown {
+  if (typeof value === "string") return maskSecrets(value, { knownSecrets })
+  if (!value || typeof value !== "object") return value
+  try {
+    const text = JSON.stringify(value)
+    const masked = maskSecrets(text, { knownSecrets })
+    return masked === text ? value : (JSON.parse(masked) as unknown)
+  } catch {
+    return value
+  }
+}
+
+/** 把一条日志压进环形缓冲并通知订阅者。 */
+function pushBuffer(
+  level: LogLevel,
+  message: string,
+  meta: unknown[],
+  knownSecrets: string[],
+): void {
+  const entry: LogEntry = {
+    time: new Date().toISOString(),
+    level,
+    message: maskSecrets(message, { knownSecrets }),
+    meta: meta.map((item) => maskEntry(item, knownSecrets)),
+  }
+  logBuffer.push(entry)
+  while (logBuffer.length > LOG_BUFFER_SIZE) logBuffer.shift()
+  for (const listener of logSubscribers) {
+    try {
+      listener(entry)
+    } catch {
+      // 订阅者出错不影响日志本身。
+    }
+  }
+}
 
 /** 写文件的那一路传输。 */
 interface FileTransport {
@@ -64,6 +147,8 @@ interface LoggerHandle {
   api: Logger
   logger: winston.Logger
   files: FileTransport[]
+  /** 当前最低级别：热更新时跟着变。 */
+  level: LogLevel
 }
 
 const handles = new Set<LoggerHandle>()
@@ -210,6 +295,8 @@ export function createLogger(prefix: string, options: LoggerOptions | LogLevel =
     transports,
     exitOnError: false,
   })
+  /** 当前级别：热更新时跟着变，缓冲的过滤要与输出一致。 */
+  const handle: LoggerHandle = { api: undefined as unknown as Logger, logger, files, level }
 
   // 传输出错时不能让进程崩掉，也不能让错误本身带着凭证进日志。
   logger.on("error", (error: Error) => {
@@ -218,7 +305,10 @@ export function createLogger(prefix: string, options: LoggerOptions | LogLevel =
   })
 
   const write = (target: LogLevel, message: string, meta: unknown[]) => {
+    // 低于当前级别的日志不进缓冲：面板看到的级别过滤和文件里一致。
+    if (LEVEL_ORDER.indexOf(target) < LEVEL_ORDER.indexOf(handle.level)) return
     const details = normalizeMeta(meta)
+    pushBuffer(target, message, details, knownSecrets)
     logger.log({
       level: target,
       message,
@@ -233,8 +323,21 @@ export function createLogger(prefix: string, options: LoggerOptions | LogLevel =
     warn: (message, ...meta) => write("warn", message, meta),
     error: (message, ...meta) => write("error", message, meta),
   }
-  handles.add({ api, logger, files })
+  handle.api = api
+  handles.add(handle)
   return api
+}
+
+/**
+ * 改日志器的最低级别。
+ *
+ * 日志级别是热字段：面板改完立即生效，不用重启。
+ */
+export function setLogLevel(target: Logger, level: LogLevel): void {
+  const handle = [...handles].find((entry) => entry.api === target)
+  if (!handle) return
+  handle.level = level
+  handle.logger.level = level
 }
 
 /** 等传输发出 finish：这时文件流已经把数据交给了操作系统。 */

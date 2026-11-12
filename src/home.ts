@@ -3,6 +3,12 @@ import { homedir } from "node:os"
 import { isAbsolute, join, normalize } from "node:path"
 import type { Logger } from "./logger"
 
+/**
+ * 机器人固定服务的工作目录。
+ *
+ * 工作目录不再可配置：`config.json` 自己就放在这个目录里，位置固定才不会自举。
+ */
+
 /** 机器人固定服务的工作目录。 */
 export interface BotHome {
   /** 会话统一所在的绝对路径。 */
@@ -19,14 +25,12 @@ export function defaultHome(): string {
 /**
  * 解析机器人工作目录并确保它存在。
  *
- * 配置项优先；未配置时使用默认的 XDG 工作区，避免会话工作目录随加载插件的项目漂移。
+ * 目录固定在 XDG 数据目录下的工作区，启动时自动创建。
  */
-export async function resolveHome(
-  configured: string | undefined,
-  logger: Logger,
-): Promise<BotHome> {
-  const directory = configured ? expand(configured, logger) : defaultHome()
+export async function resolveHome(logger: Logger): Promise<BotHome> {
+  const directory = defaultHome()
   await mkdir(directory, { recursive: true, mode: 0o700 })
+  logger.debug(`机器人工作目录：${directory}`)
   return { directory }
 }
 
@@ -37,11 +41,8 @@ export function expandTilde(value: string): string {
   return value
 }
 
-function expand(configured: string, logger: Logger): string {
-  const expanded = expandTilde(configured)
-  if (!isAbsolute(expanded)) {
-    logger.warn("机器人工作目录必须是绝对路径，已回退到默认目录", configured)
-    return defaultHome()
-  }
-  return normalize(expanded)
+/** 规范化路径：相对路径按工作目录解析。 */
+export function resolvePath(base: string, value: string): string {
+  const expanded = expandTilde(value)
+  return isAbsolute(expanded) ? normalize(expanded) : normalize(join(base, expanded))
 }

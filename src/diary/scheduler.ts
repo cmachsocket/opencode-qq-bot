@@ -58,8 +58,29 @@ export class DiaryScheduler {
   private readonly mutex = new Mutex()
   /** 正在生成中的聊天，同一聊天同一时刻只跑一个任务。 */
   private readonly running = new Set<string>()
+  /** 上一次调度的时间（毫秒）。 */
+  private lastTick: number | undefined
+  /** 上一次调度结果的说明。 */
+  private lastOutcome = ""
 
   constructor(private readonly deps: DiarySchedulerDeps) {}
+
+  /** 下次调度的时间（毫秒）；还没跑过就是 undefined。 */
+  nextRunAt(): number | undefined {
+    if (this.lastTick === undefined) return undefined
+    const seconds = Math.max(60, this.deps.config.diary.tickSeconds)
+    return this.lastTick + seconds * 1000
+  }
+
+  /** 上次调度的时间（毫秒）。 */
+  lastRunAt(): number | undefined {
+    return this.lastTick
+  }
+
+  /** 上次调度结果的说明。 */
+  lastResult(): string {
+    return this.lastOutcome
+  }
 
   /** 开始轮询。 */
   start(): void {
@@ -91,15 +112,23 @@ export class DiaryScheduler {
     if (!this.deps.config.diary.enabled) return
     if (this.mutex.isLocked()) return
     await this.mutex.runExclusive(async () => {
+      this.lastTick = now.getTime()
       // 素材是中间产物，过期就清掉；日记成品不动。
       await this.deps.collector.cleanup(this.deps.config.diary.retentionDays)
       const target = minutesOfDay(this.deps.config.diary.summaryTime)
       const current = now.getHours() * 60 + now.getMinutes()
-      if (current < target) return
+      if (current < target) {
+        this.lastOutcome = `未到总结时刻（${this.deps.config.diary.summaryTime}）`
+        return
+      }
       const date = dateKey(now)
+      let done = 0
       for (const chat of this.targets()) {
         await this.runFor(chat, date)
+        done += 1
       }
+      this.lastOutcome =
+        done > 0 ? `已检查 ${done} 个聊天（${date}）` : `没有可总结的聊天（${date}）`
     })
   }
 

@@ -2,7 +2,14 @@ import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, describe, expect, it } from "vitest"
-import { closeLogger, createLogger, defaultLogDir } from "../src/logger"
+import {
+  closeLogger,
+  createLogger,
+  defaultLogDir,
+  readLogTail,
+  setLogLevel,
+  subscribeLogs,
+} from "../src/logger"
 
 /** 临时目录列表，测试结束后清掉。 */
 const dirs: string[] = []
@@ -214,5 +221,64 @@ describe("日志器", () => {
       if (original === undefined) delete process.env.XDG_STATE_HOME
       else process.env.XDG_STATE_HOME = original
     }
+  })
+})
+
+describe("日志环形缓冲", () => {
+  it("写入的日志进缓冲，可以按条数与级别读回", async () => {
+    const logger = createLogger("[buffer]", { file: false })
+    logger.info("缓冲里的第一条")
+    logger.warn("缓冲里的第二条")
+    const entries = readLogTail({ limit: 10 })
+    expect(entries.some((entry) => entry.message === "缓冲里的第一条")).toBe(true)
+    const warns = readLogTail({ limit: 10, level: "warn" })
+    expect(warns.every((entry) => entry.level === "warn")).toBe(true)
+    await closeLogger()
+  })
+
+  it("低于级别的日志不进缓冲", async () => {
+    const logger = createLogger("[buffer]", { file: false, level: "warn" })
+    logger.info("不该出现在缓冲里")
+    logger.warn("该出现")
+    const entries = readLogTail({ limit: 50 })
+    expect(entries.some((entry) => entry.message === "不该出现在缓冲里")).toBe(false)
+    expect(entries.some((entry) => entry.message === "该出现")).toBe(true)
+    await closeLogger()
+  })
+
+  it("缓冲里的副本也会打码", async () => {
+    const logger = createLogger("[buffer]", {
+      file: false,
+      knownSecrets: ["s3cret-value-that-is-long"],
+    })
+    logger.info("出现 s3cret-value-that-is-long")
+    const entries = readLogTail({ limit: 50 })
+    const entry = entries[entries.length - 1]
+    expect(entry?.message).toBeDefined()
+    expect(entry?.message).not.toContain("s3cret-value-that-is-long")
+    expect(entry?.message).toContain("[REDACTED")
+    await closeLogger()
+  })
+
+  it("订阅者能收到新日志", async () => {
+    const seen: string[] = []
+    const unsubscribe = subscribeLogs((entry) => seen.push(entry.message))
+    const logger = createLogger("[buffer]", { file: false })
+    logger.info("订阅收到的日志")
+    unsubscribe()
+    logger.info("退订之后不该收到")
+    expect(seen).toContain("订阅收到的日志")
+    expect(seen).not.toContain("退订之后不该收到")
+    await closeLogger()
+  })
+
+  it("改级别后过滤跟着变", async () => {
+    const logger = createLogger("[buffer]", { file: false, level: "info" })
+    logger.debug("级别改之前的 debug")
+    setLogLevel(logger, "debug")
+    logger.debug("级别改之后的 debug")
+    const entries = readLogTail({ limit: 50 })
+    expect(entries.some((entry) => entry.message === "级别改之后的 debug")).toBe(true)
+    await closeLogger()
   })
 })

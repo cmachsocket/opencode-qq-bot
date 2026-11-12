@@ -10,6 +10,7 @@ export const CleanupOrder = {
   handover: 10,
   keepAlive: 20,
   events: 30,
+  panel: 35,
   manager: 40,
   persist: 50,
   souls: 60,
