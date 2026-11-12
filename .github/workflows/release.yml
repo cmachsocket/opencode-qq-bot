@@ -38,6 +38,15 @@ jobs:
       - name: 格式检查
         run: bun run format:check
 
+      # 面板前端随包分发：类型检查与构建都要过
+      - name: 面板前端类型检查
+        run: |
+          bun install --cwd web --frozen-lockfile
+          bun run web:check
+
+      - name: 面板前端构建
+        run: bun run web:build
+
       - name: 测试
         run: bun run test
 
@@ -71,6 +80,12 @@ jobs:
 
       - name: 安装依赖（冻结锁文件）
         run: bun install --frozen-lockfile
+
+      # npm 包的 files 里带着 web/dist：前端产物必须先构建出来，否则包里没有面板页面
+      - name: 构建面板前端
+        run: |
+          bun install --cwd web --frozen-lockfile
+          bun run web:build
 
       # trusted publisher 只允许 stage publish：这里只把包放进暂存区，
       # 维护者用 2FA 执行 npm stage approve 之后版本才真正可安装。
