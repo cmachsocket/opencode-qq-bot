@@ -22,6 +22,21 @@ jobs:
           # release:check 会看工作区状态，取完整历史便于排查
           fetch-depth: 0
 
+      # 隐私扫描：发布的内容不能带凭证。
+      # CI 的增量扫描只覆盖 push 的那一段，这里从根提交一路扫到标签，
+      # 兜住「标签指向的提交没被 CI 扫过」的情况。
+      - name: 隐私扫描基线（根提交）
+        id: scan-base
+        run: echo "commit=$(git rev-list --max-parents=0 HEAD | head -n 1)" >> "$GITHUB_OUTPUT"
+
+      - name: 隐私扫描（自定义检测器，离线）
+        uses: trufflesecurity/trufflehog@v3.99.8
+        with:
+          version: 3.99.8
+          base: ${{ steps.scan-base.outputs.commit }}
+          head: ${{ github.sha }}
+          extra_args: --config=scripts/trufflehog.yml --include-detectors=CustomRegex --no-verification
+
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: "1.4.4"

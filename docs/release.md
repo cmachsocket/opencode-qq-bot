@@ -79,16 +79,18 @@
 
 `.github/workflows/release.yml` 由 `v*` tag 触发，两段：
 
-| job       | 内容                                                                                                                                 |
-| --------- | ------------------------------------------------------------------------------------------------------------------------------------ |
-| `verify`  | 冻结锁文件安装 → `typecheck` → `lint` → `format:check` → 面板前端类型检查与构建 → `test` → `release-check --tag "$GITHUB_REF_NAME"`  |
-| `publish` | 用 `actions/setup-node` 装 npm → 构建面板前端 → `npm stage publish --provenance` → `gh release create --notes-file ... --verify-tag` |
+| job       | 内容                                                                                                                                                              |
+| --------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `verify`  | 隐私扫描（从根提交扫到标签）→ 冻结锁文件安装 → `typecheck` → `lint` → `format:check` → 面板前端类型检查与构建 → `test` → `release-check --tag "$GITHUB_REF_NAME"` |
+| `publish` | 用 `actions/setup-node` 装 npm → 构建面板前端 → `npm stage publish --provenance` → `gh release create --notes-file ... --verify-tag`                              |
 
 - 用 npm 而不是 `bun publish`：`--provenance` 与 staged publishing 都是 npm 的能力。
 - `publish` 的权限只给到 `contents: write`（建 Release）与 `id-token: write`（OIDC / provenance），
   其余 job 一律 `contents: read`。
 - tag 与版本不一致、CHANGELOG 缺段、工作区有改动、许可证 / NOTICE 不一致，都会在
   `verify` 阶段失败，npm 上不会留下半成品。
+- **隐私扫描与 CI 同规则、不同范围**：CI 只扫这次 push 引入的提交，发布工作流从根提交扫到标签，
+  标签指向的提交即使没被 CI 扫过也会被拦下（与本地 `bun run privacy:scan` 的范围一致）。
 - **发布是 stage-only 的**：CI 只能 `npm stage publish`，`npm publish` 与 dist-tag 操作
   不在信任关系里，所以自动化流程拿不到直接上线权限。版本进入 registry 的唯一路径是
   维护者 2FA 批准。
