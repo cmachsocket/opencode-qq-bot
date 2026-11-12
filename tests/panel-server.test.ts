@@ -1,4 +1,5 @@
-import { mkdtemp, rm } from "node:fs/promises"
+import { mkdtemp, readFile, rm } from "node:fs/promises"
+import { randomUUID } from "node:crypto"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
@@ -48,6 +49,25 @@ function createServer(port: number, retry?: { times: number; intervalMs: number 
   })
   servers.push(server)
   return server
+}
+
+/** 用给定内容另起一套配置，顺便把运行时指过去。 */
+async function createController(
+  content: Record<string, unknown>,
+): Promise<{ controller: ConfigController; path: string }> {
+  const path = join(root, `config-${randomUUID()}.json`)
+  const ownStore = new ConfigStore(path, logger)
+  await ownStore.write(content)
+  const own = new ConfigController({ store: ownStore, logger })
+  const loaded = await own.load()
+  runtime = new PanelRuntime({ config: loaded, home: { directory: root }, logger })
+  return { controller: own, path }
+}
+
+/** 取配置里的面板令牌。 */
+function panelToken(source: ConfigController): string {
+  const raw = source.file as { panel?: { token?: string } }
+  return raw.panel?.token ?? ""
 }
 
 beforeEach(async () => {
@@ -161,6 +181,71 @@ describe("面板服务的生命周期", () => {
       }),
     ).rejects.toThrow()
   })
+
+  it("换到一个被占用的端口时，旧服务继续可用", async () => {
+    const first = await freePort()
+    const second = await freePort()
+    await controller.applyPatch({ "panel.port": first })
+    const server = createServer(first, { times: 0, intervalMs: 0 })
+    await server.start()
+
+    const { createServer: createHttp } = await import("node:http")
+    const blocker = createHttp()
+    await new Promise<void>((resolve) => blocker.listen(second, "127.0.0.1", resolve))
+    try {
+      await controller.applyPatch({ "panel.port": second })
+      await wait(300)
+      // 旧端口照常响应：换端口失败不能把面板关掉。
+      const response = await fetch(`http://127.0.0.1:${first}/api/status`, {
+        headers: { Authorization: `Bearer ${TOKEN}` },
+      })
+      expect(response.status).toBe(200)
+    } finally {
+      await new Promise<void>((resolve) => blocker.close(() => resolve()))
+    }
+  })
+})
+
+describe("面板默认开启", () => {
+  it("配置里没写面板时默认开启，并自动生成令牌", async () => {
+    const port = await freePort()
+    const own = await createController({
+      napcat: { url: "ws://127.0.0.1:3001" },
+      access: { allow: { groups: [123] } },
+      panel: { port },
+    })
+    expect(own.controller.current?.panel.enabled).toBe(true)
+
+    const token = panelToken(own.controller)
+    expect(token.length).toBeGreaterThan(0)
+    // 令牌写回了配置文件，重启后不变。
+    const onDisk = JSON.parse(await readFile(own.path, "utf8")) as { panel?: { token?: string } }
+    expect(onDisk.panel?.token).toBe(token)
+
+    const server = createServer(port)
+    await server.start()
+    const response = await fetch(`http://127.0.0.1:${port}/api/status`, {
+      headers: { Authorization: `Bearer ${token}` },
+    })
+    expect(response.status).toBe(200)
+  })
+
+  it("打开面板时会补一个令牌", async () => {
+    const port = await freePort()
+    await controller.applyPatch({ "panel.enabled": false, "panel.port": port, "panel.token": null })
+    const server = createServer(port)
+    await server.start()
+
+    await controller.applyPatch({ "panel.enabled": true })
+    await waitFor(async () => {
+      const token = panelToken(controller)
+      if (!token) return false
+      const response = await fetch(`http://127.0.0.1:${port}/api/status`, {
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      return response.status === 200
+    })
+  })
 })
 
 describe("配置文件写坏了", () => {
@@ -187,4 +272,9 @@ async function waitFor(check: () => Promise<boolean>, timeoutMs = 3000): Promise
     await new Promise((resolve) => setTimeout(resolve, 25))
   }
   throw new Error("等待超时")
+}
+
+/** 等一会儿。 */
+async function wait(ms: number): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, ms))
 }

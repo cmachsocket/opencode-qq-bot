@@ -1,5 +1,4 @@
 import { join, resolve } from "node:path"
-import { randomBytes } from "node:crypto"
 import { Plugin } from "@opencode/plugin"
 import type { GroupMessageEvent, MessageEvent, NoticeEvent } from "@naplink/naplink"
 import { Mutex } from "async-mutex"
@@ -200,18 +199,7 @@ export default Plugin.define({
       logger.warn("未配置放行目标，插件不会响应任何消息（请在 config.json 里配置 access.allow）")
     }
 
-    // 面板令牌：没配就随机生成，明文写回配置文件，之后重启不变。
-    if (config.panel.enabled) {
-      if (!config.panel.token) {
-        const token = randomBytes(32).toString("hex")
-        await controller.applyPatch({ "panel.token": token })
-        logger.warn("面板访问令牌已生成，请查看 config.json 里的 panel.token")
-      } else if (config.panel.token.length < 16) {
-        logger.warn("面板访问令牌太短，建议至少 16 个字符")
-      }
-    }
-
-    // 状态面板：默认关闭，启用后自带 HTTP 服务。
+    // 状态面板：默认开启，自带 HTTP 服务，只监听本机。
     const panelRuntime = new PanelRuntime({ config, home, logger })
     panelRuntime.version = version
     panelRuntime.agent = config.agent

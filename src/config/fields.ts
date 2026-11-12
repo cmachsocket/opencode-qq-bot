@@ -742,8 +742,8 @@ export const CONFIG_FIELDS: readonly ConfigField[] = [
     group: "panel",
     type: "boolean",
     label: "启用状态面板",
-    description: "面板自带 HTTP 服务，默认关闭",
-    default: false,
+    description: "面板自带 HTTP 服务，默认开启",
+    default: true,
     hot: true,
   },
   {

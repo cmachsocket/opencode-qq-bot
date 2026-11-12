@@ -4,12 +4,21 @@
 
 ## [Unreleased]
 
+### Changed
+
+- 状态面板默认开启（`panel.enabled` 默认 `true`），仍只监听 `127.0.0.1:7391`。
+  面板开着而没有令牌时自动生成一个并写回 `config.json`；令牌由配置控制器统一补齐，
+  启动与运行中打开面板都拿得到。
+
 ### Added
 
 - 最小配置模板 `config.example.json`：复制到工作目录改名成 `config.json` 即可用，npm 包里也带一份。
 
 ### Fixed
 
+- 面板开着却没有令牌时也能进得去：之前只在「启动时已开启」这条路上生成令牌，
+  运行中打开面板会变成一个登不进去的面板。
+- 换端口失败不再把面板关掉：端口被占用时旧服务照常可用，也不会抛出没人接的 Promise 拒绝。
 - 文档里的配置示例回到新结构：README 的安装示例不再把 `napcat` / `access` 写成插件选项，
   角色设定的示例改用 `config.json` 的 `soulName`；`docs/diary.md` 的日记配置项不再引用
   已删除的 `QQ_DIARY_*` 环境变量；`SECURITY.md` 不再让人提交 `.env.example`。

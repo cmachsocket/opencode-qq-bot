@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto"
 import { applyHotFields, resolveConfig, type ConfigWarning, type QQBotConfig } from "../config"
 import { CONFIG_FIELDS } from "../config/fields"
 import { requiredFieldProblem } from "../config/registry"
@@ -71,7 +72,30 @@ export class ConfigController {
   async load(): Promise<QQBotConfig> {
     this.raw = await this.options.store.read()
     this.config = this.resolve(this.raw)
+    await this.ensureSecrets()
     return this.config
+  }
+
+  /**
+   * 补齐缺失的随机凭据。
+   *
+   * 面板开着却没有令牌时生成一个并写回配置文件：令牌要留在文件里，
+   * 重启后不变，面板也才有得登录。写不进去只告警，不影响机器人本身。
+   */
+  private async ensureSecrets(): Promise<void> {
+    const live = this.config
+    if (!live?.panel.enabled) return
+    if (live.panel.token) {
+      if (live.panel.token.length < 16) this.warn("面板访问令牌太短，建议至少 16 个字符")
+      return
+    }
+    const token = randomBytes(32).toString("hex")
+    try {
+      await this.applyPatch({ "panel.token": token })
+      this.warn("面板访问令牌已生成，请查看 config.json 里的 panel.token")
+    } catch (error) {
+      this.warn(`面板访问令牌生成失败：${error instanceof Error ? error.message : String(error)}`)
+    }
   }
 
   /** 解析文件内容；非法值告警并回退默认值。 */
@@ -102,6 +126,8 @@ export class ConfigController {
     applyHotFields(live, next)
     this.config = live
     this.notify()
+    // 面板刚被打开时补一个令牌：补完会再通知一次，订阅者这时看到的配置是完整的。
+    await this.ensureSecrets()
     return {
       config: live,
       restartRequired: Object.keys(patch).filter((path) => !isHotField(path)),
@@ -132,6 +158,8 @@ export class ConfigController {
       applyHotFields(live, next)
       this.config = live
       this.notify()
+      // 面板刚被打开时补一个令牌：补完会再通知一次，订阅者这时看到的配置是完整的。
+      void this.ensureSecrets()
     })
   }
 

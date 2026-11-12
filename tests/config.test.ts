@@ -104,7 +104,7 @@ describe("resolveConfig", () => {
     expect(config.access.allowAllWhenEmpty).toBe(false)
     expect(config.sendDelayMs).toBe(DEFAULT_CONFIG.sendDelayMs)
     expect(config.reminder.max).toBe(DEFAULT_CONFIG.reminder.max)
-    expect(config.panel.enabled).toBe(false)
+    expect(config.panel.enabled).toBe(DEFAULT_CONFIG.panel.enabled)
     expect(config.panel.host).toBe("127.0.0.1")
     expect(config.panel.port).toBe(7391)
   })

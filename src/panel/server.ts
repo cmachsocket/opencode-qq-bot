@@ -48,6 +48,10 @@ export class PanelServer {
   private listening: { host: string; port: number } | undefined
   /** 端口被占用时的重试策略。 */
   private readonly retry: { times: number; intervalMs: number }
+  /** 正在应用配置：期间来的改动排队，不并行处理。 */
+  private applying = false
+  /** 排队中的改动：应用期间又来了新改动就再跑一轮。 */
+  private queued = false
 
   constructor(private readonly options: PanelServerOptions) {
     this.token = options.runtime.config.panel.token
@@ -68,7 +72,9 @@ export class PanelServer {
    */
   async start(): Promise<void> {
     this.unsubscribe ??= this.options.controller.onChange(() => {
-      void this.reconcile()
+      void this.reconcile().catch((error: unknown) => {
+        this.options.logger.error("应用面板配置失败", error)
+      })
     })
     await this.reconcile()
   }
@@ -80,8 +86,29 @@ export class PanelServer {
     await this.closeServer()
   }
 
-  /** 配置变了：令牌、是否启用、地址或端口都要跟着调整。 */
+  /**
+   * 配置变了：令牌、是否启用、地址或端口都要跟着调整。
+   *
+   * 一次只能应用一轮：应用期间又来的改动排队，等这一轮结束再跑。
+   */
   private async reconcile(): Promise<void> {
+    if (this.applying) {
+      this.queued = true
+      return
+    }
+    this.applying = true
+    try {
+      do {
+        this.queued = false
+        await this.apply()
+      } while (this.queued)
+    } finally {
+      this.applying = false
+    }
+  }
+
+  /** 应用一轮配置。 */
+  private async apply(): Promise<void> {
     const config = this.options.runtime.config
     // 令牌先换：面板关着的时候换了令牌，启用后也要认新的。
     if (config.panel.token !== this.token) {
@@ -93,11 +120,45 @@ export class PanelServer {
       await this.closeServer()
       return
     }
+    // 没有令牌就登不进去：等配置控制器补一个令牌，补完会再通知一次。
+    if (!config.panel.token) {
+      await this.closeServer()
+      return
+    }
     const host = config.panel.host
     const port = config.panel.port
     if (this.listening && this.listening.host === host && this.listening.port === port) return
-    await this.closeServer()
-    await this.listen()
+    await this.serve(host, port)
+  }
+
+  /**
+   * 换到新的地址与端口。
+   *
+   * 端口变了先绑新的，成功了再关旧的：绑不上时旧服务照常可用。
+   * 端口没变（只换了主机名）得先关旧的，同一个端口绑不了两次。
+   */
+  private async serve(host: string, port: number): Promise<void> {
+    const app = createPanelApp({
+      auth: this.auth,
+      controller: this.options.controller,
+      runtime: this.options.runtime,
+      models: this.options.models,
+      ...(existsSync(panelStaticDir()) ? { staticDir: panelStaticDir() } : {}),
+    })
+    const samePort = this.listening?.port === port
+    if (samePort) await this.closeServer()
+    const server = await this.bind(app, host, port)
+    server.on("error", (error: Error) => {
+      this.options.logger.error("状态面板服务出错", error)
+    })
+    server.unref?.()
+    if (!samePort) await this.closeServer()
+    this.server = server
+    this.listening = { host, port }
+    this.options.logger.info(`状态面板已启动：http://${host}:${port}`)
+    if (!existsSync(panelStaticDir())) {
+      this.options.logger.warn("面板前端产物不存在，只有接口可用", "请执行 bun run web:build")
+    }
   }
 
   /** 关掉 HTTP 服务。 */
@@ -111,32 +172,6 @@ export class PanelServer {
       // SSE 的连接不会自己断，close 会一直等；强制掐掉，免得卸载卡住。
       if ("closeAllConnections" in server) server.closeAllConnections()
     })
-  }
-
-  /** 真正开始监听。 */
-  private async listen(): Promise<void> {
-    const config = this.options.runtime.config
-    const host = config.panel.host
-    const port = config.panel.port
-    const staticDir = panelStaticDir()
-    const app = createPanelApp({
-      auth: this.auth,
-      controller: this.options.controller,
-      runtime: this.options.runtime,
-      models: this.options.models,
-      ...(existsSync(staticDir) ? { staticDir } : {}),
-    })
-    const server = await this.bind(app, host, port)
-    server.on("error", (error: Error) => {
-      this.options.logger.error("状态面板服务出错", error)
-    })
-    server.unref?.()
-    this.server = server
-    this.listening = { host, port }
-    this.options.logger.info(`状态面板已启动：http://${host}:${port}`)
-    if (!existsSync(staticDir)) {
-      this.options.logger.warn("面板前端产物不存在，只有接口可用", "请执行 bun run web:build")
-    }
   }
 
   /**
