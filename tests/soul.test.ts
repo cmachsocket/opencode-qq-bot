@@ -243,6 +243,20 @@ describe("SoulLibrary", () => {
     library.dispose()
   })
 
+  it("角色设定正文不带 QQ 守则，守则只在 prompt 里", async () => {
+    const home = await makeDir("soul-persona")
+    await mkdir(soulsDirectory(home))
+    await writeFile(join(soulsDirectory(home), "default.txt"), "你是白羽桃", "utf-8")
+
+    const library = new SoulLibrary(options({ home }), logger)
+    const store = await library.at(undefined)
+    expect(store.text).toBe("你是白羽桃")
+    expect(store.text).not.toContain("qq_send_message")
+    expect(store.prompt).toContain("qq_send_message")
+
+    library.dispose()
+  })
+
   it("文件不存在时给出空提示词", async () => {
     const library = new SoulLibrary(options({ soulPath: "/nonexistent/soul.txt" }), logger)
     const store = await library.at("/nonexistent/soul.txt")

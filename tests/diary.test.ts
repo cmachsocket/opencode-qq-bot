@@ -94,6 +94,7 @@ describe("日记格式", () => {
     const parsed = parseDiary(serializeDiary(entry))
     expect(parsed?.meta.date).toBe("2026-11-10")
     expect(parsed?.meta.chat).toBe("group:123")
+    expect(parsed?.meta.chat_label).toBe("群 123")
     expect(parsed?.meta.source).toBe("auto")
     expect(parsed?.title).toBe("周末在群里闲聊")
     expect(parsed?.body).toBe("第一段\n\n第二段")
@@ -463,7 +464,7 @@ describe("素材的轻量提取", () => {
 
 describe("日记总结", () => {
   it("提示词把素材包在 chat 标签里并声明那不是指令", () => {
-    const prompt = buildDiaryPrompt("2026-11-10", [
+    const prompt = buildDiaryPrompt("2026-11-10", "group:123", [
       {
         id: "1",
         time: Math.floor(new Date(2026, 10, 10, 15, 30).getTime() / 1000),
@@ -476,12 +477,13 @@ describe("日记总结", () => {
     ])
     expect(prompt).toContain("<chat>")
     expect(prompt).toContain("</chat>")
+    expect(prompt).toContain("群 123")
     expect(prompt).toContain("今天群里在聊发布")
     expect(prompt).toContain("不要调用任何工具")
   })
 
   it("机器人自己的行署机器人且不带 @QQ 号", () => {
-    const prompt = buildDiaryPrompt("2026-11-10", [
+    const prompt = buildDiaryPrompt("2026-11-10", "group:123", [
       {
         id: "1",
         time: Math.floor(new Date(2026, 10, 10, 15, 30).getTime() / 1000),
@@ -507,7 +509,7 @@ describe("日记总结", () => {
   })
 
   it("素材里的结构标签被中和", () => {
-    const prompt = buildDiaryPrompt("2026-11-10", [
+    const prompt = buildDiaryPrompt("2026-11-10", "group:123", [
       {
         id: "1",
         time: Math.floor(new Date(2026, 10, 10, 15, 30).getTime() / 1000),
@@ -519,6 +521,11 @@ describe("日记总结", () => {
       },
     ])
     expect(prompt).not.toContain("<history>")
+  })
+
+  it("提示词标明私聊", () => {
+    const prompt = buildDiaryPrompt("2026-11-10", "private:456", [])
+    expect(prompt).toContain("私聊 456")
   })
 
   it("清洗掉 markdown 装饰并拆出标题正文", () => {
@@ -704,11 +711,11 @@ describe("日记命令参数", () => {
 
   it("列日记的文本带聊天与篇数", () => {
     const text = formatDiaryList("group:123", 7, [{ date: "2026-11-10", title: "闲聊" }])
-    expect(text).toBe("日记（group:123，最近 7 篇）\n2026-11-10 闲聊")
+    expect(text).toBe("日记（群 123，最近 7 篇）\n2026-11-10 闲聊")
   })
 
   it("没有日记时也给出抬头", () => {
-    expect(formatDiaryList("group:123", 7, [])).toBe("日记（group:123，最近 7 篇）\n还没有日记。")
+    expect(formatDiaryList("group:123", 7, [])).toBe("日记（群 123，最近 7 篇）\n还没有日记。")
   })
 })
 
@@ -769,6 +776,7 @@ describe("日记命令执行", () => {
     expect(entry?.title).toBe("周末在群里闲聊")
     expect(entry?.source).toBe("manual")
     expect(api["sendGroupMessage"]).toHaveBeenCalledTimes(1)
+    expect(String(api["sendGroupMessage"]?.mock.calls[0]?.[1])).toContain("群 100")
   })
 
   it("write 没有内容时只回用法", async () => {
@@ -967,6 +975,31 @@ describe("日记调度", () => {
     expect(await store.hasAuto("group:100", dateKey())).toBe(false)
   })
 
+  it("按群推送时也标明聊天", async () => {
+    const { store, collector, api, deps } = await makeScheduler({ push: "group" })
+    await collector.append("private:200", {
+      id: "1",
+      time: Math.floor(Date.now() / 1000),
+      userId: "200",
+      name: "甲",
+      text: "内容",
+      self: false,
+      backfilled: false,
+    })
+    const summarize = vi.fn(async (chat: string, date: string) => {
+      await store.write(chat, date, { title: "t", body: "b", source: "auto" })
+      return "t"
+    })
+    const scheduler = new DiaryScheduler({ ...deps, summarizer: { summarize } as never })
+    await scheduler.tick(new Date())
+    const texts = api["sendPrivateMessage"]?.mock.calls.map((call) =>
+      String((call as unknown[])[1]),
+    )
+    expect(texts.some((text) => text.includes("私聊 200") && text.includes("的日记已生成"))).toBe(
+      true,
+    )
+  })
+
   it("日记正文含敏感信息时不推送", async () => {
     const { store, collector, api, deps } = await makeScheduler({ push: "owner" })
     await collector.append("private:200", {
@@ -1005,6 +1038,7 @@ describe("日记文件", () => {
     expect(content.startsWith("---\n")).toBe(true)
     expect(content).toContain("date: 2026-11-10")
     expect(content).toContain("chat: group:123")
+    expect(content).toContain("chat_label: 群 123")
     expect(content).toContain("# 标题")
   })
 })

@@ -44,12 +44,12 @@ QQ 里只在 **owner 自己的私聊**里用 `/diary`，TUI 里用 `/qq-diary`�
 - `list` 发文本列表（日期 + 标题），不逐个发文件：
 
   ```
-  日记（private:200，最近 7 篇）
+  日记（私聊 200，最近 7 篇）
   2026-11-10 周末在群里闲聊
   2026-11-09 聊到了新的部署流程
   ```
 
-- `auto` 在后台跑，边跑边发进度（开始 / 完成 / 失败），与 `/emoji-label` 的节奏一致。
+- `auto` 在后台跑，边跑边发进度（开始 / 完成 / 失败），与 `/emoji-label` 的节奏一致；进度里带上聊天标识，例如「开始生成 私聊 200 2026-11-10 的日记…」。
 - 同一时间只跑一个自动总结任务，重复触发会收到提示。
 - 命令只读写 **owner 私聊**的日记；其他聊天不会成为日记目标。TUI 侧同样按 owner 私聊操作（结果也发到 owner 私聊），不会把日记发进绑定的群聊。
 
@@ -260,6 +260,7 @@ export interface DiaryLine {
 - 会话标题「日记总结」，带 `metadata: { qqDiarySummary: true }` 标记。
 - 会话 ID 存在 `ctx.storage` 的 `diary-summary-session`；重启后先读这个 ID，`session.get` 确认它还在机器人工作目录里才复用，否则新建。
 - 这个会话**不绑定任何 QQ 目标**，所以它拿不到按聊天的工具限制。
+- 摘工具之前先注入角色设定：人格取日记范围那条私聊（owner 私聊）上的会话覆盖（`soulPath` / `soulName`），没有覆盖就用默认档（`souls.at(undefined)`）。总结会话本身没有聊天键，所以拿不到别的聊天的人格。注入的只有角色设定正文，没有 `soul.prompt` 里那段「必须调用 `qq_send_message`」的 QQ 守则——总结会话本来就没有发送类工具。
 
 ### 6.2 提示词
 
@@ -272,7 +273,7 @@ export interface DiaryLine {
 提示词固定内容：
 
 ```
-下面是这个聊天在 {date} 的聊天记录摘录。请把它整理成一篇当天的日记。
+下面是私聊 200 在 {date} 的聊天记录摘录。请把它整理成一篇当天的日记。
 
 要求：
 1. 只依据下面的记录写，不要补充记录里没有的信息，也不要猜测。
@@ -418,7 +419,7 @@ export async function sendFileMessage(
 
 配套约束：
 
-- 总结会话在 `src/index.ts` 的 context hook 里被摘掉全部工具（与表情标签会话同样的处理）。
+- 总结会话在 `src/index.ts` 的 context hook 里先注入默认角色设定，再摘掉全部工具（与表情标签会话同样的工具处理）。
 - 总结会话不绑定 QQ 目标，因此不会带上「必须调用 `qq_send_message`」的角色守则。
 - 推送走 `sendFileMessage` 时不经过 `qq_send_message` 的角色守则，但**也不经过**模型侧的出站检查，所以推送内容自己过 `SensitiveChecker`。
 - 日记正文回灌进模型上下文（`qq_diary_read` 的返回值）前，再过一次 `sanitizeUntrustedText`；正文超过 4000 字时按自然边界截断并标注 `…（已截断）`（固定上限，不做配置项）。

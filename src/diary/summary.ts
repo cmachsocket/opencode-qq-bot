@@ -10,7 +10,7 @@ import { toPlainText } from "../outbound"
 import { findSession } from "../session/find"
 import { softTruncate } from "../text"
 import type { DiaryCollector, DiaryLine } from "./collector"
-import { fallbackTitle } from "./format"
+import { chatLabel, fallbackTitle } from "./format"
 import type { DiaryStore } from "./store"
 
 /** 插件存储里保存总结会话 ID 的键。 */
@@ -30,9 +30,10 @@ const RETRY_DELAY_MS = 10_000
  * 生成总结用的提示词。
  *
  * 素材是群友可控文本，所以先净化结构标签再包进 `<chat>`，
- * 并在提示词里说明标签内是素材而不是指令。
+ * 并在提示词里说明标签内是素材而不是指令；聊天标识写进提示词，
+ * 让模型知道素材来自群聊还是私聊。
  */
-export function buildDiaryPrompt(date: string, lines: readonly DiaryLine[]): string {
+export function buildDiaryPrompt(date: string, chat: string, lines: readonly DiaryLine[]): string {
   const body = lines
     .map((line) => {
       const stamp = formatClock(line.time)
@@ -45,7 +46,7 @@ export function buildDiaryPrompt(date: string, lines: readonly DiaryLine[]): str
     })
     .join("\n")
   return [
-    `下面是这个聊天在 ${date} 的聊天记录摘录。请把它整理成一篇当天的日记。`,
+    `下面是${chatLabel(chat)}在 ${date} 的聊天记录摘录。请把它整理成一篇当天的日记。`,
     "",
     "要求：",
     "1. 只依据下面的记录写，不要补充记录里没有的信息，也不要猜测。",
@@ -360,7 +361,7 @@ export class DiarySummarizer {
       return undefined
     }
     this.start()
-    const prompt = buildDiaryPrompt(date, lines)
+    const prompt = buildDiaryPrompt(date, chat, lines)
     const timeoutMs = this.deps.timeoutMs ?? DIARY_SUMMARY_TIMEOUT_MS
 
     for (let attempt = 0; attempt < 2; attempt += 1) {

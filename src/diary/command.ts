@@ -8,7 +8,7 @@ import type { SendRateLimiter } from "../rate-limit"
 import type { SensitiveChecker } from "../sensitive"
 import { createPlainSender, sendFileMessage } from "../tools/qq"
 import type { DiaryCollector } from "./collector"
-import { dateKey, isDateKey } from "./format"
+import { dateKey, chatLabel, isDateKey } from "./format"
 import { diaryScopeChat, isDiaryScopeChat } from "./scope"
 import { readDiaryHead, type DiaryStore } from "./store"
 import type { DiarySummarizer } from "./summary"
@@ -109,7 +109,7 @@ export function formatDiaryList(
   days: number,
   entries: readonly { date: string; title: string }[],
 ): string {
-  const head = `日记（${chat}，最近 ${days} 篇）`
+  const head = `日记（${chatLabel(chat)}，最近 ${days} 篇）`
   if (entries.length === 0) return `${head}\n还没有日记。`
   return [head, ...entries.map((entry) => `${entry.date} ${entry.title}`)].join("\n")
 }
@@ -136,12 +136,12 @@ export function createDiaryRunner(deps: DiaryRunnerDeps): DiaryCommandRunner {
       body = await readDiaryHead(file)
     } catch (error) {
       logger.error(`${targetLabel(target)} 的日记文件读取失败，放弃发送`, error)
-      await report(target, "日记文件读取失败，没有发送。")
+      await report(target, `${targetLabel(target)} 的日记文件读取失败，没有发送。`)
       return
     }
     if (!sensitive.check(body).allowed) {
       logger.warn(`${targetLabel(target)} 的日记正文包含敏感信息，已拦截`)
-      await report(target, "日记正文包含敏感信息，已拦截。")
+      await report(target, `${targetLabel(target)} 的日记正文包含敏感信息，已拦截。`)
       return
     }
     await sendFileMessage(client, target, file, {
@@ -164,7 +164,7 @@ export function createDiaryRunner(deps: DiaryRunnerDeps): DiaryCommandRunner {
       body: content,
       source: "manual",
     })
-    await report(target, `已写入 ${date} 的日记：${entry.title}`)
+    await report(target, `已写入 ${chatLabel(targetKey(target))} ${date} 的日记：${entry.title}`)
   }
 
   const runList = async (target: ChatTarget, args: DiaryCommandArgs): Promise<void> => {
@@ -181,10 +181,10 @@ export function createDiaryRunner(deps: DiaryRunnerDeps): DiaryCommandRunner {
     }
     const entry = await store.read(targetKey(target), date)
     if (!entry) {
-      await report(target, `没有找到 ${date} 的日记。`)
+      await report(target, `没有找到 ${chatLabel(targetKey(target))} ${date} 的日记。`)
       return
     }
-    await report(target, `${date} 的日记`)
+    await report(target, `${chatLabel(targetKey(target))} ${date} 的日记`)
     await sendDiaryFile(target, date).catch((error: unknown) => {
       logger.error(`${targetLabel(target)} 发送日记文件失败`, error)
       return report(
@@ -196,12 +196,13 @@ export function createDiaryRunner(deps: DiaryRunnerDeps): DiaryCommandRunner {
 
   const runAuto = async (target: ChatTarget, args: DiaryCommandArgs): Promise<void> => {
     const date = args.date ?? dateKey()
+    const label = chatLabel(targetKey(target))
     if (!isDateKey(date)) {
       await report(target, "要生成哪天的日记？用法：/diary auto [日期]，日期用 YYYY-MM-DD")
       return
     }
     if (!(await collector.has(targetKey(target), date))) {
-      await report(target, `${date} 没有聊天素材，跳过总结。`)
+      await report(target, `${label} ${date} 没有聊天素材，跳过总结。`)
       return
     }
     if (running) {
@@ -211,13 +212,13 @@ export function createDiaryRunner(deps: DiaryRunnerDeps): DiaryCommandRunner {
     running = true
     // 总结可能要跑很久，放到后台执行，结果用 QQ 消息回。
     void (async () => {
-      await report(target, `开始生成 ${date} 的日记…`)
+      await report(target, `开始生成 ${label} ${date} 的日记…`)
       const title = await summarizer.summarize(targetKey(target), date)
       if (!title) {
-        await report(target, `${date} 的日记总结失败，素材保留待下次重试。`)
+        await report(target, `${label} ${date} 的日记总结失败，素材保留待下次重试。`)
         return
       }
-      await report(target, `${date} 的日记已生成：${title}`)
+      await report(target, `${label} ${date} 的日记已生成：${title}`)
       await sendDiaryFile(target, date).catch((error: unknown) => {
         logger.error(`${targetLabel(target)} 发送日记文件失败`, error)
       })
@@ -226,7 +227,7 @@ export function createDiaryRunner(deps: DiaryRunnerDeps): DiaryCommandRunner {
         logger.error("日记总结任务失败", error)
         return report(
           target,
-          `日记总结失败：${error instanceof Error ? error.message : String(error)}`,
+          `${label} 日记总结失败：${error instanceof Error ? error.message : String(error)}`,
         )
       })
       .finally(() => {

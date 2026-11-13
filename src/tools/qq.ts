@@ -4,7 +4,7 @@ import { isTargetAllowed } from "../access"
 import { delay } from "../async"
 import { type ChatTarget, targetKey, targetLabel } from "../chat"
 import type { QQBotConfig } from "../config"
-import { dateKey, isDateKey } from "../diary/format"
+import { chatLabel, dateKey, isDateKey } from "../diary/format"
 import { isDiaryScopeChat } from "../diary/scope"
 import type { DiaryStore } from "../diary/store"
 import {
@@ -192,11 +192,13 @@ function sanitizeDiaryBody(body: string): string {
   return neutralizeStructureTags(lines.join("\n"))
 }
 
-/** 组装给模型看的日记正文：标题加正文，超长时按自然边界截断。 */
-function formatDiaryBody(date: string, title: string, body: string): string {
+/** 组装给模型看的日记正文：带聊天标识的标题加正文，超长时按自然边界截断。 */
+function formatDiaryBody(date: string, chat: string, title: string, body: string): string {
   const plain = sanitizeDiaryBody(body)
   const clipped = softTruncate(plain, DIARY_READ_MAX_CHARS)
-  return [`${date} 的日记：${sanitizeUntrustedText(title)}`, "", clipped].join("\n")
+  return [`${chatLabel(chat)} ${date} 的日记：${sanitizeUntrustedText(title)}`, "", clipped].join(
+    "\n",
+  )
 }
 
 /** 按目标类型把消息投递出去：群聊与私聊走不同的 API。 */
@@ -1105,7 +1107,7 @@ export async function registerTools(deps: ToolDeps): Promise<{ dispose(): Promis
       const diaryMissing = async (chat: string, date: string): Promise<string> => {
         const available = (await diaryStore.list(chat, 10)).map((item) => item.date)
         const hint = available.length > 0 ? `（可用的日期：${available.join("、")}）` : ""
-        return `error: 没有找到 ${date} 的日记${hint}`
+        return `error: 没有找到 ${chatLabel(chat)} ${date} 的日记${hint}`
       }
 
       editor.add({
@@ -1136,7 +1138,7 @@ export async function registerTools(deps: ToolDeps): Promise<{ dispose(): Promis
             body: content,
             source: "model",
           })
-          return text(`已写入 ${date} 的日记：${entry.title}`)
+          return text(`已写入 ${chatLabel(targetKey(target))} ${date} 的日记：${entry.title}`)
         },
       })
 
@@ -1160,13 +1162,13 @@ export async function registerTools(deps: ToolDeps): Promise<{ dispose(): Promis
           const date = input.date?.trim()
           if (!date) {
             const latest = await diaryStore.latest(chat)
-            if (!latest) return text("error: 这个聊天还没有日记")
-            return text(formatDiaryBody(latest.date, latest.title, latest.body))
+            if (!latest) return text(`error: ${chatLabel(chat)} 还没有日记`)
+            return text(formatDiaryBody(latest.date, chat, latest.title, latest.body))
           }
           if (!isDateKey(date)) return text(`error: 日期格式不对：${date}，请用 YYYY-MM-DD`)
           const entry = await diaryStore.read(chat, date)
           if (!entry) return text(await diaryMissing(chat, date))
-          return text(formatDiaryBody(entry.date, entry.title, entry.body))
+          return text(formatDiaryBody(entry.date, chat, entry.title, entry.body))
         },
       })
 
@@ -1187,9 +1189,15 @@ export async function registerTools(deps: ToolDeps): Promise<{ dispose(): Promis
           const target = diaryTarget(context.sessionID)
           if (!target) return text("error: 日记只在 owner 自己的私聊里可用")
           const days = Number.isInteger(input.days) && (input.days ?? 0) > 0 ? (input.days ?? 7) : 7
-          const entries = await diaryStore.list(targetKey(target), days)
-          if (entries.length === 0) return text("这个聊天还没有日记。")
-          return text(entries.map((entry) => `${entry.date} ${entry.title}`).join("\n"))
+          const chat = targetKey(target)
+          const entries = await diaryStore.list(chat, days)
+          if (entries.length === 0) return text(`${chatLabel(chat)} 还没有日记。`)
+          return text(
+            [
+              `${chatLabel(chat)} 最近的日记`,
+              ...entries.map((entry) => `${entry.date} ${entry.title}`),
+            ].join("\n"),
+          )
         },
       })
     }

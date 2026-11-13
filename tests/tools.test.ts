@@ -1145,6 +1145,7 @@ describe("registerTools", () => {
       const result = await tools.get(`${TOOL_NAMESPACE}_diary_read`)?.execute({}, context)
       expect(result?.content).toContain("2026-11-10")
       expect(result?.content).toContain("新正文")
+      expect(result?.content).toContain("私聊 200")
     })
 
     it("按日期读取，缺失时给出可用日期", async () => {
@@ -1187,7 +1188,7 @@ describe("registerTools", () => {
         source: "manual",
       })
       const result = await tools.get(`${TOOL_NAMESPACE}_diary_list`)?.execute({ days: 7 }, context)
-      expect(result?.content).toBe("2026-11-10 闲聊")
+      expect(result?.content).toBe("私聊 200 最近的日记\n2026-11-10 闲聊")
     })
 
     it("没有日记时提示为空", async () => {

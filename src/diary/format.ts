@@ -1,3 +1,5 @@
+import { parseTargetKey, targetLabel } from "../chat"
+
 /**
  * 日记的文件格式：日期键、聊天目录名与 front matter。
  *
@@ -14,6 +16,8 @@ export interface DiaryMeta {
   date: string
   /** 聊天键，形如 `group:123`。 */
   chat: string
+  /** 聊天可读标识，形如 `群 123`；旧文件里可能没有。 */
+  chat_label?: string
   /** 来源。 */
   source: DiarySource
   /** 首次写入时间（ISO 字符串）。 */
@@ -88,6 +92,17 @@ export function fallbackTitle(date: string): string {
 }
 
 /**
+ * 聊天键的可读名称。
+ *
+ * 日记的正文、列表与发送说明都要让人一眼看出是群聊还是私聊，
+ * 所以统一用「群 123」「私聊 456」，解析不了时原样返回。
+ */
+export function chatLabel(chat: string): string {
+  const target = parseTargetKey(chat)
+  return target ? targetLabel(target) : chat
+}
+
+/**
  * 序列化一篇日记。
  *
  * 顺序固定，便于人工阅读与 `diff`。
@@ -97,6 +112,7 @@ export function serializeDiary(entry: DiaryEntry): string {
     "---",
     `date: ${entry.date}`,
     `chat: ${entry.chat}`,
+    `chat_label: ${chatLabel(entry.chat)}`,
     `source: ${entry.source}`,
     `created: ${entry.created}`,
     `updated: ${entry.updated}`,
@@ -147,6 +163,7 @@ export function parseDiary(content: string): ParsedDiary | undefined {
     meta: {
       date,
       chat: meta.chat ?? "",
+      ...(meta.chat_label ? { chat_label: meta.chat_label } : {}),
       source,
       created: meta.created ?? "",
       updated: meta.updated ?? "",

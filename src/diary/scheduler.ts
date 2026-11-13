@@ -187,7 +187,7 @@ export class DiaryScheduler {
     }
     const text = toOwner
       ? `${targetLabel(chat)} ${date} 的日记已生成\n文件：${file}`
-      : `${date} 的日记已生成`
+      : `${targetLabel(chat)} ${date} 的日记已生成`
     // 推送走插件自己的通道，不经过模型侧的出站检查，这里自己过一遍。
     const verdict = this.deps.sensitive.check(text)
     if (!verdict.allowed) {
