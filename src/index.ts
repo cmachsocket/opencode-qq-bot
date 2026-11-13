@@ -458,6 +458,9 @@ export default Plugin.define({
           },
           overrides,
           tracer,
+          // 只有独占机器的实例才能写共享状态：机器锁已经易主时，
+          // 旧实例写出去的状态会把接管者刚建的绑定冲掉。
+          () => botLock !== undefined,
         )
         cleanup.add("停止会话管理", () => manager.dispose(), CleanupOrder.manager)
         panelRuntime.manager = manager

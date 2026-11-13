@@ -24,8 +24,8 @@ interface FakeSession {
 }
 
 interface HarnessOptions {
-  /** 存储里已有的绑定：目标键 → 会话 ID。 */
-  stored?: Record<string, string>
+  /** 存储里已有的绑定：目标键 → 会话 ID（旧格式）或带版本的新格式。 */
+  stored?: Record<string, string | { sessionID: string; at?: number }>
   /** 直查（session.get）能取到的会话；不在其中就报 NotFound。 */
   existing?: string[]
   /** 列表查询（session.list）返回的会话。 */
@@ -47,13 +47,13 @@ interface Harness {
     set: ReturnType<typeof vi.fn>
   }
   /** 每次落盘的绑定快照。 */
-  bindings: Array<Record<string, string>>
+  bindings: Array<Record<string, { sessionID: string; at: number }>>
 }
 
 function createHarness(options: HarnessOptions = {}): Harness {
   const existing = new Set(options.existing ?? [])
   const listed = options.listed ?? []
-  const bindings: Array<Record<string, string>> = []
+  const bindings: Array<Record<string, { sessionID: string; at: number }>> = []
 
   const storage = {
     get: vi.fn(async (key: string) => {
@@ -61,7 +61,8 @@ function createHarness(options: HarnessOptions = {}): Harness {
       return undefined
     }),
     set: vi.fn(async (key: string, value: unknown) => {
-      if (key === "bindings") bindings.push(value as Record<string, string>)
+      if (key === "bindings")
+        bindings.push(value as Record<string, { sessionID: string; at: number }>)
     }),
   }
 
@@ -147,7 +148,7 @@ describe("会话丢了之后不重建", () => {
 
     expect(bindings.length).toBeGreaterThan(0)
     for (const snapshot of bindings) {
-      expect(snapshot["group:100"]).toBe("ses_rich")
+      expect(snapshot["group:100"]).toMatchObject({ sessionID: "ses_rich" })
     }
   })
 

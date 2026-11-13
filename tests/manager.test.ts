@@ -338,7 +338,12 @@ describe("SessionManager", () => {
     const { manager, storage } = createHarness()
     await manager.enqueue(group(100), { text: "你好", files: [], atMe: false })
     await vi.waitFor(() => {
-      expect(storage.set).toHaveBeenCalledWith("bindings", { "group:100": "session-1" })
+      expect(storage.set).toHaveBeenCalledWith(
+        "bindings",
+        expect.objectContaining({
+          "group:100": expect.objectContaining({ sessionID: "session-1" }),
+        }),
+      )
     })
   })
 
@@ -1359,7 +1364,12 @@ describe("SessionManager", () => {
     manager.touch(group(100))
     await manager.enqueue(group(100), { text: "你好", files: [], atMe: false })
     await manager.flush()
-    expect(storage.set).toHaveBeenCalledWith("bindings", { "group:100": "session-1" })
+    expect(storage.set).toHaveBeenCalledWith(
+      "bindings",
+      expect.objectContaining({
+        "group:100": expect.objectContaining({ sessionID: "session-1" }),
+      }),
+    )
     expect(storage.set).toHaveBeenCalledWith(
       "activity",
       expect.objectContaining({ "group:100": expect.any(Number) }),
@@ -1731,7 +1741,12 @@ describe("实例交接", () => {
     const second = createHarness()
     await second.manager.adoptHandover(await first.manager.exportHandover())
     await second.manager.flush()
-    expect(second.storage.set).toHaveBeenCalledWith("bindings", { "group:100": "session-1" })
+    expect(second.storage.set).toHaveBeenCalledWith(
+      "bindings",
+      expect.objectContaining({
+        "group:100": expect.objectContaining({ sessionID: "session-1" }),
+      }),
+    )
     expect(second.storage.set).toHaveBeenCalledWith("positions", {
       "group:100": { id: "7", time: 200 },
     })

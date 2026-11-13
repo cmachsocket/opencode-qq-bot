@@ -11,6 +11,11 @@ export function targetLabel(target: ChatTarget): string {
   return target.kind === "group" ? `群 ${target.id}` : `私聊 ${target.id}`
 }
 
+/** 机器人给目标建的会话标题；老版本只有群聊会话，标题就是这一种。 */
+export function targetSessionTitle(target: ChatTarget): string {
+  return target.kind === "group" ? `QQ 群 ${target.id}` : `QQ 私聊 ${target.id}`
+}
+
 /** 解析持久化键，仅接受 `group:<id>` 与 `private:<id>`。 */
 export function parseTargetKey(key: string): ChatTarget | undefined {
   const separator = key.indexOf(":")

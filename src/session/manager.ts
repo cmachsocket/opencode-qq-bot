@@ -4,13 +4,20 @@ import { SessionMessage } from "@opencode/schema"
 import { Mutex } from "async-mutex"
 import { isTargetAllowed } from "../access"
 import { unrefTimer } from "../async"
-import { type ChatTarget, parseTargetKey, targetKey, targetLabel } from "../chat"
+import {
+  type ChatTarget,
+  parseTargetKey,
+  targetKey,
+  targetLabel,
+  targetSessionTitle,
+} from "../chat"
 import type { ModelRef, QQBotConfig } from "../config"
 import type { BotHome } from "../home"
 import type { Logger } from "../logger"
 import type { HistoryPosition, HistoryProvider } from "../naplink/history"
 import type { ChatOverrides } from "../overrides"
 import type { Tracer } from "../trace"
+import { acquireStateLock, type StateLock } from "../state-lock"
 import { limitFiles, type PromptFile } from "../naplink/render"
 import type { WakeReason } from "../overrides"
 import { roleForChat, roleOf, type Role } from "../tools/policy"
@@ -24,6 +31,8 @@ const ACTIVITY_KEY = "activity"
 const POSITIONS_KEY = "positions"
 /** 插件存储里保存重启前仍在执行的轮次的键。 */
 const INFLIGHT_KEY = "inflight"
+/** 插件存储里保存解绑记录的键：明确解开的绑定不会被旧实例写回来。 */
+const UNBOUND_KEY = "unbound"
 /** 单个目标最多缓存的消息条数。 */
 export const MAX_BUFFER_TURNS = 100
 /** 单个目标最多缓存的文本与附件字节数。 */
@@ -48,6 +57,8 @@ export const SESSION_RETIRE_COOLDOWN_MS = 10 * 60 * 1000
 const HANDOVER_WAIT_MS = 3_000
 /** 找回历史会话时最多比较几个候选。 */
 const SESSION_CANDIDATES = 5
+/** 全局找历史会话时最多翻几页。 */
+const SESSION_SEARCH_PAGES = 5
 
 /** 插件自己往聊天里补话的通道，失败兜底用。 */
 export type FailureNotifier = (target: ChatTarget, text: string) => Promise<void>
@@ -95,9 +106,97 @@ function parseInflight(value: unknown): InflightTurn | undefined {
     awaitingSend: record.awaitingSend,
     reminders: record.reminders as number,
     lastDispatchAt: record.lastDispatchAt as number,
+    ...(typeof record.turnStartedAt === "number" && Number.isFinite(record.turnStartedAt)
+      ? { turnStartedAt: record.turnStartedAt }
+      : {}),
     idleAt: record.idleAt as number,
     at: record.at as number,
   }
+}
+
+/** 存储里的绑定条目：绑定的会话与写入时间。 */
+interface StoredBinding {
+  /** 绑定的上游会话。 */
+  sessionID: string
+  /** 写入时间（毫秒）：跨实例比较新旧，旧实例的滞后写入不会覆盖新绑定。 */
+  at: number
+}
+
+/**
+ * 解析存储里的绑定表。
+ *
+ * 旧格式只有会话 ID，没有版本，按版本 0 处理；写回时统一升级成新格式。
+ */
+function parseBindings(stored: unknown): Map<string, StoredBinding> {
+  const entries = new Map<string, StoredBinding>()
+  if (!stored || typeof stored !== "object" || Array.isArray(stored)) return entries
+  for (const [key, value] of Object.entries(stored)) {
+    if (typeof value === "string") {
+      if (value.length > 0) entries.set(key, { sessionID: value, at: 0 })
+      continue
+    }
+    if (!value || typeof value !== "object" || Array.isArray(value)) continue
+    const record = value as { sessionID?: unknown; at?: unknown }
+    if (typeof record.sessionID !== "string" || record.sessionID.length === 0) continue
+    const at = typeof record.at === "number" && Number.isFinite(record.at) ? record.at : 0
+    entries.set(key, { sessionID: record.sessionID, at })
+  }
+  return entries
+}
+
+/** 解析存储里的活跃时间表；时间戳本身就是版本。 */
+function parseActivity(stored: unknown): Map<string, number> {
+  const entries = new Map<string, number>()
+  if (!stored || typeof stored !== "object" || Array.isArray(stored)) return entries
+  for (const [key, value] of Object.entries(stored)) {
+    if (typeof value !== "number" || !Number.isFinite(value)) continue
+    entries.set(key, value)
+  }
+  return entries
+}
+
+/** 解析存储里的消息位置表；位置时间就是版本。 */
+function parsePositions(stored: unknown): Map<string, HistoryPosition> {
+  const entries = new Map<string, HistoryPosition>()
+  if (!stored || typeof stored !== "object" || Array.isArray(stored)) return entries
+  for (const [key, value] of Object.entries(stored)) {
+    const position = parsePosition(value)
+    if (!position) continue
+    entries.set(key, position)
+  }
+  return entries
+}
+
+/** 解析存储里的在途轮次表；轮次开始时间就是版本。 */
+function parseInflightTable(stored: unknown): Map<string, InflightTurn> {
+  const entries = new Map<string, InflightTurn>()
+  if (!stored || typeof stored !== "object" || Array.isArray(stored)) return entries
+  for (const [key, value] of Object.entries(stored)) {
+    const record = parseInflight(value)
+    if (!record) continue
+    entries.set(key, record)
+  }
+  return entries
+}
+
+/** 解析存储里的解绑记录：目标键 → 被解绑那条绑定的版本。 */
+function parseTombstones(stored: unknown): Map<string, number> {
+  const entries = new Map<string, number>()
+  if (!stored || typeof stored !== "object" || Array.isArray(stored)) return entries
+  for (const [key, value] of Object.entries(stored)) {
+    if (typeof value !== "number" || !Number.isFinite(value)) continue
+    entries.set(key, value)
+  }
+  return entries
+}
+
+/** 两份解绑记录是否一样。 */
+function sameTombstones(left: Map<string, number>, right: Map<string, number>): boolean {
+  if (left.size !== right.size) return false
+  for (const [key, at] of left) {
+    if (right.get(key) !== at) return false
+  }
+  return true
 }
 
 /** 解析存储里的消息位置，格式不对时忽略。 */
@@ -156,6 +255,8 @@ interface ChatState {
   pendingAttempts: number
   /** 最近一次投递的时间戳（毫秒）。 */
   lastDispatchAt: number
+  /** 当前轮次开始投递的时间戳（毫秒）；在途记录的版本。 */
+  turnStartedAt?: number
   /** 最近一次上游确认空闲的时间戳（毫秒）。 */
   idleAt: number
   /** 当前轮次的消息，供系统提示注入 @ 提示。 */
@@ -197,6 +298,8 @@ interface InflightTurn {
   awaitingSend: boolean
   reminders: number
   lastDispatchAt: number
+  /** 轮次开始投递的时间；老记录没有这一项，按 `lastDispatchAt` 算版本。 */
+  turnStartedAt?: number
   idleAt: number
   at: number
 }
@@ -320,6 +423,12 @@ export class SessionManager {
   private readonly saveMutex = new Mutex()
   private activity: Record<string, number> = {}
   private bindingsLoaded: Promise<void> | undefined
+  /** 每个目标的绑定版本：最后一次改绑的时间（毫秒）。 */
+  private readonly bindingAt = new Map<string, number>()
+  /** 明确解绑的目标：被解绑那条绑定的版本，写回时据此删掉存储里不比它新的条目。 */
+  private readonly unboundAt = new Map<string, number>()
+  /** 轮次结束的目标：那一轮的版本，写回时据此删掉存储里不比它新的在途记录。 */
+  private readonly turnClearedAt = new Map<string, number>()
   /** 每个目标已经投递到的位置。 */
   private readonly positions = new Map<string, HistoryPosition>()
   /** 启动时读到的位置快照，用于补齐重启期间错过的消息。 */
@@ -331,6 +440,8 @@ export class SessionManager {
   /** 每个会话已经应用过的 agent / 模型覆盖，避免每条消息都切一次。 */
   private readonly appliedOverrides = new Map<string, { agent?: string; model?: ModelRef }>()
   private disposed = false
+  /** 已经因为失去机器锁而停止写共享状态：只告警一次。 */
+  private writeBlocked = false
 
   constructor(
     private readonly ctx: Plugin.Context,
@@ -345,6 +456,8 @@ export class SessionManager {
     private readonly overrides?: ChatOverrides,
     /** 调用链追踪器；不传就不记追踪。 */
     private readonly tracer?: Tracer,
+    /** 共享状态的写入准入；返回 false 表示本实例已不独占机器，不再写。 */
+    private readonly canWrite?: () => boolean,
   ) {}
 
   /** 会话统一落在机器人工作目录，避免接管后上下文散落到别的项目。 */
@@ -401,6 +514,7 @@ export class SessionManager {
       state.awaitingSend = record.awaitingSend
       state.reminders = record.reminders
       state.lastDispatchAt = record.lastDispatchAt
+      state.turnStartedAt = record.turnStartedAt
       state.idleAt = record.idleAt
       state.role = role
       restored += 1
@@ -430,24 +544,32 @@ export class SessionManager {
 
   /** 从插件存储恢复绑定；读取失败只告警，不影响正常使用。 */
   private async readBindings(): Promise<void> {
+    // 解绑记录先读：明确解开的绑定恢复出来之后也不该再被写回去。
+    const tombstones = parseTombstones(await this.readStored(UNBOUND_KEY, "读取解绑记录失败"))
+    for (const [key, at] of tombstones) this.unboundAt.set(key, at)
     let stored: unknown
     try {
       stored = await this.ctx.storage.get(BINDINGS_KEY)
     } catch (error) {
       this.logger.warn("读取会话绑定失败", error)
     }
-    if (stored && typeof stored === "object" && !Array.isArray(stored)) {
-      let restored = 0
-      for (const [key, value] of Object.entries(stored)) {
-        const target = parseTargetKey(key)
-        if (!target || typeof value !== "string" || value.length === 0) continue
-        // 配置里已经移除的目标不再恢复，避免旧绑定继续获得工具权限。
-        if (!isTargetAllowed(this.config.access, target, this.config.ownerQQ)) continue
-        if (!this.bindSession(this.state(target), value)) continue
-        restored += 1
+    let restored = 0
+    for (const [key, entry] of parseBindings(stored)) {
+      const target = parseTargetKey(key)
+      if (!target || !isTargetAllowed(this.config.access, target, this.config.ownerQQ)) continue
+      const tombstone = this.unboundAt.get(key)
+      if (tombstone !== undefined) {
+        // 解绑之后才有的绑定：墓碑过期，清掉后照常恢复。
+        if (entry.at > tombstone) this.unboundAt.delete(key)
+        // 否则这条绑定已经被明确解开，不能再恢复出来。
+        else continue
       }
-      if (restored > 0) this.logger.debug(`已恢复 ${restored} 个目标的会话绑定`)
+      if (!this.bindSession(this.state(target), entry.sessionID)) continue
+      // 版本沿用存储里的值：写回时不能宣称自己比存储里那条更新。
+      this.bindingAt.set(key, entry.at)
+      restored += 1
     }
+    if (restored > 0) this.logger.debug(`已恢复 ${restored} 个目标的会话绑定`)
 
     try {
       const activity = await this.ctx.storage.get(ACTIVITY_KEY)
@@ -490,20 +612,75 @@ export class SessionManager {
 
   /** 绑定或活跃时间变化后写回插件存储，串行执行避免互相覆盖。 */
   private scheduleSave(): void {
+    if (!this.writable()) return
     void this.saveMutex
       .runExclusive(() => this.persist())
       .catch((error: unknown) => this.logger.error("保存会话状态失败", error))
   }
 
+  /**
+   * 落盘会话状态。
+   *
+   * 共享状态是全机器共用的：写之前先拿跨进程写锁，
+   * 让读-改-写落在同一段临界区里，两个实例不会各写一份整表互相覆盖。
+   */
   private async persist(): Promise<void> {
+    const lockPath = this.home.lockPath
+    if (!lockPath) {
+      await this.persistTables()
+      return
+    }
+    let lock: StateLock | undefined
+    try {
+      lock = await acquireStateLock(lockPath, {
+        // 锁只持有几毫秒，多等一会儿通常就能拿到。
+        retries: { retries: 5, factor: 2, minTimeout: 50, maxTimeout: 400 },
+        onCompromised: (error) => this.logger.error("共享状态写锁失效", error),
+      })
+    } catch (error) {
+      // 拿不到锁就不能硬写：写出去可能把别的实例的状态盖掉。
+      this.logger.error("获取共享状态写锁失败，本轮状态不落盘", error)
+      return
+    }
+    if (!lock) {
+      this.logger.warn("共享状态写锁被占用，本轮状态稍后重试保存")
+      return
+    }
+    try {
+      // 等锁期间可能已经失去机器锁：这时写出去只会覆盖接管者的状态。
+      if (!this.writable()) return
+      await this.persistTables()
+    } finally {
+      await lock.release()
+    }
+  }
+
+  /** 把四张状态表写回插件存储。 */
+  private async persistTables(): Promise<void> {
     await this.writeBindings()
     await this.writeActivity()
     await this.writePositions()
     await this.writeInflight()
   }
 
+  /**
+   * 本实例还能不能写共享状态。
+   *
+   * 机器锁是"这台机器上只有我在消费 QQ 消息"的凭据：
+   * 失去它说明已经有别的实例接管，写出去的状态会把接管者的新状态盖掉。
+   */
+  private writable(): boolean {
+    if (this.canWrite?.() ?? true) return true
+    if (!this.writeBlocked) {
+      this.writeBlocked = true
+      this.logger.warn("已失去机器人连接锁，不再写共享会话状态")
+    }
+    return false
+  }
+
   /** 写插件存储；失败只记日志，不影响主流程。 */
   private async store(key: string, value: StoredJson, failure: string): Promise<void> {
+    if (!this.writable()) return
     try {
       await this.ctx.storage.set(key, value)
     } catch (error) {
@@ -511,31 +688,154 @@ export class SessionManager {
     }
   }
 
-  private async writeBindings(): Promise<void> {
-    const bindings: Record<string, string> = {}
-    for (const state of this.states.values()) {
-      if (state.sessionID) bindings[targetKey(state.target)] = state.sessionID
+  /** 读插件存储里的原始值；失败只告警，按空表继续。 */
+  private async readStored(key: string, failure: string): Promise<unknown> {
+    try {
+      return await this.ctx.storage.get(key)
+    } catch (error) {
+      this.logger.warn(failure, error)
+      return undefined
     }
-    await this.store(BINDINGS_KEY, bindings, "保存会话绑定失败")
   }
 
+  /**
+   * 合并写插件存储里的一张表。
+   *
+   * 插件存储是全机器共享的：两个实例各写一份整表，后写的会把先写的条目冲掉。
+   * 旧实例卸载时把旧表冲回去、新实例刚建的绑定就这么没了。
+   * 这里逐条比较版本：本地更新的条目才覆盖，存储里更新的原样保留。
+   *
+   * @param key 存储键。
+   * @param local 本实例维护的条目。
+   * @param version 取条目的版本，版本大的更新。
+   * @param parse 解析存储里的旧值。
+   * @param cleared 本实例明确清掉的条目：存储里那条不比它新就删掉。
+   * @param failure 写失败时的日志文案。
+   */
+  private async mergeTable<T>(
+    key: string,
+    local: Map<string, T>,
+    version: (value: T) => number,
+    parse: (stored: unknown) => Map<string, T>,
+    cleared: Map<string, number>,
+    failure: string,
+  ): Promise<void> {
+    const stored = parse(await this.readStored(key, `读取 ${key} 失败`))
+    const merged: Record<string, T> = {}
+    // 存储里已有的先留着：本实例没有的条目是别的实例写的，不该被冲掉。
+    for (const [entryKey, value] of stored) merged[entryKey] = value
+    for (const [entryKey, value] of local) {
+      const current = stored.get(entryKey)
+      if (!current || version(value) > version(current)) merged[entryKey] = value
+    }
+    for (const [entryKey, at] of cleared) {
+      // 本实例还维护着这个条目时不删：清掉的是上一版。
+      if (local.has(entryKey)) continue
+      const current = stored.get(entryKey)
+      if (current && version(current) <= at) delete merged[entryKey]
+    }
+    await this.store(key, merged as StoredJson, failure)
+  }
+
+  /**
+   * 写会话绑定：只覆盖自己更新过的条目，别的实例写的条目原样保留。
+   *
+   * 解绑记录（墓碑）一起合并：明确解开的绑定不能被旧实例写回来，
+   * 否则用户刚删掉的会话又会在下次重启后复活。
+   */
+  private async writeBindings(): Promise<void> {
+    const local = new Map<string, StoredBinding>()
+    for (const state of this.states.values()) {
+      if (!state.sessionID) continue
+      const key = targetKey(state.target)
+      local.set(key, { sessionID: state.sessionID, at: this.bindingAt.get(key) ?? 0 })
+    }
+    const stored = parseBindings(await this.readStored(BINDINGS_KEY, "读取会话绑定失败"))
+    const storedTombstones = parseTombstones(await this.readStored(UNBOUND_KEY, "读取解绑记录失败"))
+    // 两边的解绑记录取更新的那条：谁都可能解过同一个目标。
+    const tombstones = new Map<string, number>(storedTombstones)
+    for (const [key, at] of this.unboundAt) {
+      const current = tombstones.get(key)
+      if (current === undefined || at > current) tombstones.set(key, at)
+    }
+
+    const merged = new Map<string, StoredBinding>(stored)
+    for (const [key, entry] of local) {
+      const current = stored.get(key)
+      const tombstone = tombstones.get(key)
+      if (tombstone !== undefined) {
+        // 已经有比墓碑新的绑定：解绑之后才有的，墓碑过期。
+        if ((current && current.at > tombstone) || entry.at > tombstone) {
+          tombstones.delete(key)
+        } else {
+          // 墓碑不比这条绑定旧：这条绑定已经被明确解开，不能再写回去。
+          this.logger.warn(`${key} 的绑定已被解绑，不再写回共享状态`)
+          this.dropBinding(key)
+          continue
+        }
+      }
+      if (!current || entry.at > current.at) merged.set(key, entry)
+    }
+    // 墓碑盖住的存储条目删掉：解开的绑定不能留在表里。
+    for (const [key, at] of tombstones) {
+      const current = merged.get(key)
+      if (current && current.at <= at) merged.delete(key)
+    }
+
+    // 墓碑先落盘：绑定还没删干净时，墓碑也拦得住别的实例把绑定写回来。
+    if (!sameTombstones(storedTombstones, tombstones)) {
+      await this.store(
+        UNBOUND_KEY,
+        Object.fromEntries(tombstones) as StoredJson,
+        "保存解绑记录失败",
+      )
+    }
+    await this.store(
+      BINDINGS_KEY,
+      Object.fromEntries(merged) as unknown as StoredJson,
+      "保存会话绑定失败",
+    )
+    // 合并后的墓碑留在内存里：下一次写之前还用得上。
+    this.unboundAt.clear()
+    for (const [key, at] of tombstones) this.unboundAt.set(key, at)
+  }
+
+  /** 写目标活跃时间：时间戳更新的一方为准。 */
   private async writeActivity(): Promise<void> {
-    await this.store(ACTIVITY_KEY, { ...this.activity }, "保存目标活跃时间失败")
+    const local = new Map<string, number>()
+    for (const [key, at] of Object.entries(this.activity)) local.set(key, at)
+    await this.mergeTable(
+      ACTIVITY_KEY,
+      local,
+      (value) => value,
+      parseActivity,
+      new Map<string, number>(),
+      "保存目标活跃时间失败",
+    )
   }
 
+  /** 写消息位置：位置时间更新的一方为准。 */
   private async writePositions(): Promise<void> {
-    const data: Record<string, { id: string; time: number }> = Object.fromEntries(this.positions)
-    await this.store(POSITIONS_KEY, data, "保存消息位置失败")
+    const local = new Map<string, HistoryPosition>()
+    for (const [key, position] of this.positions) local.set(key, position)
+    await this.mergeTable(
+      POSITIONS_KEY,
+      local,
+      (value) => value.time,
+      parsePositions,
+      new Map<string, number>(),
+      "保存消息位置失败",
+    )
   }
 
   /** 把正在执行的轮次写回存储，重启后据此恢复工具权限。 */
   private async writeInflight(): Promise<void> {
-    const inflight: Record<string, InflightTurn> = {}
+    const local = new Map<string, InflightTurn>()
     const now = Date.now()
     for (const state of this.states.values()) {
       const turn = state.current
       if (!turn || !state.sessionID) continue
-      inflight[targetKey(state.target)] = {
+      local.set(targetKey(state.target), {
         sessionID: state.sessionID,
         // 轮次没带角色时用会话角色，重启后不要丢掉 owner / 管理员。
         role: turn.role ?? state.role,
@@ -548,15 +848,25 @@ export class SessionManager {
         awaitingSend: state.awaitingSend,
         reminders: state.reminders,
         lastDispatchAt: state.lastDispatchAt,
+        ...(state.turnStartedAt ? { turnStartedAt: state.turnStartedAt } : {}),
         idleAt: state.idleAt,
         at: now,
-      }
+      })
     }
-    await this.store(INFLIGHT_KEY, inflight as unknown as StoredJson, "保存在途轮次失败")
+    await this.mergeTable(
+      INFLIGHT_KEY,
+      local,
+      // 版本取轮次开始时间：旧实例残留的在途记录不会盖掉新一轮。
+      (value) => value.turnStartedAt ?? value.lastDispatchAt,
+      parseInflightTable,
+      this.turnClearedAt,
+      "保存在途轮次失败",
+    )
   }
 
   /** 等待所有待写入的绑定落盘。 */
   async flush(): Promise<void> {
+    if (!this.writable()) return
     await this.saveMutex.runExclusive(() => this.persist())
   }
 
@@ -882,6 +1192,12 @@ export class SessionManager {
       ...(state.lastClear.traceId ? { trace_id: state.lastClear.traceId } : {}),
     })
     state.current = undefined
+    // 轮次结束了：墓碑记下这一轮的版本，写回时把存储里不比它新的在途记录删掉。
+    this.turnClearedAt.set(
+      targetKey(state.target),
+      state.turnStartedAt ?? state.lastDispatchAt ?? Date.now(),
+    )
+    state.turnStartedAt = undefined
     // 发送权限只在本轮有效：轮次结束就收回，下一轮要重新说明理由。
     state.replyAllowed = false
     state.replyReason = undefined
@@ -1205,6 +1521,8 @@ export class SessionManager {
       ...(turn.traceId ? { trace_id: turn.traceId } : {}),
       ...(turn.source ? { source: turn.source } : {}),
     })
+    // 轮次开始时间单独记一份：在途记录拿它当版本，落后一轮的记录盖不掉这一轮。
+    state.turnStartedAt = Date.now()
     let sessionID: string | undefined
     try {
       sessionID = await this.ensureSession(state.target)
@@ -1302,6 +1620,7 @@ export class SessionManager {
       state.reminders += 1
       state.idleAt = 0
       state.lastDispatchAt = Date.now()
+      state.turnStartedAt = Date.now()
       state.current = {
         text: "[提醒]",
         files: [],
@@ -1479,6 +1798,8 @@ export class SessionManager {
     const override = await this.overrides?.for(target)
     const agent = override?.agent ?? this.config.agent
     const model = override?.model ?? this.config.model
+    // 已经失效的会话：复用时也不能再选它，否则会绑到一个不存在的会话上。
+    let stale: string | undefined
     if (state.sessionID) {
       if (await this.sessionExists(state.sessionID)) {
         await this.applyOverride(state.sessionID, label, agent, model)
@@ -1486,7 +1807,7 @@ export class SessionManager {
       }
       // 绑定的会话取不到了：先把同一个聊天上还在的历史会话找回，找不到才新建。
       // 直接新建等于把上百条历史留在库里当孤儿，机器人再也看不见。
-      const stale = state.sessionID
+      stale = state.sessionID
       const recovered = await this.recoverSession(state, target, stale)
       if (recovered) {
         this.logger.info(`${label} 旧会话 ${stale} 不可用，已改用 ${recovered}`)
@@ -1498,7 +1819,7 @@ export class SessionManager {
     }
 
     if (this.config.reuseSession) {
-      const reused = await this.findExistingSession(target)
+      const reused = await this.findExistingSession(target, stale)
       // 会话已经绑给别的目标时不能复用，改为新建一个会话。
       if (reused && this.bindSession(state, reused)) {
         this.verifiedSessions.add(reused)
@@ -1510,7 +1831,7 @@ export class SessionManager {
     }
 
     const created = await this.ctx.session.create({
-      title: target.kind === "group" ? `QQ 群 ${target.id}` : `QQ 私聊 ${target.id}`,
+      title: targetSessionTitle(target),
       location: this.location,
       ...(agent ? { agent } : {}),
       ...(model ? { model } : {}),
@@ -1561,25 +1882,53 @@ export class SessionManager {
     return best.id
   }
 
-  /** 同一个聊天上仍然存在的历史会话，按最近优先。 */
+  /**
+   * 同一个聊天上仍然存在的历史会话，按最近优先。
+   *
+   * 先按会话标记匹配；老版本建的会话没有标记，退回按标题匹配。
+   * 两者都命中时以标记为准：标题可能被用户改过，标记是插件自己写的。
+   */
   private async findSessionCandidates(
     target: ChatTarget,
     exclude?: string,
   ): Promise<ListedSession[]> {
-    return await findSessions(
-      this.ctx,
+    const byMetadata = (session: ListedSession) => {
+      const metadata = session.metadata
+      if (!metadata) return false
+      if (metadata["qqTargetKind"] !== target.kind) return false
+      if (metadata["qqTargetId"] !== target.id) return false
+      return session.id !== exclude
+    }
+    const title = targetSessionTitle(target)
+    const byTitle = (session: ListedSession) => session.title === title && session.id !== exclude
+    const collect = async (
+      directory: string | undefined,
+      failure: string,
+      options: { limit: number; maxPages?: number },
+    ): Promise<ListedSession[]> => {
+      const found = await findSessions(
+        this.ctx,
+        directory,
+        (session) => byMetadata(session) || byTitle(session),
+        this.logger,
+        failure,
+        options,
+      )
+      const marked = found.filter(byMetadata)
+      return marked.length > 0 ? marked : found
+    }
+    const inWorkspace = await collect(
       this.location.directory,
-      (session) => {
-        const metadata = session.metadata
-        if (!metadata) return false
-        if (metadata["qqTargetKind"] !== target.kind) return false
-        if (metadata["qqTargetId"] !== target.id) return false
-        return session.id !== exclude
-      },
-      this.logger,
       `查找历史会话失败 ${targetLabel(target)}`,
       { limit: SESSION_CANDIDATES },
     )
+    if (inWorkspace.length > 0) return inWorkspace
+    // 工作目录里没有：老版本把会话建在项目目录里，再全局找一次。
+    // 标记带群号与私聊号，跨目录匹配也不会认错人。
+    return await collect(undefined, `全局查找历史会话失败 ${targetLabel(target)}`, {
+      limit: SESSION_CANDIDATES,
+      maxPages: SESSION_SEARCH_PAGES,
+    })
   }
 
   /** 选出消息最多的那条会话。 */
@@ -1674,13 +2023,33 @@ export class SessionManager {
     return found.length > 0
   }
 
-  /** 清掉会话绑定，不动上游会话。 */
-  private clearBinding(state: ChatState): void {
+  /** 松开本地绑定：会话不再属于这个目标。 */
+  private detachBinding(state: ChatState): void {
     if (!state.sessionID) return
     this.sessions.delete(state.sessionID)
     this.verifiedSessions.delete(state.sessionID)
     this.appliedOverrides.delete(state.sessionID)
     state.sessionID = undefined
+  }
+
+  /** 清掉会话绑定，不动上游会话。 */
+  private clearBinding(state: ChatState): void {
+    if (!state.sessionID) return
+    const key = targetKey(state.target)
+    const version = this.bindingAt.get(key) ?? Date.now()
+    this.detachBinding(state)
+    // 墓碑记下被解绑那条绑定的版本：写回时只取消自己这一条，
+    // 别的实例在这之后写的新绑定不受影响。
+    this.unboundAt.set(key, version)
+    this.bindingAt.delete(key)
+  }
+
+  /** 丢掉被别的实例解开的绑定：那条绑定已经被明确作废。 */
+  private dropBinding(key: string): void {
+    const state = this.states.get(key)
+    if (!state?.sessionID) return
+    this.detachBinding(state)
+    this.bindingAt.delete(key)
   }
 
   /** 绑定会话到目标；一个会话只能绑定一个目标，已有绑定不能被覆盖。 */
@@ -1700,12 +2069,21 @@ export class SessionManager {
     }
     state.sessionID = sessionID
     this.sessions.set(sessionID, state)
+    const key = targetKey(state.target)
+    // 绑定版本跟着这次改绑走：写回时只有更新的版本才盖过存储里的那条。
+    // 版本单调递增：同一毫秒里反复改绑也不会撞版本，更不会被墓碑误判成旧绑定。
+    const previous = Math.max(this.bindingAt.get(key) ?? 0, this.unboundAt.get(key) ?? 0)
+    this.bindingAt.set(key, Math.max(Date.now(), previous + 1))
+    this.unboundAt.delete(key)
     return true
   }
 
   /** 查找带相同目标标记的历史会话，取最近的那条。 */
-  private async findExistingSession(target: ChatTarget): Promise<string | undefined> {
-    const candidates = await this.findSessionCandidates(target)
+  private async findExistingSession(
+    target: ChatTarget,
+    exclude?: string,
+  ): Promise<string | undefined> {
+    const candidates = await this.findSessionCandidates(target, exclude)
     if (candidates.length === 0) return undefined
     // 候选按创建时间倒序，第一条就是「上一次的会话」。
     // 恢复路径要的才是消息最多的那条，两件事不能混。
@@ -1721,6 +2099,7 @@ export class SessionManager {
       // 先占位，避免用户消息或下一次心跳同时投递。
       state.idleAt = 0
       state.lastDispatchAt = Date.now()
+      state.turnStartedAt = Date.now()
       state.current = {
         text,
         files: [],

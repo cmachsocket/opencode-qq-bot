@@ -24,12 +24,13 @@ export interface FindOptions {
  * 在指定目录下按谓词查找会话。
  *
  * 列表按创建时间倒序、翻页上限固定，避免会话很多时把整个列表拉一遍。
+ * 不传目录时查的是全部目录：老版本把会话建在项目目录里，只按工作目录找会漏掉。
  *
  * @returns 命中的会话；找不到或查询失败时返回空数组。
  */
 export async function findSessions(
   ctx: Plugin.Context,
-  directory: NonNullable<Parameters<Plugin.Context["session"]["list"]>[0]>["directory"],
+  directory: NonNullable<Parameters<Plugin.Context["session"]["list"]>[0]>["directory"] | undefined,
   match: (session: ListedSession) => boolean,
   logger: Logger,
   failure: string,
@@ -43,7 +44,7 @@ export async function findSessions(
   try {
     for (let page = 0; page < maxPages && found.length < limit; page += 1) {
       const result = await ctx.session.list({
-        directory,
+        ...(directory ? { directory } : {}),
         limit: pageSize,
         order: "desc",
         ...(cursor ? { cursor } : {}),

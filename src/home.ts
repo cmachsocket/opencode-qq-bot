@@ -1,6 +1,6 @@
 import { mkdir } from "node:fs/promises"
 import { homedir } from "node:os"
-import { isAbsolute, join } from "node:path"
+import { dirname, isAbsolute, join } from "node:path"
 import type { Logger } from "./logger"
 
 /**
@@ -13,6 +13,8 @@ import type { Logger } from "./logger"
 export interface BotHome {
   /** 会话统一所在的绝对路径。 */
   directory: string
+  /** 共享状态的跨进程写锁路径；不设就不加文件锁。 */
+  lockPath?: string
 }
 
 /** 默认工作目录：`$XDG_DATA_HOME/opencode-qq-bot/workspace`。 */
@@ -30,8 +32,10 @@ export function defaultHome(): string {
 export async function resolveHome(logger: Logger): Promise<BotHome> {
   const directory = defaultHome()
   await mkdir(directory, { recursive: true, mode: 0o700 })
+  // 写锁放在工作目录的同级：工作目录本身是会话目录，不往里面塞杂物。
+  const lockPath = join(dirname(directory), "state.lock")
   logger.debug(`机器人工作目录：${directory}`)
-  return { directory }
+  return { directory, lockPath }
 }
 
 /** 展开路径开头的 `~` 或 `~/`，其余原样返回。 */

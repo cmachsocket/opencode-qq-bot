@@ -136,7 +136,7 @@ export const CONFIG_FIELDS: readonly ConfigField[] = [
     type: "boolean",
     label: "复用上一次的会话",
     description: "完全没有绑定时，按会话标记找回上一次的会话",
-    default: false,
+    default: true,
     hot: true,
   },
   {
