@@ -548,7 +548,7 @@ NapCat 连接断开后机器人就不再响应。
 ## 管理命令
 
 同一组命令也注册为 TUI 命令，两边共用一份实现；TUI 侧命令加 `qq-` 前缀
-（`/qq-help`、`/qq-status`、`/qq-reset`、`/qq-tools`、`/qq-emoji-label`），避免与 OpenCode 内置命令冲突。
+（`/qq-help`、`/qq-status`、`/qq-reset`、`/qq-stop`、`/qq-compact`、`/qq-tools`、`/qq-emoji-label`），避免与 OpenCode 内置命令冲突。
 `/help` 直接由命令表生成，表情标注也在其中。
 QQ 侧只在 `ownerQQ` 与 `admins` 各自的私聊里生效，
 且发送者必须是该私聊的主人；群里、其他人的私聊、未知的 `/xxx` 都照常交给模型。
@@ -560,10 +560,16 @@ TUI 侧执行时结果发到该会话绑定的 QQ 聊天，没有绑定就发第
 | `/status`                       | 各聊天的会话、队列与重试状态                         |
 | `/reset`                        | 列出放行名单里的聊天，不执行重置                     |
 | `/reset group:123`              | 先打断执行中的回合并删除该聊天的会话，下一条消息重开 |
+| `/stop`                         | 打断所有正在执行的回合并丢掉排队消息，会话与历史保留 |
+| `/stop group:123`               | 只打断指定聊天的回合                                 |
+| `/compact`                      | 列出可以压缩上下文的聊天                             |
+| `/compact group:123`            | 让上游压缩该聊天的上下文                             |
 | `/tools [group:123]`            | 查看配置档与可用工具                                 |
 | `/emoji-label [all\|inc\|list]` | 给收藏表情生成中文标签（TUI 侧是 `/qq-emoji-label`） |
 
 - `/reset` 只列出并接受放行名单里的目标；名单外的群号不会留下状态条目，也不会被重置。
+- `/stop` 与 `/reset` 的区别：`/stop` 保留会话与历史，队列里的消息一并丢掉，回执里说明丢了多少条。
+- `/compact` 会额外跑一次模型，聊天还在执行时先 `/stop` 再压缩。
 
 ## 通知事件订阅
 

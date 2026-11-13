@@ -46,6 +46,7 @@ interface Harness {
   sessionCreate: ReturnType<typeof vi.fn>
   sessionRemove: ReturnType<typeof vi.fn>
   sessionInterrupt: ReturnType<typeof vi.fn>
+  sessionCompact: ReturnType<typeof vi.fn>
   switchAgent: ReturnType<typeof vi.fn>
   switchModel: ReturnType<typeof vi.fn>
   notices: Array<{ target: ChatTarget; text: string }>
@@ -96,7 +97,8 @@ function createHarness(
       create: sessionCreate,
       get: sessionGet,
       remove: vi.fn(async () => {}),
-      interrupt: vi.fn(async () => {}),
+      interrupt: vi.fn(async () => ({ interrupted: true })),
+      compact: vi.fn(async () => ({ id: "compaction-1" })),
       prompt,
       synthetic: vi.fn(async (input: { sessionID: string; text: string }) => {
         synthetics.push(input)
@@ -135,6 +137,7 @@ function createHarness(
     sessionCreate,
     sessionRemove: (ctx.session as unknown as { remove: ReturnType<typeof vi.fn> }).remove,
     sessionInterrupt: (ctx.session as unknown as { interrupt: ReturnType<typeof vi.fn> }).interrupt,
+    sessionCompact: (ctx.session as unknown as { compact: ReturnType<typeof vi.fn> }).compact,
     switchAgent: (ctx.session as unknown as { switchAgent: ReturnType<typeof vi.fn> }).switchAgent,
     switchModel: (ctx.session as unknown as { switchModel: ReturnType<typeof vi.fn> }).switchModel,
   }
@@ -1561,6 +1564,80 @@ describe("B1 冷启动补历史", () => {
     expect(result.interrupted).toBe(false)
     expect(harness.sessionInterrupt).not.toHaveBeenCalled()
     expect(harness.sessionRemove).toHaveBeenCalledWith({ sessionID: "session-1" })
+  })
+
+  it("停止回合时打断上游但保留会话与历史", async () => {
+    const harness = createHarness()
+    await harness.manager.enqueue(group(100), { text: "你好", files: [], atMe: false })
+    harness.sessionGet.mockResolvedValue({ id: "session-1", time: { busy: 2_000, idle: 0 } })
+
+    const result = await harness.manager.stopTarget(group(100))
+
+    expect(result.interrupted).toBe(true)
+    expect(harness.sessionInterrupt).toHaveBeenCalledWith({ sessionID: "session-1" })
+    // 会话还在，下一条消息接着原会话继续。
+    expect(harness.sessionRemove).not.toHaveBeenCalled()
+    expect(harness.manager.targetForSession("session-1")).toEqual(group(100))
+    expect(harness.manager.snapshot()[0]?.sessionID).toBe("session-1")
+  })
+
+  it("停止回合时丢掉排队中的消息", async () => {
+    const harness = createHarness()
+    await harness.manager.enqueue(group(100), { text: "第一条", files: [], atMe: false })
+    // 上游一直在跑，后续消息只能排队。
+    harness.sessionGet.mockResolvedValue({ id: "session-1", time: { busy: 2_000, idle: 0 } })
+    await harness.manager.enqueue(group(100), { text: "第二条", files: [], atMe: false })
+    await harness.manager.enqueue(group(100), { text: "第三条", files: [], atMe: false })
+    expect(harness.manager.snapshot()[0]?.buffered).toBe(2)
+
+    const result = await harness.manager.stopTarget(group(100))
+
+    expect(result.dropped).toBe(2)
+    expect(harness.manager.snapshot()[0]?.buffered).toBe(0)
+    expect(harness.prompts).toHaveLength(1)
+  })
+
+  it("停止空闲聊天时不打断上游", async () => {
+    const harness = createHarness()
+    await harness.manager.enqueue(group(100), { text: "你好", files: [], atMe: false })
+    harness.sessionGet.mockResolvedValue({ id: "session-1" })
+
+    const result = await harness.manager.stopTarget(group(100))
+
+    expect(result.interrupted).toBe(false)
+    expect(harness.sessionInterrupt).not.toHaveBeenCalled()
+  })
+
+  it("压缩空闲聊天时把请求交给上游", async () => {
+    const harness = createHarness()
+    await harness.manager.enqueue(group(100), { text: "你好", files: [], atMe: false })
+    await harness.manager.handleExecutionEnd("session-1", "session.execution.succeeded")
+    harness.sessionGet.mockResolvedValue({ id: "session-1" })
+
+    const result = await harness.manager.compactTarget(group(100))
+
+    expect(result).toEqual({ compacted: true })
+    expect(harness.sessionCompact).toHaveBeenCalledWith({ sessionID: "session-1" })
+  })
+
+  it("压缩执行中的聊天时拒绝", async () => {
+    const harness = createHarness()
+    await harness.manager.enqueue(group(100), { text: "你好", files: [], atMe: false })
+    harness.sessionGet.mockResolvedValue({ id: "session-1", time: { busy: 2_000, idle: 0 } })
+
+    const result = await harness.manager.compactTarget(group(100))
+
+    expect(result).toEqual({ compacted: false, reason: "busy" })
+    expect(harness.sessionCompact).not.toHaveBeenCalled()
+  })
+
+  it("压缩没有会话的聊天时拒绝", async () => {
+    const harness = createHarness()
+
+    const result = await harness.manager.compactTarget(group(100))
+
+    expect(result).toEqual({ compacted: false, reason: "no-session" })
+    expect(harness.sessionCompact).not.toHaveBeenCalled()
   })
 
   it("合并批次时按最低权限保留角色", () => {

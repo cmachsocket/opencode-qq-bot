@@ -44,6 +44,8 @@ interface Sent {
 function createDeps() {
   const sent: Sent[] = []
   const resetTarget = vi.fn(async () => ({ sessionID: "session-1", interrupted: true }))
+  const stopTarget = vi.fn(async () => ({ interrupted: true, dropped: 2, droppedPending: false }))
+  const compactTarget = vi.fn(async () => ({ compacted: true }))
   const manager = {
     snapshot: () => [
       {
@@ -55,12 +57,16 @@ function createDeps() {
       },
     ],
     resetTarget,
+    stopTarget,
+    compactTarget,
   } as unknown as SessionManager
   const policy = new ToolPolicy(join(tmpdir(), "qq-policy-commands", "none.json"), logger)
   const overrides = new ChatOverrides(join(tmpdir(), "qq-overrides-commands", "none.json"), logger)
   return {
     sent,
     resetTarget,
+    stopTarget,
+    compactTarget,
     overrides,
     deps: {
       config,
@@ -246,6 +252,82 @@ describe("handleCommand", () => {
     expect(sent[0]?.text).toContain("qq_send_message")
     expect(sent[0]?.text).toContain("websearch")
     expect(sent[0]?.text).not.toContain("bash")
+  })
+
+  it("stops a named chat and reports the dropped messages", async () => {
+    const { deps, sent, stopTarget } = createDeps()
+    expect(await handleCommand("/stop group:100", deps)).toBe(true)
+    expect(stopTarget).toHaveBeenCalledWith({ kind: "group", id: 100 })
+    expect(sent[0]?.text).toContain("群 100 已停止")
+    expect(sent[0]?.text).toContain("丢弃 2 条排队消息")
+
+    sent.length = 0
+    expect(await handleCommand("/stop nope", deps)).toBe(true)
+    expect(sent[0]?.text).toContain("无法识别聊天")
+  })
+
+  it("stops every busy chat when /stop has no argument", async () => {
+    const { deps, sent } = createDeps()
+    const stopTarget = vi.fn(async () => ({ interrupted: true, dropped: 0, droppedPending: false }))
+    deps.manager = {
+      snapshot: () => [
+        {
+          target: { kind: "group" as const, id: 100 },
+          sessionID: "session-1",
+          busy: true,
+          buffered: 0,
+          pending: false,
+        },
+        {
+          target: { kind: "group" as const, id: 999 },
+          sessionID: "session-2",
+          busy: true,
+          buffered: 0,
+          pending: false,
+        },
+      ],
+      stopTarget,
+    } as unknown as SessionManager
+
+    expect(await handleCommand("/stop", deps)).toBe(true)
+    // 名单外的聊天不碰。
+    expect(stopTarget).toHaveBeenCalledTimes(1)
+    expect(stopTarget).toHaveBeenCalledWith({ kind: "group", id: 100 })
+    expect(sent[0]?.text).toContain("群 100 已停止")
+  })
+
+  it("refuses to stop a chat outside the allow list", async () => {
+    const { deps, sent, stopTarget } = createDeps()
+    expect(await handleCommand("/stop group:999", deps)).toBe(true)
+    expect(stopTarget).not.toHaveBeenCalled()
+    expect(sent[0]?.text).toContain("不在放行名单")
+  })
+
+  it("lists the chats that can be compacted", async () => {
+    const { deps, sent } = createDeps()
+    expect(await handleCommand("/compact", deps)).toBe(true)
+    expect(sent[0]?.text).toContain("/compact group:100")
+  })
+
+  it("compacts a named chat and reports the outcome", async () => {
+    const { deps, sent, compactTarget } = createDeps()
+    expect(await handleCommand("/compact group:100", deps)).toBe(true)
+    expect(compactTarget).toHaveBeenCalledWith({ kind: "group", id: 100 })
+    expect(sent[0]?.text).toContain("群 100 已提交压缩请求")
+
+    sent.length = 0
+    expect(await handleCommand("/compact nope", deps)).toBe(true)
+    expect(sent[0]?.text).toContain("无法识别聊天")
+  })
+
+  it("explains why a chat cannot be compacted", async () => {
+    const { deps, sent } = createDeps()
+    deps.manager = {
+      snapshot: () => [],
+      compactTarget: vi.fn(async () => ({ compacted: false, reason: "busy" })),
+    } as unknown as SessionManager
+    expect(await handleCommand("/compact group:100", deps)).toBe(true)
+    expect(sent[0]?.text).toContain("先 /stop 再压缩")
   })
 
   it("accepts the TUI prefix on the QQ side", async () => {

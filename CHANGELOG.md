@@ -18,6 +18,10 @@
 
 ### Added
 
+- 新增 `/stop` 与 `/compact` 两个管理命令（QQ 与 TUI 两侧都可用，TUI 侧是 `/qq-stop`、`/qq-compact`）：
+  - `/stop` 打断正在执行的回合并丢掉排队中的消息，会话与历史保留，回执里说明丢了多少条；
+    `/stop group:123` 只停指定聊天。
+  - `/compact` 让上游压缩该聊天的上下文；聊天还在执行时先 `/stop` 再压缩。
 - 面板新增两个独立配置页，不用再手改 JSON：
   - 「会话覆盖」页编辑 `chat-overrides.json`：按聊天键（`group:100` / `private:200`）列出覆盖项，
     可新增、修改、删除；可编辑字段与后端 `ChatOverride` 一一对应（`wake`、`wake.prefixes`、

@@ -172,6 +172,72 @@ async function runReset(context: CommandContext, args: string[]): Promise<string
   return lines.join("\n")
 }
 
+/** `/stop` 的单条回执：说清打断结果与丢掉的排队消息。 */
+function stopLines(
+  target: ChatTarget,
+  result: { interrupted: boolean; dropped: number; droppedPending: boolean },
+): string[] {
+  const idle = !result.interrupted && result.dropped === 0 && !result.droppedPending
+  const lines = [`${targetLabel(target)} ${idle ? "没有正在执行的回合" : "已停止"}`]
+  if (!idle) lines.push(result.interrupted ? "原回合已打断" : "原回合没有在执行")
+  if (result.dropped > 0) lines.push(`丢弃 ${result.dropped} 条排队消息`)
+  if (result.droppedPending) lines.push("丢弃一批待重试的消息")
+  return lines
+}
+
+async function runStop(context: CommandContext, args: string[]): Promise<string> {
+  const { config, manager } = context
+  const requested = args[0]
+  if (requested) {
+    const target = parseChatArg(requested)
+    if (!target) return `无法识别聊天：${requested}（示例：/stop group:123）`
+    if (!isTargetAllowed(config.access, target, config.ownerQQ)) {
+      return `${targetLabel(target)} 不在放行名单里，无法停止`
+    }
+    return stopLines(target, await manager.stopTarget(target)).join("\n")
+  }
+  // 不带参数时停掉所有正在执行的回合：这是紧急刹车，不用再问一遍。
+  // 队列里还压着消息的聊天也算在内：上游多半还在跑，只是不在本插件的轮次里。
+  const busy = manager
+    .snapshot()
+    .filter((item) => item.busy || item.buffered > 0 || item.pending)
+    .map((item) => item.target)
+    .filter((target) => isTargetAllowed(config.access, target, config.ownerQQ))
+  if (busy.length === 0) return "当前没有正在执行的回合"
+  const lines: string[] = []
+  for (const target of busy) {
+    lines.push(...stopLines(target, await manager.stopTarget(target)))
+  }
+  return lines.join("\n")
+}
+
+async function runCompact(context: CommandContext, args: string[]): Promise<string> {
+  const { config, manager } = context
+  const requested = args[0]
+  if (!requested) {
+    // 压缩要额外跑一次模型，不带参数时只列清单，由人来挑。
+    const entries = manager
+      .snapshot()
+      .filter((item) => item.sessionID !== undefined)
+      .filter((item) => isTargetAllowed(config.access, item.target, config.ownerQQ))
+    if (entries.length === 0) return "还没有可压缩的会话"
+    return [
+      "要压缩哪个聊天？把目标加在命令后面：",
+      ...entries.map((item) => `/compact ${targetKey(item.target)} — 会话 ${item.sessionID}`),
+    ].join("\n")
+  }
+  const target = parseChatArg(requested)
+  if (!target) return `无法识别聊天：${requested}（示例：/compact group:123）`
+  if (!isTargetAllowed(config.access, target, config.ownerQQ)) {
+    return `${targetLabel(target)} 不在放行名单里，无法压缩`
+  }
+  const result = await manager.compactTarget(target)
+  if (result.compacted) return `${targetLabel(target)} 已提交压缩请求，上游会压缩这段上下文`
+  if (result.reason === "no-session") return `${targetLabel(target)} 还没有会话，无法压缩`
+  if (result.reason === "busy") return `${targetLabel(target)} 正在执行，先 /stop 再压缩`
+  return `${targetLabel(target)} 压缩失败，详见日志`
+}
+
 async function runTools(context: CommandContext, args: string[]): Promise<string> {
   const { config, policy, toolNames } = context
   const requested = args[0]
@@ -219,6 +285,24 @@ export const COMMANDS: readonly CommandDefinition[] = [
     description: "重置聊天会话；不带参数时列出所有聊天",
     usage: ["/reset — 列出所有聊天", "/reset group:123 — 重置指定聊天（也支持 private:123）"],
     run: runReset,
+  },
+  {
+    name: "stop",
+    description: "打断执行中的回合并丢掉排队消息，保留会话与历史",
+    usage: [
+      "/stop — 打断所有正在执行的回合",
+      "/stop group:123 — 打断指定聊天的回合（也支持 private:123）",
+    ],
+    run: runStop,
+  },
+  {
+    name: "compact",
+    description: "让上游压缩会话上下文；不带参数时列出可压缩的聊天",
+    usage: [
+      "/compact — 列出可压缩的聊天",
+      "/compact group:123 — 压缩指定聊天的上下文（也支持 private:123）",
+    ],
+    run: runCompact,
   },
   {
     name: "tools",

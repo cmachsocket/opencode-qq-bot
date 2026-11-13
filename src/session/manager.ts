@@ -1089,6 +1089,76 @@ export class SessionManager {
   }
 
   /**
+   * 停止一个聊天的当前回合：打断上游执行，并丢掉排队中的消息。
+   *
+   * 会话与历史都保留，下一条消息接着原会话继续。
+   */
+  async stopTarget(
+    target: ChatTarget,
+  ): Promise<{ interrupted: boolean; dropped: number; droppedPending: boolean }> {
+    const state = this.states.get(targetKey(target))
+    if (!state) return { interrupted: false, dropped: 0, droppedPending: false }
+    return this.targetMutex(target).runExclusive(async () => {
+      const dropped = state.buffer.length
+      const droppedPending = state.pending !== undefined
+      // 模型还没往群里发过东西：停下之后要补一句交代。
+      const noReply = state.awaitingSend && !state.current?.proactive
+      state.buffer = []
+      state.pending = undefined
+      state.pendingAttempts = 0
+      let interrupted = false
+      const sessionID = state.sessionID
+      if (sessionID && (await this.sessionRunning(sessionID))) {
+        try {
+          const result = await this.ctx.session.interrupt({ sessionID })
+          // 上游明确说没打断时按没打断算；没给结论就当打断了。
+          interrupted = result?.interrupted !== false
+        } catch (error) {
+          this.logger.warn(`${targetLabel(target)} 打断会话 ${sessionID} 失败`, error)
+        }
+      }
+      // 轮次就地结束：上游的中断事件可能迟到，不能让这个聊天一直显示执行中。
+      this.endTurn(state, "stopTarget")
+      state.awaitingSend = false
+      state.reminders = 0
+      state.idleAt = Date.now()
+      this.scheduleSave()
+      // 队列清空了，兜底轮询不用再跑。
+      this.syncWatchdog()
+      if (interrupted && noReply) {
+        await this.notifyFailure(state, INTERRUPTED_NOTICE)
+      }
+      return { interrupted, dropped, droppedPending }
+    })
+  }
+
+  /**
+   * 让上游压缩一个聊天的会话上下文。
+   *
+   * 压缩要额外跑一次模型，只有空闲且已绑定会话的聊天才做得了。
+   */
+  async compactTarget(
+    target: ChatTarget,
+  ): Promise<{ compacted: boolean; reason?: "no-session" | "busy" | "failed" }> {
+    const state = this.states.get(targetKey(target))
+    if (!state) return { compacted: false, reason: "no-session" }
+    return this.targetMutex(target).runExclusive(async () => {
+      const sessionID = state.sessionID
+      if (!sessionID) return { compacted: false, reason: "no-session" }
+      if (state.current !== undefined || (await this.sessionRunning(sessionID))) {
+        return { compacted: false, reason: "busy" }
+      }
+      try {
+        await this.ctx.session.compact({ sessionID })
+      } catch (error) {
+        this.logger.warn(`${targetLabel(target)} 压缩会话 ${sessionID} 失败`, error)
+        return { compacted: false, reason: "failed" }
+      }
+      return { compacted: true }
+    })
+  }
+
+  /**
    * 清掉一个聊天的轮次运行时状态并落盘。
    *
    * 排队消息与待重试批次由调用方决定是否一起清掉。
