@@ -10,11 +10,29 @@
   `proactive` → `proactive.enabled`、`proactiveProbability` → `proactive.startProbability`、
   `soul` → `soulPath` / `soulName`。旧键名直接失效，没有迁移层。
 
+### Added
+
+- 面板新增两个独立配置页，不用再手改 JSON：
+  - 「会话覆盖」页编辑 `chat-overrides.json`：按聊天键（`group:100` / `private:200`）列出覆盖项，
+    可新增、修改、删除；可编辑字段与后端 `ChatOverride` 一一对应（`wake`、`wake.prefixes`、
+    `proactive.enabled`、`proactive.startProbability`、`agent`、`model`、`soulPath`、`soulName`）。
+  - 「工具档案」页编辑 `tool-profiles.json`：改默认配置档、各档的 `allow` / `deny` 工具模式列表，
+    以及聊天键到配置档的映射；内置档（`chat`、`readonly`、`proactive`、`admin`）标出来且不可删。
+  - 接口：`GET/PUT /api/chat-overrides`、`GET/PUT /api/tool-profiles`。
+  - 校验一律复用运行时的解析函数：单个字段写错只忽略该项并告警，其余照常生效；
+    聊天键、档名与档引用不合法时按字段给出原因。保存用与 `config.json` 一样的原子写，
+    文件 `0600`、目录 `0700`，各留一份 `.bak`。
+  - 两个文件都按修改时间热加载，保存后无需重启；命中已知凭证的字段不回显。
+- 面板前端也有测试了：vitest 增加一个 jsdom 工程（`tests/web/`），用 @testing-library/svelte
+  挂载页面，验证列表渲染、保存请求体、删除动作与服务端返回的字段错误提示。
+
 ### Fixed
 
 - 面板的保存按钮恢复可用：面板 CSP 是 `script-src 'self'`，而前端用 `ajv` 编译 JSON Schema
   校验器需要 `eval`，点击保存只会抛 `EvalError` 并被吞掉。现在前端不再做本地校验，
   由后端 zod 校验并返回逐字段原因——本来就以后端为准。
+- 前端构建不再报 `baseUrl` 弃用警告：`web/tsconfig.json` 去掉 `baseUrl`，
+  `paths` 改为相对配置文件本身解析。
 
 ## [0.9.2] - 2026-11-13
 
