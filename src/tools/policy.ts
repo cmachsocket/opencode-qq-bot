@@ -1,5 +1,5 @@
 import { readFile, stat } from "node:fs/promises"
-import { join } from "node:path"
+import { join, resolve } from "node:path"
 import type { ChatTarget } from "../chat"
 import type { QQBotConfig } from "../config"
 import type { Logger } from "../logger"
@@ -75,6 +75,20 @@ export function defaultToolPolicy(): ToolPolicyFile {
 /** 默认的配置文件位置：工作目录下的 `tool-profiles.json`。 */
 export function defaultToolProfilesPath(home: string): string {
   return join(home, "tool-profiles.json")
+}
+
+/**
+ * 解析工具配置文件的实际位置。
+ *
+ * 配置里写了 `toolProfilesPath` 就按工作目录解析（绝对路径原样使用），
+ * 没写就用工作目录下的默认位置。启动与面板共用这一份解析。
+ */
+export function resolveToolProfilesPath(
+  config: { toolProfilesPath?: string },
+  home: string,
+): string {
+  const configured = config.toolProfilesPath?.trim()
+  return configured ? resolve(home, configured) : defaultToolProfilesPath(home)
 }
 
 /**

@@ -38,7 +38,8 @@ import { SendRateLimiter } from "./rate-limit"
 import { startClaimTimer } from "./runtime/claim"
 import { RuntimeStart } from "./runtime/start"
 import { packageRoot, seedFile } from "./seed"
-import { collectEnvSecrets, redactUrl, secretsFromUrl, SensitiveChecker } from "./sensitive"
+import { redactUrl, SensitiveChecker } from "./sensitive"
+import { knownSecrets } from "./known-secrets"
 import { SessionManager } from "./session/manager"
 import { currentTimeText, PROACTIVE_HINT } from "./session/prompt"
 import { proactiveProbability } from "./session/proactive"
@@ -47,15 +48,15 @@ import { COMMANDS, handleCommand, isCommandChat } from "./commands"
 import {
   chatMuted,
   ChatOverrides,
-  defaultChatOverridesPath,
   proactiveAllowed,
+  resolveChatOverridesPath,
   wakeDecision,
   type WakeReason,
 } from "./overrides"
 import { Tracer } from "./trace"
 import { Cleanup, CleanupOrder } from "./cleanup"
 import { registerAskGuard } from "./tools/ask-guard"
-import { defaultToolProfilesPath, roleOf, ToolPolicy } from "./tools/policy"
+import { resolveToolProfilesPath, roleOf, ToolPolicy } from "./tools/policy"
 import { registerToolPolicy } from "./tools/policy-guard"
 import { registerSendGuard } from "./tools/send-guard"
 import {
@@ -99,15 +100,7 @@ function agentFromOptions(options: unknown): string | undefined {
  * 除了环境变量与 NapCat 令牌，地址查询串里挂着的 token 也要算进来，
  * 否则它会原样落进日志文件。面板令牌同样算进来：它能进日志文件就等于面板失守。
  */
-export function knownSecrets(config: QQBotConfig): string[] {
-  return [
-    ...collectEnvSecrets(process.env),
-    config.napcat.token ?? "",
-    // 面板令牌能进日志文件就等于面板失守，日志里一律掩码。
-    config.panel.token ?? "",
-    ...secretsFromUrl(config.napcat.url),
-  ].filter((secret) => secret.length > 0)
-}
+export { knownSecrets }
 
 const isGroupEvent = (event: MessageEvent): event is GroupMessageEvent =>
   event.message_type === "group"
@@ -428,18 +421,14 @@ export default Plugin.define({
         const noticeStore = new NoticeStore()
         // 工具配置：按聊天与角色决定模型能看到、能调用哪些工具。
         // 走默认位置时把随包的示例复制过去，占位目标得自己改成真实的群 / 私聊。
-        const profilesPath = config.toolProfilesPath
-          ? resolve(home.directory, config.toolProfilesPath)
-          : defaultToolProfilesPath(home.directory)
+        const profilesPath = resolveToolProfilesPath(config, home.directory)
         if (!config.toolProfilesPath) {
           await seedFile(join(packageRoot, "tool-profiles.example.json"), profilesPath, logger)
         }
         const policy = new ToolPolicy(profilesPath, logger)
         panelRuntime.policy = policy
         // 会话行为覆盖：按聊天决定怎么唤醒、要不要主动说话。
-        const overridesPath = config.chatOverridesPath
-          ? resolve(home.directory, config.chatOverridesPath)
-          : defaultChatOverridesPath(home.directory)
+        const overridesPath = resolveChatOverridesPath(config, home.directory)
         if (!config.chatOverridesPath) {
           await seedFile(join(packageRoot, "chat-overrides.example.json"), overridesPath, logger)
         }

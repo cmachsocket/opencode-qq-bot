@@ -279,17 +279,21 @@ export type FieldType =
 
 ### API
 
-| 方法 | 路径                 | 说明                                  |
-| ---- | -------------------- | ------------------------------------- |
-| POST | `/api/login`         | 用令牌换取会话 Cookie                 |
-| GET  | `/api/config/schema` | 字段元数据与分组，前端据此渲染表单    |
-| GET  | `/api/config`        | 生效值、文件值与每字段来源            |
-| PUT  | `/api/config`        | 提交变更，后端用同一份 zod 校验后落盘 |
-| GET  | `/api/models`        | 可用模型列表（`model` 字段的候选项）  |
-| GET  | `/api/status`        | 运行状态快照                          |
-| GET  | `/api/logs`          | 日志尾部（内存环形缓冲）              |
-| GET  | `/api/stream`        | SSE：状态、配置变更与日志推送         |
-| GET  | `/*`                 | Svelte 构建产物                       |
+| 方法 | 路径                  | 说明                                  |
+| ---- | --------------------- | ------------------------------------- |
+| POST | `/api/login`          | 用令牌换取会话 Cookie                 |
+| GET  | `/api/config/schema`  | 字段元数据与分组，前端据此渲染表单    |
+| GET  | `/api/config`         | 生效值、文件值与每字段来源            |
+| PUT  | `/api/config`         | 提交变更，后端用同一份 zod 校验后落盘 |
+| GET  | `/api/chat-overrides` | 会话覆盖文件的生效值、文件值与告警    |
+| PUT  | `/api/chat-overrides` | 提交会话覆盖的稀疏改动                |
+| GET  | `/api/tool-profiles`  | 工具配置文件的生效值、文件值与告警    |
+| PUT  | `/api/tool-profiles`  | 提交工具配置的稀疏改动                |
+| GET  | `/api/models`         | 可用模型列表（`model` 字段的候选项）  |
+| GET  | `/api/status`         | 运行状态快照                          |
+| GET  | `/api/logs`           | 日志尾部（内存环形缓冲）              |
+| GET  | `/api/stream`         | SSE：状态、配置变更与日志推送         |
+| GET  | `/*`                  | Svelte 构建产物                       |
 
 `GET /api/config` 每字段返回：
 
@@ -309,6 +313,29 @@ export type FieldType =
 `GET /api/models` 返回 OpenCode 当前可用的模型（`ctx.model.list()`），每项含 `providerID`、`id` 与展示名，另附 `ctx.model.default()` 作为默认标记。模型列表不来自 `config.json`，也不来自插件的注册表——它由 OpenCode 的 provider 配置与模型目录决定。
 
 鉴权两条路：`Authorization: Bearer <token>` 供命令行与 `curl` 使用；浏览器先 `POST /api/login` 换会话 Cookie，之后自动带上。两者未授权都返回 401。敏感字段（`napcat.token`）只返回 `hasValue: true`，不返回明文。
+
+### 两个独立配置文件
+
+`chat-overrides.json` 与 `tool-profiles.json` 不是全局配置：粒度、生命周期与生效方式都不同，所以各有独立的页面与接口，不进字段注册表。文件路径取自 `config.json` 的 `chatOverridesPath` 与 `toolProfilesPath`，没配置时用工作目录下的默认路径。
+
+两个接口返回同一种结构：
+
+```jsonc
+{
+  "path": "/…/workspace/chat-overrides.json",
+  "exists": true,
+  "value": {}, // 生效值：解析之后的文档
+  "fileValue": {}, // 文件里的原始内容
+  "warnings": [], // 解析告警
+  "masked": [], // 命中已知凭证、被掩码的字段路径
+}
+```
+
+- 校验复用运行时的解析函数（`parseChatOverrides` 与 `parseToolPolicy`）：**单个字段写错只忽略这一项并告警，其余照常生效**，不会整份拒绝。
+- 结构性问题（聊天键不合法、档名不存在、`defaultProfile` 指向不存在的档）返回 400，并带上 `fields[].path` 与 `fields[].message`。
+- 提交的是稀疏补丁：没提到的聊天、配置档与字段保持原样；字段传 `null` 表示删掉这一项。
+- 写盘与 `config.json` 同规则：先备份 `.bak`，再原子写，文件 `0600`、目录 `0700`。
+- 这两个文件都是热加载的（运行时按 mtime 重新读），保存后立即在下一条消息 / 下一次工具调用前生效，接口返回 `restartRequired: false` 与生效时机说明；运行时没有加载这两个文件时才会提示需重启。
 
 ## 状态面板
 
@@ -361,12 +388,16 @@ export type FieldType =
 ### 页面
 
 - 顶栏：连接状态、版本、运行时长、「需重启生效」提示。
-- Tab：配置 / 状态 / 日志 / 追踪。
+- Tab：配置 / 会话覆盖 / 工具档案 / 状态 / 日志 / 追踪。
 - 配置页：左侧分组导航（`napcat`、`access`、`proactive`、`wake`、`reply`、`trace`、`reminder`、`keepAlive`、`history`、`rateLimit`、`sensitive`、`events`、`log`、`media`、`diary`、`panel`），右侧渲染当前分组的表单；每字段一行显示「当前值 / 来源（文件或默认）/ 说明」。
+- 会话覆盖页：列出 `chat-overrides.json` 里的每个聊天键（`group:100` / `private:200`）与它的覆盖项，可新增、修改、删除；可编辑字段严格等于后端 `ChatOverride` 的八个字段（`wake`、`wake.prefixes`、`proactive.enabled`、`proactive.startProbability`、`agent`、`model`、`soulPath`、`soulName`），不多不少。
+- 工具档案页：编辑 `tool-profiles.json` 的默认配置档、各档的 `allow` / `deny` 工具模式列表，以及聊天键到配置档的映射；内置档（`chat`、`readonly`、`proactive`、`admin`）标出来且不可删。
 - 状态页：连接概览卡片、会话表、限流用量条、追踪时间线、日记卡片、当前 agent（只读，来自 `opencode.json`）。
 - 日志页：级别过滤、关键字过滤、自动滚动与暂停。
 
 表单由 `/api/config/schema` 驱动：注册表新增字段后，刷新页面即出现对应控件，前端不含任何硬编码字段名。
+
+两个独立文件的页面不走注册表：字段列表写在前端，但**校验规则只在后端**——前端只把接口返回的逐字段原因就地标红，不自己判对错。
 
 ## 保存语义与热更新
 
@@ -470,6 +501,12 @@ web/                     Svelte 单页应用（独立 package.json）
 - 配置文件：`src/config/store.ts` 负责原子写（`write-file-atomic`，保留 `.bak`）、
   目录 `0700`、文件 `0600`；文件不存在抛 `ConfigMissingError`，JSON 非法抛 `ConfigParseError`。
   监听走 `chokidar`，外部改动解析成功后热更新。
+  原子写与权限的实现在 `src/fs/atomic.ts`，`config.json`、`chat-overrides.json` 与 `tool-profiles.json` 共用一份。
+- 两个独立配置文件：`src/panel/documents.ts` 负责读写 `chat-overrides.json` 与 `tool-profiles.json`，
+  校验一律复用运行时的 `parseChatOverrides` 与 `parseToolPolicy`（不另写一套规则），
+  写盘同样是「先备份 `.bak`、再原子写、文件 `0600`、目录 `0700`」。
+  文件路径由 `resolveChatOverridesPath` 与 `resolveToolProfilesPath` 解析，与 `src/index.ts` 启动时用的是同一套逻辑。
+  值里命中已知凭证的字段不回显，只在 `masked` 里给出字段路径。
 - 热更新：`src/config/live.ts` 的 `applyPatch` 只改叶子值并保持中间对象引用，
   `restartRequired` 由注册表的 `hot` 决定；面板保存与文件监听共用同一条解析路径。
 - HTTP：`src/panel/server.ts` 用 `@hono/node-server` 的 `createAdaptorServer` 启动，
@@ -482,16 +519,20 @@ web/                     Svelte 单页应用（独立 package.json）
 
 ### 接口
 
-| 方法   | 路径                 | 说明                                                               |
-| ------ | -------------------- | ------------------------------------------------------------------ |
-| `POST` | `/api/login`         | 用令牌换会话 Cookie（`qqbot_session`，HttpOnly + SameSite=Strict） |
-| `GET`  | `/api/config/schema` | 分组、字段元数据与 JSON Schema                                     |
-| `GET`  | `/api/config`        | 每字段生效值、文件值与来源                                         |
-| `PUT`  | `/api/config`        | 提交稀疏补丁；只收 JSON，校验失败返回 `fields[].path`              |
-| `GET`  | `/api/models`        | OpenCode 可用模型与默认模型标记                                    |
-| `GET`  | `/api/status`        | 运行状态快照                                                       |
-| `GET`  | `/api/logs`          | 环形缓冲尾部，支持 `limit` 与 `level`                              |
-| `GET`  | `/api/stream`        | SSE：`status` / `log` / `config`                                   |
+| 方法   | 路径                  | 说明                                                                 |
+| ------ | --------------------- | -------------------------------------------------------------------- |
+| `POST` | `/api/login`          | 用令牌换会话 Cookie（`qqbot_session`，HttpOnly + SameSite=Strict）   |
+| `GET`  | `/api/config/schema`  | 分组、字段元数据与 JSON Schema                                       |
+| `GET`  | `/api/config`         | 每字段生效值、文件值与来源                                           |
+| `PUT`  | `/api/config`         | 提交稀疏补丁；只收 JSON，校验失败返回 `fields[].path`                |
+| `GET`  | `/api/chat-overrides` | 会话覆盖文件的生效值、文件值、告警与掩码字段                         |
+| `PUT`  | `/api/chat-overrides` | 提交稀疏改动；字段写错只忽略该项并告警，结构问题返回 `fields[].path` |
+| `GET`  | `/api/tool-profiles`  | 工具配置文件的生效值、文件值、告警与掩码字段                         |
+| `PUT`  | `/api/tool-profiles`  | 提交稀疏改动；档名或聊天键不合法时返回 `fields[].path`               |
+| `GET`  | `/api/models`         | OpenCode 可用模型与默认模型标记                                      |
+| `GET`  | `/api/status`         | 运行状态快照                                                         |
+| `GET`  | `/api/logs`           | 环形缓冲尾部，支持 `limit` 与 `level`                                |
+| `GET`  | `/api/stream`         | SSE：`status` / `log` / `config`                                     |
 
 鉴权支持 `Authorization: Bearer <token>` 与会话 Cookie 两条路；写接口校验 `Origin`，
 并用 `hono/csrf` 兜底表单类请求；响应带 CSP 等安全头，静态资源由同一个服务托管。
@@ -503,13 +544,19 @@ web/                     Svelte 单页应用（独立 package.json）
 - 数据层只用原生 `fetch` 与 `EventSource`（`web/src/lib/api.ts`），不引入请求库。
 - 表单由 `/api/config/schema` 驱动：字段名、分组、控件类型、枚举候选、数值范围与
   敏感字段全部来自注册表，前端不写死字段名；提交后由后端校验，逐字段原因回给前端标红。
-- 页面：配置（分组表单、搜索、待保存标记、需重启提示）、状态（连接、会话、限流、日记、策略）、
+- 页面：配置（分组表单、搜索、待保存标记、需重启提示）、会话覆盖（聊天键列表与八个可编辑字段、
+  新增/修改/删除）、工具档案（默认档、档的增删、聊天映射的增删改）、
+  状态（连接、会话、限流、日记、策略）、
   日志（环形缓冲、级别过滤、搜索、暂停与自动滚动）、追踪（最近节点与属性）。
+- 两个独立文件的页面复用现有组件（`Card` / `Table` / `Input` / `Select` / `TagInput`），不引入新的 UI 库；
+  保存结果有明确提示，校验失败按服务端返回的字段路径就地标红。
 
 ### 安全与运维
 
 - 面板默认开启，默认只监听 `127.0.0.1:7391`。监听地址改成非本机前请确认网络边界。
 - 敏感字段（如 `napcat.token`、`panel.token`）不回显，只返回 `hasValue`；留空表示不修改。
+- `chat-overrides.json` 与 `tool-profiles.json` 同理：值里命中已知凭证的字段不回显，只在 `masked` 里给出字段路径。
+- 三个配置文件都是文件 `0600`、目录 `0700`，各自保留一份 `.bak`。
 - 卸载插件时 `cleanup` 会关闭 HTTP 服务、SSE 连接与文件监听，不留残留端口。
 - 日志与状态都来自当前进程：重启前的日志仍需查日志文件，跨重启的历史不在面板范围内。
 
@@ -517,4 +564,10 @@ web/                     Svelte 单页应用（独立 package.json）
 
 - `bun run typecheck`、`bun run lint`、`bun run test`、`bun run web:build` 均可通过。
 - `tests/` 覆盖注册表一致性、配置文件读写与原子写、热更新与重启字段划分、鉴权与 CSRF、
-  各接口、状态快照、日志环形缓冲与脱敏。
+  各接口、状态快照、日志环形缓冲与脱敏；
+  `tests/panel-documents.test.ts` 另覆盖两个独立文件接口的未授权、校验失败、
+  落盘内容与权限、备份、聊天键与档名校验与热加载生效。
+- `tests/web/` 是 vitest 的 jsdom 工程（`vitest.config.ts` 的 `web` project），
+  用 @testing-library/svelte 直接挂载两个新页面，验证列表渲染、保存请求体、
+  删除动作、服务端字段错误就地提示与保存提示文案；`tests/panel-web.test.ts` 另外做源码级断言
+  （页面不引入 ajv、不在前端复制校验规则）。

@@ -8,9 +8,11 @@
   import { Label } from "$lib/components/ui/label"
   import { Separator } from "$lib/components/ui/separator"
   import * as Tabs from "$lib/components/ui/tabs"
+  import ChatOverridesPage from "./routes/ChatOverridesPage.svelte"
   import ConfigPage from "./routes/ConfigPage.svelte"
   import LogsPage from "./routes/LogsPage.svelte"
   import StatusPage from "./routes/StatusPage.svelte"
+  import ToolProfilesPage from "./routes/ToolProfilesPage.svelte"
   import TracePage from "./routes/TracePage.svelte"
   import type { ConfigResponse, LogEntry, Status } from "$lib/types"
 
@@ -139,12 +141,20 @@
     <Tabs.Root bind:value={tab} class="flex-1">
       <Tabs.List>
         <Tabs.Trigger value="config">配置</Tabs.Trigger>
+        <Tabs.Trigger value="chat-overrides">会话覆盖</Tabs.Trigger>
+        <Tabs.Trigger value="tool-profiles">工具档案</Tabs.Trigger>
         <Tabs.Trigger value="status">状态</Tabs.Trigger>
         <Tabs.Trigger value="logs">日志</Tabs.Trigger>
         <Tabs.Trigger value="trace">追踪</Tabs.Trigger>
       </Tabs.List>
       <Tabs.Content value="config">
         <ConfigPage {config} onrestart={onRestartNeeded} />
+      </Tabs.Content>
+      <Tabs.Content value="chat-overrides">
+        <ChatOverridesPage onrestart={onRestartNeeded} />
+      </Tabs.Content>
+      <Tabs.Content value="tool-profiles">
+        <ToolProfilesPage onrestart={onRestartNeeded} />
       </Tabs.Content>
       <Tabs.Content value="status">
         <StatusPage {status} />

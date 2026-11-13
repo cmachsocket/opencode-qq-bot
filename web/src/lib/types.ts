@@ -95,6 +95,80 @@ export interface SaveResponse {
   fields: FieldView[]
 }
 
+/** 单个聊天的行为覆盖：字段与 `ChatOverride` 一一对应。 */
+export interface ChatOverride {
+  /** 唤醒方式。 */
+  wake?: string
+  /** 唤醒前缀。 */
+  "wake.prefixes"?: string[]
+  /** 是否允许主动说话。 */
+  "proactive.enabled"?: boolean
+  /** 主动说话的触发概率。 */
+  "proactive.startProbability"?: number
+  /** 覆盖 agent。 */
+  agent?: string
+  /** 覆盖模型。 */
+  model?: string | { providerID: string; id: string; variant?: string }
+  /** 覆盖角色设定文件或目录。 */
+  soulPath?: string
+  /** 覆盖角色设定文件名。 */
+  soulName?: string
+}
+
+/** `chat-overrides.json` 的结构。 */
+export interface ChatOverridesFile {
+  /** 按聊天指定的覆盖。 */
+  chats: Record<string, ChatOverride>
+}
+
+/** 一档工具配置。 */
+export interface ToolProfile {
+  /** 允许的工具模式。 */
+  allow: string[]
+  /** 禁止的工具模式。 */
+  deny: string[]
+}
+
+/** `tool-profiles.json` 的结构。 */
+export interface ToolPolicyFile {
+  /** 默认配置档。 */
+  defaultProfile: string
+  /** 配置档：名字 → 允许 / 禁止的工具。 */
+  profiles: Record<string, ToolProfile>
+  /** 聊天键 → 配置档。 */
+  chats: Record<string, string>
+}
+
+/** 两个独立配置文件的接口返回。 */
+export interface DocumentResponse {
+  /** 文件位置。 */
+  path: string
+  /** 文件是否存在。 */
+  exists: boolean
+  /** 生效值。 */
+  value: unknown
+  /** 文件里的原始内容。 */
+  fileValue: unknown
+  /** 解析告警。 */
+  warnings: string[]
+  /** 命中已知凭证、被掩码的字段路径。 */
+  masked: string[]
+}
+
+/** 保存独立配置文件的返回。 */
+export interface DocumentSaveResponse {
+  /** 是否保存成功。 */
+  ok: boolean
+  /** 是否需要重启才能生效。 */
+  restartRequired: boolean
+  /** 生效时机说明。 */
+  note: string
+  /** 这次改动里的告警。 */
+  warnings: string[]
+  /** 保存后的文档视图。 */
+  document: DocumentResponse
+}
+
 /** 可用模型。 */
 export interface ModelInfo {
   /** provider id。 */

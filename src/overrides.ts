@@ -1,5 +1,5 @@
 import { readFile, stat } from "node:fs/promises"
-import { join } from "node:path"
+import { join, resolve } from "node:path"
 import { type ChatTarget, targetKey } from "./chat"
 import { DEFAULT_CONFIG, parseModelRef, type ModelRef, type WakeConfig } from "./config"
 import type { Logger } from "./logger"
@@ -92,6 +92,20 @@ export function defaultChatOverrides(): ChatOverridesFile {
 /** 默认的配置文件位置：工作目录下的 `chat-overrides.json`。 */
 export function defaultChatOverridesPath(home: string): string {
   return join(home, "chat-overrides.json")
+}
+
+/**
+ * 解析会话覆盖文件的实际位置。
+ *
+ * 配置里写了 `chatOverridesPath` 就按工作目录解析（绝对路径原样使用），
+ * 没写就用工作目录下的默认位置。启动与面板共用这一份解析。
+ */
+export function resolveChatOverridesPath(
+  config: { chatOverridesPath?: string },
+  home: string,
+): string {
+  const configured = config.chatOverridesPath?.trim()
+  return configured ? resolve(home, configured) : defaultChatOverridesPath(home)
 }
 
 /**

@@ -327,7 +327,25 @@ export class SensitiveChecker {
   }
 }
 
-/** 日志打码的选项。 */
+/**
+ * 把已知凭证明文换成占位符。
+ *
+ * 只认环境里已知的那些明文（面板令牌、NapCat 令牌、环境变量里的密钥），
+ * 不跑通用检测器：面板要回显的是配置内容，路径与地址不该被误伤。
+ */
+export function maskKnownSecrets(text: string, secrets: readonly string[]): string {
+  let masked = text
+  for (const secret of secrets) {
+    if (secret.length < MIN_SECRET_LENGTH) continue
+    if (!masked.includes(secret)) continue
+    masked = masked.split(secret).join("[REDACTED]")
+  }
+  return masked
+}
+
+/**
+ * 日志打码的选项。
+ */
 export interface MaskOptions {
   /** 已知的凭证明文：环境变量里的密钥、NapCat 访问令牌等。 */
   knownSecrets?: string[]

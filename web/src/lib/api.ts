@@ -1,5 +1,7 @@
 import type {
   ConfigResponse,
+  DocumentResponse,
+  DocumentSaveResponse,
   LogEntry,
   ModelInfo,
   SaveResponse,
@@ -93,6 +95,28 @@ export const api = {
     if (options.level) query.set("level", options.level)
     const suffix = query.toString()
     return request<{ entries: LogEntry[] }>(`/api/logs${suffix ? `?${suffix}` : ""}`)
+  },
+  /** 会话覆盖文件：生效值、文件值与告警。 */
+  chatOverrides(): Promise<DocumentResponse> {
+    return request<DocumentResponse>("/api/chat-overrides")
+  },
+  /** 保存会话覆盖：提交稀疏改动。 */
+  saveChatOverrides(patch: Record<string, unknown>): Promise<DocumentSaveResponse> {
+    return request<DocumentSaveResponse>("/api/chat-overrides", {
+      method: "PUT",
+      body: JSON.stringify(patch),
+    })
+  },
+  /** 工具配置文件：生效值、文件值与告警。 */
+  toolProfiles(): Promise<DocumentResponse> {
+    return request<DocumentResponse>("/api/tool-profiles")
+  },
+  /** 保存工具配置：提交稀疏改动。 */
+  saveToolProfiles(patch: Record<string, unknown>): Promise<DocumentSaveResponse> {
+    return request<DocumentSaveResponse>("/api/tool-profiles", {
+      method: "PUT",
+      body: JSON.stringify(patch),
+    })
   },
 }
 

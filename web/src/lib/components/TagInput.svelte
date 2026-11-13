@@ -10,11 +10,13 @@
     placeholder?: string
     /** 数字标签：只允许正整数。 */
     numeric?: boolean
+    /** 输入框的 id，便于 `Label` 关联。 */
+    id?: string
     /** 值变化时的回调。 */
     onchange?: (value: string[]) => void
   }
 
-  let { value = $bindable([]), placeholder, numeric = false, onchange }: Props = $props()
+  let { value = $bindable([]), placeholder, numeric = false, id, onchange }: Props = $props()
 
   let draft = $state("")
 
@@ -61,6 +63,7 @@
     </Badge>
   {/each}
   <Input
+    {id}
     class="h-8 w-40"
     bind:value={draft}
     {placeholder}

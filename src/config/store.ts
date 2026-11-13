@@ -1,7 +1,6 @@
-import { mkdir, readFile } from "node:fs/promises"
-import { dirname } from "node:path"
+import { readFile } from "node:fs/promises"
 import chokidar, { type FSWatcher } from "chokidar"
-import writeFileAtomic from "write-file-atomic"
+import { backupFile, DIR_MODE, FILE_MODE, writeJsonAtomic } from "../fs/atomic"
 import type { Logger } from "../logger"
 
 /**
@@ -35,9 +34,9 @@ export const CONFIG_FILE_NAME = "config.json"
 /** 配置文件的备份名。 */
 export const CONFIG_BACKUP_NAME = "config.json.bak"
 /** 配置文件权限：只有本人可读写。 */
-export const CONFIG_FILE_MODE = 0o600
+export const CONFIG_FILE_MODE = FILE_MODE
 /** 配置目录权限：只有本人可进入。 */
-export const CONFIG_DIR_MODE = 0o700
+export const CONFIG_DIR_MODE = DIR_MODE
 /** 外部改写配置文件后，去抖再通知的等待时间（毫秒）。 */
 const WATCH_DEBOUNCE_MS = 150
 
@@ -93,19 +92,15 @@ export class ConfigStore {
    * 原子写 + `0600` 权限；写之前把旧内容存成 `.bak`。
    */
   async write(raw: Record<string, unknown>): Promise<void> {
-    await mkdir(dirname(this.path), { recursive: true, mode: CONFIG_DIR_MODE })
     await this.backup()
-    const text = `${JSON.stringify(raw, null, 2)}\n`
-    await writeFileAtomic(this.path, text, { mode: CONFIG_FILE_MODE, fsync: true })
+    await writeJsonAtomic(this.path, raw)
   }
 
   /** 把当前内容存成备份；没有旧文件时跳过。 */
   private async backup(): Promise<void> {
     try {
-      const text = await readFile(this.path, "utf8")
-      await writeFileAtomic(this.backupPath, text, { mode: CONFIG_FILE_MODE })
+      await backupFile(this.path)
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") return
       this.logger?.warn("备份配置文件失败", error)
     }
   }

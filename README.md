@@ -72,6 +72,7 @@ bun install
 - 标「立即」的字段保存即生效，标「重启」的字段要重载插件。
 - 会话的 cwd、文件工具、`AGENTS.md` 与 git 都取这个工作目录，不跟随加载插件的项目目录。
 - 面板（默认开启，只监听 `127.0.0.1:7391`）可以可视化编辑这份配置，见 [docs/panel.md](docs/panel.md)。
+- 面板里还有两个独立页面：「会话覆盖」编辑 `chat-overrides.json`，「工具档案」编辑 `tool-profiles.json`，都不用手改文件。
 - 日志写在 `$XDG_STATE_HOME/opencode-qq-bot/logs`，写盘前统一脱敏；`trace.*` 打开时会在同目录记录一条入站消息的完整处理链。
 
 常用配置项：
@@ -158,7 +159,7 @@ NapCat 连接断开后机器人就不再响应。根治办法是在 `opencode.js
 - 日记工具（`qq_diary_write` / `qq_diary_read` / `qq_diary_list`）只有 owner 能用，`qq_send_file` 对 owner / 管理员放开。
 - 模型视图里 owner / 管理员的发言分别带 `(owner)` / `(admin)` 标记，模型能分清是谁在说话。
 
-详见 [docs/configuration.md](docs/configuration.md#工具权限与配置档)。
+详见 [docs/configuration.md](docs/configuration.md#工具权限与配置档)。也可以在面板的「工具档案」页直接改。
 
 ## 会话覆盖
 
@@ -197,7 +198,7 @@ NapCat 连接断开后机器人就不再响应。根治办法是在 `opencode.js
 - 必回与不必回都会写进提示词，模型知道这轮该不该说话；`/status` 会列出每个聊天当前的唤醒方式与主动说话开关。
 - 改完下一轮生效；单个字段写错只忽略这一项并告警，整个文件解析失败会沿用上一份。
 
-详见 [docs/configuration.md](docs/configuration.md#会话覆盖)。
+详见 [docs/configuration.md](docs/configuration.md#会话覆盖)。也可以在面板的「会话覆盖」页直接改。
 
 ## 角色设定
 

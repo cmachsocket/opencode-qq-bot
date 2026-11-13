@@ -16,6 +16,12 @@ import {
 } from "../config/registry"
 import { readLogTail, subscribeLogs, type LogEntry } from "../logger"
 import { PanelAuth, SESSION_COOKIE } from "./auth"
+import {
+  readChatOverrides,
+  readToolProfiles,
+  saveChatOverrides,
+  saveToolProfiles,
+} from "./documents"
 import type { ModelProvider } from "./models"
 import { collectStatus } from "./status"
 import type { PanelRuntime } from "./runtime"
@@ -190,6 +196,42 @@ export function createPanelApp(options: PanelAppOptions): Hono {
         500,
       )
     }
+  })
+
+  // 会话覆盖文件：生效值、文件值与告警。
+  app.get("/api/chat-overrides", async (c) => {
+    return c.json(await readChatOverrides(runtime))
+  })
+
+  // 保存会话覆盖：稀疏改动，校验在服务端做。
+  app.put("/api/chat-overrides", async (c) => {
+    const body = await readJson(c.req.raw)
+    const { problems, result } = await saveChatOverrides(runtime, body)
+    if (!result) {
+      return c.json(
+        { error: "validation_failed", message: "会话覆盖校验不通过", fields: problems },
+        400,
+      )
+    }
+    return c.json({ ok: true, ...result })
+  })
+
+  // 工具配置文件：生效值、文件值与告警。
+  app.get("/api/tool-profiles", async (c) => {
+    return c.json(await readToolProfiles(runtime))
+  })
+
+  // 保存工具配置：稀疏改动，校验在服务端做。
+  app.put("/api/tool-profiles", async (c) => {
+    const body = await readJson(c.req.raw)
+    const { problems, result } = await saveToolProfiles(runtime, body)
+    if (!result) {
+      return c.json(
+        { error: "validation_failed", message: "工具配置校验不通过", fields: problems },
+        400,
+      )
+    }
+    return c.json({ ok: true, ...result })
   })
 
   // 可用模型列表。
