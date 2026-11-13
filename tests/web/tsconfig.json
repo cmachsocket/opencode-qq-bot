@@ -1,0 +1,14 @@
+{
+  "extends": "../../tsconfig.json",
+  "compilerOptions": {
+    "lib": ["ESNext", "DOM", "DOM.Iterable"],
+    "types": ["bun", "svelte"],
+    "noEmit": true,
+    "paths": {
+      "$lib": ["../../web/src/lib"],
+      "$lib/*": ["../../web/src/lib/*"]
+    }
+  },
+  "include": ["**/*.ts", "**/*.d.ts"],
+  "exclude": []
+}
