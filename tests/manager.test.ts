@@ -113,6 +113,8 @@ function createHarness(
     ...DEFAULT_CONFIG,
     napcat: { url: "ws://127.0.0.1:3001" },
     access: accessConfig({ groups: [100] }),
+    // 默认关掉消息收集窗口：这里测的是投递逻辑，窗口另有专门的用例。
+    collect: { privateMs: 0, groupMs: 0 },
     ...overrides,
   }
 
@@ -238,6 +240,120 @@ describe("按聊天覆盖 agent 与模型", () => {
 
     expect(switchAgent).not.toHaveBeenCalled()
     expect(switchModel).not.toHaveBeenCalled()
+  })
+})
+
+describe("消息收集窗口", () => {
+  it("私聊先攒着，到点再一起发", async () => {
+    vi.useFakeTimers()
+    try {
+      const { manager, prompts } = createHarness({ collect: { privateMs: 10_000, groupMs: 0 } })
+      vi.setSystemTime(new Date(10_000))
+      await manager.enqueue(privateChat(200), { text: "第一条", files: [], atMe: true })
+      expect(prompts).toHaveLength(0)
+
+      // 窗口期间又来一条：窗口不重置。
+      await vi.advanceTimersByTimeAsync(2_000)
+      await manager.enqueue(privateChat(200), { text: "第二条", files: [], atMe: true })
+      expect(prompts).toHaveLength(0)
+
+      // 窗口从第一条消息开始计时：到点后两条合并成一轮。
+      await vi.advanceTimersByTimeAsync(8_000)
+      expect(prompts).toHaveLength(1)
+      expect(prompts[0]?.text).toBe("第一条\n第二条")
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it("群聊按群聊的窗口攒消息", async () => {
+    vi.useFakeTimers()
+    try {
+      const { manager, prompts } = createHarness({ collect: { privateMs: 0, groupMs: 60_000 } })
+      vi.setSystemTime(new Date(10_000))
+      await manager.enqueue(group(100), { text: "群消息", files: [], atMe: false })
+      expect(prompts).toHaveLength(0)
+
+      // 私聊不共用群聊的窗口。
+      await manager.enqueue(privateChat(200), { text: "私聊消息", files: [], atMe: true })
+      expect(prompts).toHaveLength(1)
+
+      await vi.advanceTimersByTimeAsync(60_000)
+      expect(prompts).toHaveLength(2)
+      expect(prompts[1]?.text).toBe("群消息")
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it("窗口为 0 时立刻回复", async () => {
+    const { manager, prompts } = createHarness({ collect: { privateMs: 0, groupMs: 0 } })
+    await manager.enqueue(privateChat(200), { text: "你好", files: [], atMe: true })
+    expect(prompts).toHaveLength(1)
+  })
+
+  it("会话覆盖可以改这个聊天的窗口", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "qq-overrides-collect-"))
+    const file = join(dir, "chat-overrides.json")
+    await writeFile(
+      file,
+      JSON.stringify({ chats: { "group:100": { "collect.groupMs": 100 } } }),
+      "utf8",
+    )
+    const overrides = new ChatOverrides(file, logger)
+    const { manager, prompts } = createHarness(
+      { collect: { privateMs: 60_000, groupMs: 60_000 } },
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      overrides,
+    )
+    await manager.enqueue(group(100), { text: "群消息", files: [], atMe: false })
+    expect(prompts).toHaveLength(0)
+
+    // 覆盖里的窗口比全局的短：到点后这条消息自己发出去了。
+    await vi.waitFor(() => expect(prompts).toHaveLength(1), { timeout: 3_000 })
+    expect(prompts[0]?.text).toBe("群消息")
+  })
+
+  it("重置聊天会丢掉攒着的消息", async () => {
+    vi.useFakeTimers()
+    try {
+      const { manager, prompts } = createHarness({ collect: { privateMs: 10_000, groupMs: 0 } })
+      vi.setSystemTime(new Date(10_000))
+      await manager.enqueue(privateChat(200), { text: "第一条", files: [], atMe: true })
+      expect(prompts).toHaveLength(0)
+
+      await manager.resetTarget(privateChat(200))
+      await vi.advanceTimersByTimeAsync(10_000)
+      expect(prompts).toHaveLength(0)
+      expect(manager.snapshot()[0]?.buffered).toBe(0)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it("交接后新实例接着等窗口", async () => {
+    vi.useFakeTimers()
+    try {
+      const first = createHarness({ collect: { privateMs: 0, groupMs: 10_000 } })
+      vi.setSystemTime(new Date(10_000))
+      await first.manager.enqueue(group(100), { text: "第一条", files: [], atMe: false })
+
+      const handover = await first.manager.exportHandover()
+      expect(handover[0]?.collectUntil).toBe(20_000)
+
+      const second = createHarness({ collect: { privateMs: 0, groupMs: 10_000 } })
+      expect(await second.manager.adoptHandover(handover)).toBe(1)
+      expect(second.manager.snapshot()[0]?.buffered).toBe(1)
+
+      await vi.advanceTimersByTimeAsync(10_000)
+      expect(second.prompts).toHaveLength(1)
+      expect(second.prompts[0]?.text).toBe("第一条")
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })
 

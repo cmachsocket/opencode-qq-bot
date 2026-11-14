@@ -402,7 +402,7 @@ export type FieldType =
 - 顶栏：连接状态、版本、运行时长、「需重启生效」提示。
 - Tab：配置 / 会话覆盖 / 工具档案 / 状态 / 日志 / 追踪。
 - 配置页：左侧分组导航（`napcat`、`access`、`proactive`、`wake`、`reply`、`trace`、`reminder`、`keepAlive`、`history`、`rateLimit`、`sensitive`、`events`、`log`、`media`、`diary`、`panel`），右侧渲染当前分组的表单；每字段一行显示「当前值 / 来源（文件或默认）/ 说明」。
-- 会话覆盖页：列出 `chat-overrides.json` 里的每个聊天键（`group:100` / `private:200`）与它的覆盖项，可新增、修改、删除；可编辑字段严格等于后端 `ChatOverride` 的八个字段（`wake`、`wake.prefixes`、`proactive.enabled`、`proactive.startProbability`、`agent`、`model`、`soulPath`、`soulName`），不多不少。新增与修改分开：新增只提交真正填了的字段，不会把同名已有记录清空。
+- 会话覆盖页：列出 `chat-overrides.json` 里的每个聊天键（`group:100` / `private:200`）与它的覆盖项，可新增、修改、删除；可编辑字段严格等于后端 `ChatOverride` 的十个字段（`wake`、`wake.prefixes`、`proactive.enabled`、`proactive.startProbability`、`collect.privateMs`、`collect.groupMs`、`agent`、`model`、`soulPath`、`soulName`），不多不少。新增与修改分开：新增只提交真正填了的字段，不会把同名已有记录清空。
 - 工具档案页：编辑 `tool-profiles.json` 的默认配置档、各档的 `allow` / `deny` 工具模式列表，以及聊天键到配置档的映射；内置档（`chat`、`readonly`、`proactive`、`admin`）标出来且不可删。删除一个档时会顺带解掉引用它的聊天映射与默认档。
 - 两个新页的下拉框都有「跟随默认」一项，可以选回全局默认（唤醒方式、主动说话开关、默认工具档）。
 - 状态页：连接概览卡片、会话表、限流用量条、追踪时间线、日记卡片、当前 agent（只读，来自 `opencode.json`）。

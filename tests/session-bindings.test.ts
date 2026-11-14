@@ -120,6 +120,8 @@ function createWorld() {
       ...DEFAULT_CONFIG,
       napcat: { url: "ws://127.0.0.1:3001" },
       access: accessConfig({ groups: [100, 200] }),
+      // 默认关掉消息收集窗口：这里测的是绑定与交接，窗口另有专门的用例。
+      collect: { privateMs: 0, groupMs: 0 },
     }
     return {
       manager: new SessionManager(

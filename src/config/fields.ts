@@ -65,6 +65,7 @@ export const CONFIG_GROUPS: readonly ConfigGroup[] = [
   { id: "access", label: "准入" },
   { id: "proactive", label: "主动说话" },
   { id: "wake", label: "唤醒" },
+  { id: "collect", label: "消息收集" },
   { id: "reply", label: "回复" },
   { id: "rateLimit", label: "出站限流" },
   { id: "sensitive", label: "敏感拦截" },
@@ -347,6 +348,30 @@ export const CONFIG_FIELDS: readonly ConfigField[] = [
     label: "忽略 @他人",
     description: "群里第一个 @ 指向别人时不唤醒机器人",
     default: true,
+    hot: true,
+  },
+
+  // 消息收集
+  {
+    path: "collect.privateMs",
+    group: "collect",
+    type: "number",
+    label: "私聊收集窗口（毫秒）",
+    description: "私聊收到消息后先攒一会儿再一起回复，0 表示立即回复",
+    default: 10_000,
+    min: 0,
+    step: 100,
+    hot: true,
+  },
+  {
+    path: "collect.groupMs",
+    group: "collect",
+    type: "number",
+    label: "群聊收集窗口（毫秒）",
+    description: "群聊收到消息后先攒一会儿再一起回复，0 表示立即回复",
+    default: 60_000,
+    min: 0,
+    step: 100,
     hot: true,
   },
 

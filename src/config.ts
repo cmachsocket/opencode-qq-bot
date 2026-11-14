@@ -11,6 +11,7 @@ import type { ParsedConfig, QQBotConfig } from "./config/types"
 
 export type {
   AccessConfig,
+  CollectConfig,
   DiaryConfig,
   DiaryPush,
   EventsConfig,

@@ -1,7 +1,7 @@
 {
   "chats": {
-    "group:123456789": { "wake": "mention" },
+    "group:123456789": { "wake": "mention", "collect.groupMs": 30000 },
     "group:987654321": { "wake": "prefix", "wake.prefixes": ["bot,"] },
-    "private:135792468": { "proactive.enabled": false }
+    "private:135792468": { "proactive.enabled": false, "collect.privateMs": 5000 }
   }
 }

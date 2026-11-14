@@ -15,7 +15,7 @@ import type { ModelRef, QQBotConfig } from "../config"
 import type { BotHome } from "../home"
 import type { Logger } from "../logger"
 import type { HistoryPosition, HistoryProvider } from "../naplink/history"
-import type { ChatOverrides } from "../overrides"
+import { collectWindowMs, type ChatOverrides } from "../overrides"
 import type { Tracer } from "../trace"
 import { acquireStateLock, type StateLock } from "../state-lock"
 import { limitFiles, type PromptFile } from "../naplink/render"
@@ -289,6 +289,10 @@ interface ChatState {
   replyAllowed: boolean
   /** 批准发送的理由，仅供日志与排查。 */
   replyReason?: string
+  /** 消息收集窗口的截止时间（毫秒）；窗口期间消息先攒着，到点再一起发。 */
+  collectUntil?: number
+  /** 收集窗口的定时器：到点后关闭窗口并投递攒下的消息。 */
+  collectTimer?: ReturnType<typeof setTimeout>
 }
 
 /** 插件存储接受的值类型。 */
@@ -336,6 +340,8 @@ export interface HandoverState {
   pending?: Turn
   /** 当前失败批次已经重试的次数。 */
   pendingAttempts: number
+  /** 消息收集窗口的截止时间（毫秒）；还没到点就由新实例接着等。 */
+  collectUntil?: number
 }
 
 /** 角色权限高低：数字越小权限越低。 */
@@ -1045,6 +1051,7 @@ export class SessionManager {
         buffer: [...state.buffer],
         ...(state.pending ? { pending: state.pending } : {}),
         pendingAttempts: state.pendingAttempts,
+        ...(state.collectUntil !== undefined ? { collectUntil: state.collectUntil } : {}),
       })
     }
     return handover
@@ -1108,6 +1115,10 @@ export class SessionManager {
       state.buffer = [...item.buffer]
       state.pending = item.pending
       state.pendingAttempts = item.pendingAttempts
+      // 收集窗口还没到点：新实例接着等，别让这批消息提前发出去。
+      if (item.collectUntil !== undefined && item.collectUntil > Date.now()) {
+        this.startCollectWindow(state, item.collectUntil)
+      }
       // 缓存里的消息已经收过，补历史时别再重复一遍。
       for (const turn of state.buffer) {
         if (turn.source) this.rememberIncoming(item.target, turn.source.id)
@@ -1139,6 +1150,7 @@ export class SessionManager {
     state.pending = undefined
     state.pendingAttempts = 0
     state.idleAt = Date.now()
+    this.clearCollectWindow(state)
     this.resetTurnState(state, "resetTarget")
     return { sessionID, interrupted }
   }
@@ -1161,6 +1173,7 @@ export class SessionManager {
       state.buffer = []
       state.pending = undefined
       state.pendingAttempts = 0
+      this.clearCollectWindow(state)
       let interrupted = false
       const sessionID = state.sessionID
       if (sessionID && (await this.sessionRunning(sessionID))) {
@@ -1282,6 +1295,8 @@ export class SessionManager {
     busy: boolean
     buffered: number
     pending: boolean
+    /** 消息收集窗口的截止时间（毫秒）；有值说明还在攒消息。 */
+    collectUntil?: number
   }> {
     return [...this.states.values()]
       .map((state) => ({
@@ -1290,6 +1305,7 @@ export class SessionManager {
         busy: state.current !== undefined,
         buffered: state.buffer.length,
         pending: state.pending !== undefined,
+        ...(state.collectUntil !== undefined ? { collectUntil: state.collectUntil } : {}),
       }))
       .sort((left, right) => targetKey(left.target).localeCompare(targetKey(right.target)))
   }
@@ -1473,8 +1489,71 @@ export class SessionManager {
     const queued = turn.id ? turn : { ...turn, id: SessionMessage.ID.create() }
     await this.targetMutex(target).runExclusive(async () => {
       this.pushBuffered(state, queued)
+      await this.openCollectWindow(state)
       await this.drain(state)
     })
+  }
+
+  /**
+   * 打开消息收集窗口：窗口期间的消息先攒着，到点再合并成一轮发出去。
+   *
+   * 窗口从第一条消息开始计时，后续消息不重置；聊天自己的覆盖优先于全局配置。
+   * 窗口为 0 表示不收集，收到消息就按原来的节奏走。
+   */
+  private async openCollectWindow(state: ChatState): Promise<void> {
+    if (state.collectUntil !== undefined) return
+    const override = await this.overrides?.for(state.target)
+    const window = collectWindowMs(override ?? {}, state.target, this.config.collect)
+    if (window <= 0) return
+    this.startCollectWindow(state, Date.now() + window)
+    this.logger.info(`${targetLabel(state.target)} 消息收集窗口 ${window}ms 已开启`)
+  }
+
+  /** 开启收集窗口：到点后关闭窗口，把攒下的消息一起投出去。 */
+  private startCollectWindow(state: ChatState, deadline: number): void {
+    state.collectUntil = deadline
+    const timer = setTimeout(
+      () => {
+        state.collectTimer = undefined
+        void this.closeCollectWindow(state, deadline)
+      },
+      Math.max(0, deadline - Date.now()),
+    )
+    unrefTimer(timer)
+    state.collectTimer = timer
+  }
+
+  /** 收集窗口到点：关掉窗口，把攒下的消息一起投出去。 */
+  private async closeCollectWindow(state: ChatState, deadline: number): Promise<void> {
+    try {
+      await this.targetMutex(state.target).runExclusive(async () => {
+        // 窗口已经被换过（重置、停止或又开了一个）：这一批交给新窗口处理。
+        if (state.collectUntil !== deadline) return
+        this.clearCollectTimer(state)
+        state.collectUntil = undefined
+        await this.drain(state)
+      })
+    } catch (error) {
+      this.logger.warn(`${targetLabel(state.target)} 收集窗口到期后投递失败`, error)
+    }
+  }
+
+  /** 关掉收集窗口的定时器；已经开了的窗口不受影响。 */
+  private clearCollectTimer(state: ChatState): void {
+    if (!state.collectTimer) return
+    clearTimeout(state.collectTimer)
+    state.collectTimer = undefined
+  }
+
+  /** 丢掉收集窗口：攒着的消息不再等窗口，直接按正常节奏走。 */
+  private clearCollectWindow(state: ChatState): void {
+    this.clearCollectTimer(state)
+    state.collectUntil = undefined
+  }
+
+  /** 消息收集窗口是否还开着。 */
+  private collectOpen(state: ChatState): boolean {
+    return state.collectUntil !== undefined && state.collectUntil > Date.now()
   }
 
   private pushBuffered(state: ChatState, turn: Turn): void {
@@ -1573,6 +1652,14 @@ export class SessionManager {
       }
     }
     if (state.buffer.length === 0) return
+    // 收集窗口还没到点：先攒着，等窗口关闭再把这一批一起发出去。
+    // 这个闸门与上游忙不忙无关：窗口就是用来拖住回复的。
+    if (this.collectOpen(state)) {
+      this.logger.debug(
+        `${targetLabel(state.target)} 消息收集窗口未到，保留 ${state.buffer.length} 条消息`,
+      )
+      return
+    }
     if (!force && state.sessionID && this.verifiedSessions.has(state.sessionID)) {
       if (await this.sessionRunning(state.sessionID)) {
         this.logger.info(
@@ -1889,6 +1976,7 @@ export class SessionManager {
       clearTimeout(this.watchdog)
       this.watchdog = undefined
     }
+    for (const state of this.states.values()) this.clearCollectTimer(state)
   }
 
   /** 会话状态变为 idle 后，把缓存的消息合并成新的一轮投递。 */

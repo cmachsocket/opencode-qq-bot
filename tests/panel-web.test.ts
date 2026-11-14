@@ -63,6 +63,8 @@ describe("独立配置页面", () => {
       "wake.prefixes",
       "proactive.enabled",
       "proactive.startProbability",
+      "collect.privateMs",
+      "collect.groupMs",
       "agent",
       "model",
       "soulPath",

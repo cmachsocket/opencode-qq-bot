@@ -65,6 +65,8 @@ const CHAT_OVERRIDE_FIELDS = [
   "wake.prefixes",
   "proactive.enabled",
   "proactive.startProbability",
+  "collect.privateMs",
+  "collect.groupMs",
   "agent",
   "model",
   "soulPath",

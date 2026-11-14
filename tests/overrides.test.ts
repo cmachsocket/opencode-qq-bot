@@ -5,7 +5,9 @@ import { join } from "node:path"
 import {
   chatMuted,
   ChatOverrides,
+  collectWindowMs,
   defaultChatOverrides,
+  DEFAULT_COLLECT_POLICY,
   DEFAULT_WAKE_POLICY,
   describeOverride,
   parseChatOverrides,
@@ -33,6 +35,33 @@ const ctx = (partial: Partial<WakeContext> = {}): WakeContext => ({
   replyToSelf: false,
   text: "",
   ...partial,
+})
+
+describe("collectWindowMs", () => {
+  it("覆盖优先于全局配置", () => {
+    const policy = { privateMs: 10_000, groupMs: 60_000 }
+    expect(collectWindowMs({}, priv(200), policy)).toBe(10_000)
+    expect(collectWindowMs({}, group(100), policy)).toBe(60_000)
+    expect(collectWindowMs({ "collect.privateMs": 500 }, priv(200), policy)).toBe(500)
+    expect(collectWindowMs({ "collect.groupMs": 500 }, group(100), policy)).toBe(500)
+  })
+
+  it("私聊不看群聊的窗口，群聊不看私聊的窗口", () => {
+    const policy = { privateMs: 10_000, groupMs: 60_000 }
+    expect(collectWindowMs({ "collect.groupMs": 500 }, priv(200), policy)).toBe(10_000)
+    expect(collectWindowMs({ "collect.privateMs": 500 }, group(100), policy)).toBe(60_000)
+  })
+
+  it("0 表示立即回复", () => {
+    const policy = { privateMs: 10_000, groupMs: 60_000 }
+    expect(collectWindowMs({ "collect.privateMs": 0 }, priv(200), policy)).toBe(0)
+    expect(collectWindowMs({}, priv(200), { privateMs: 0, groupMs: 0 })).toBe(0)
+  })
+
+  it("没给策略时用全局默认值", () => {
+    expect(collectWindowMs({}, priv(200))).toBe(DEFAULT_COLLECT_POLICY.privateMs)
+    expect(collectWindowMs({}, group(100))).toBe(DEFAULT_COLLECT_POLICY.groupMs)
+  })
 })
 
 describe("parseChatOverrides", () => {
@@ -73,6 +102,45 @@ describe("parseChatOverrides", () => {
       warn,
     )
     expect(file.chats["group:100"]).toEqual({})
+    expect(warn).toHaveBeenCalledTimes(2)
+  })
+
+  it("读取消息收集窗口", () => {
+    const warn = vi.fn()
+    const file = parseChatOverrides(
+      {
+        chats: {
+          "group:100": { "collect.groupMs": 30_000 },
+          "private:200": { "collect.privateMs": 5_000 },
+        },
+      },
+      warn,
+    )
+    expect(file.chats["group:100"]).toEqual({ "collect.groupMs": 30_000 })
+    expect(file.chats["private:200"]).toEqual({ "collect.privateMs": 5_000 })
+    expect(warn).not.toHaveBeenCalled()
+  })
+
+  it("收集窗口写错时只忽略这一项", () => {
+    const warn = vi.fn()
+    const file = parseChatOverrides({ chats: { "group:100": { "collect.groupMs": -1 } } }, warn)
+    expect(file.chats["group:100"]).toEqual({})
+    expect(warn).toHaveBeenCalledTimes(1)
+  })
+
+  it("收集窗口与聊天类型对不上时忽略并告警", () => {
+    const warn = vi.fn()
+    const file = parseChatOverrides(
+      {
+        chats: {
+          "group:100": { "collect.privateMs": 5_000 },
+          "private:200": { "collect.groupMs": 5_000 },
+        },
+      },
+      warn,
+    )
+    expect(file.chats["group:100"]).toEqual({})
+    expect(file.chats["private:200"]).toEqual({})
     expect(warn).toHaveBeenCalledTimes(2)
   })
 
@@ -390,6 +458,15 @@ describe("describeOverride", () => {
     )
     expect(describeOverride({ soulName: "b.txt" })).toBe(
       "唤醒 mention（默认），主动说话跟随白名单，角色设定 b.txt",
+    )
+  })
+
+  it("说明消息收集窗口", () => {
+    expect(describeOverride({}, group(100))).toBe(
+      "唤醒 mention（默认），主动说话跟随白名单，收集 60000ms",
+    )
+    expect(describeOverride({ "collect.groupMs": 0 }, group(100))).toBe(
+      "唤醒 mention（默认），主动说话跟随白名单，收集 立即",
     )
   })
 })

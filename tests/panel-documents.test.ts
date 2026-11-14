@@ -147,6 +147,16 @@ describe("会话覆盖", () => {
     expect(live?.chats["private:200"]?.["proactive.enabled"]).toBe(true)
   })
 
+  it("收集窗口也能从面板保存", async () => {
+    const response = await put("/api/chat-overrides", {
+      chats: { "group:100": { "collect.groupMs": 30_000 } },
+    })
+    expect(response.status).toBe(200)
+    expect(await readJson(join(root, "chat-overrides.json"))).toEqual({
+      chats: { "group:100": { "collect.groupMs": 30_000 } },
+    })
+  })
+
   it("聊天键不合法时给出具体到字段的原因", async () => {
     const response = await put("/api/chat-overrides", { chats: { abc: { wake: "all" } } })
     expect(response.status).toBe(400)

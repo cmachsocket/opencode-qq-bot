@@ -57,6 +57,8 @@ export interface StatusSnapshot {
     wake?: string
     /** 是否允许主动说话。 */
     proactive?: boolean
+    /** 是否正在收集消息（窗口还没到点）。 */
+    collecting?: boolean
   }>
   /** 出站限流用量。 */
   rateLimit: Array<{
@@ -119,6 +121,8 @@ interface SessionRow {
   wake?: string
   /** 是否允许主动说话。 */
   proactive?: boolean
+  /** 是否正在收集消息（窗口还没到点）。 */
+  collecting?: boolean
 }
 
 /**
@@ -197,6 +201,7 @@ async function collectSessions(runtime: PanelRuntime): Promise<SessionRow[]> {
       ...(override?.["proactive.enabled"] !== undefined
         ? { proactive: override["proactive.enabled"] }
         : {}),
+      ...(item.collectUntil !== undefined ? { collecting: true } : {}),
     })
   }
   return result

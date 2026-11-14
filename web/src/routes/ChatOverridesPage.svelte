@@ -30,6 +30,8 @@
     { path: "wake.prefixes", label: "唤醒前缀", hint: "wake 为 prefix 时用，留空表示不覆盖" },
     { path: "proactive.enabled", label: "主动说话", hint: "留空表示跟随全局白名单" },
     { path: "proactive.startProbability", label: "主动概率", hint: "0 到 1 之间的数字" },
+    { path: "collect.privateMs", label: "私聊收集窗口（毫秒）", hint: "留空表示跟随全局，0 表示立即回复" },
+    { path: "collect.groupMs", label: "群聊收集窗口（毫秒）", hint: "留空表示跟随全局，0 表示立即回复" },
     { path: "agent", label: "agent", hint: "覆盖这个聊天用的 agent" },
     { path: "model", label: "模型", hint: "provider/model[/variant]" },
     { path: "soulPath", label: "角色设定路径", hint: "覆盖 soulPath" },
@@ -109,6 +111,14 @@
         override?.["proactive.startProbability"] === undefined
           ? ""
           : String(override["proactive.startProbability"]),
+      "collect.privateMs":
+        override?.["collect.privateMs"] === undefined
+          ? ""
+          : String(override["collect.privateMs"]),
+      "collect.groupMs":
+        override?.["collect.groupMs"] === undefined
+          ? ""
+          : String(override["collect.groupMs"]),
       agent: override?.agent ?? "",
       model: modelText(override?.model),
       soulPath: override?.soulPath ?? "",
@@ -131,6 +141,8 @@
       "wake.prefixes": [],
       "proactive.enabled": "",
       "proactive.startProbability": "",
+      "collect.privateMs": "",
+      "collect.groupMs": "",
       agent: "",
       model: "",
       soulPath: "",
@@ -159,6 +171,11 @@
       return null
     }
     if (path === "proactive.startProbability") {
+      if (value === "" || value === undefined || value === null) return null
+      const parsed = Number(value)
+      return Number.isFinite(parsed) ? parsed : String(value)
+    }
+    if (path === "collect.privateMs" || path === "collect.groupMs") {
       if (value === "" || value === undefined || value === null) return null
       const parsed = Number(value)
       return Number.isFinite(parsed) ? parsed : String(value)
@@ -276,6 +293,15 @@
     if (Array.isArray(value)) return value.length > 0 ? value.join(" / ") : "-"
     return String(value)
   }
+
+  /** 收集窗口的摘要文本。 */
+  function collectSummary(override: ChatOverride): string {
+    const parts: string[] = []
+    if (override["collect.privateMs"] !== undefined)
+      parts.push(`私 ${override["collect.privateMs"]}ms`)
+    if (override["collect.groupMs"] !== undefined) parts.push(`群 ${override["collect.groupMs"]}ms`)
+    return parts.length > 0 ? parts.join(" / ") : "-"
+  }
 </script>
 
 <div class="flex flex-col gap-4">
@@ -322,6 +348,7 @@
               <Table.Head>前缀</Table.Head>
               <Table.Head>主动</Table.Head>
               <Table.Head>概率</Table.Head>
+              <Table.Head>收集</Table.Head>
               <Table.Head>agent</Table.Head>
               <Table.Head>模型</Table.Head>
               <Table.Head>角色设定</Table.Head>
@@ -342,6 +369,7 @@
                       : "关"}
                 </Table.Cell>
                 <Table.Cell>{summary(override["proactive.startProbability"])}</Table.Cell>
+                <Table.Cell class="text-xs">{collectSummary(override)}</Table.Cell>
                 <Table.Cell class="text-xs">{summary(override.agent)}</Table.Cell>
                 <Table.Cell class="text-xs">{summary(modelText(override.model))}</Table.Cell>
                 <Table.Cell class="text-xs">
@@ -443,6 +471,15 @@
                   min="0"
                   max="1"
                   step="0.05"
+                  value={String(draft[field.path] ?? "")}
+                  oninput={(event) => (draft[field.path] = event.currentTarget.value)}
+                />
+              {:else if field.path.startsWith("collect.")}
+                <Input
+                  id={`chat-${field.path}`}
+                  type="number"
+                  min="0"
+                  step="100"
                   value={String(draft[field.path] ?? "")}
                   oninput={(event) => (draft[field.path] = event.currentTarget.value)}
                 />

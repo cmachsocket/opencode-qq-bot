@@ -25,6 +25,11 @@
 
 ### Added
 
+- 消息收集窗口：收到消息不立刻回复，先开一个窗口把后续消息攒在一起，到点后合并成一轮发出去。
+  私聊默认 10 秒、群聊默认 60 秒，分别由 `collect.privateMs` 与 `collect.groupMs` 设置，
+  填 `0` 表示不收集、收到消息就立刻回复；窗口从第一条消息开始计时，后续消息不把窗口往后推。
+  每个聊天也能在 `chat-overrides.json` 里用同名键（`collect.privateMs` / `collect.groupMs`）单独覆盖，
+  写错类型或与聊天类型对不上时只忽略这一项并告警。
 - `panel.tokenRevoked`：吊销面板访问令牌。设为 `true` 后旧令牌与已登录会话立即作废，
   面板不再对外服务，也不会再自动补发新令牌；改回 `false` 即可恢复。
 - `soul.allowedPaths`：角色设定允许读取的目录列表，默认只有机器人工作目录与工作目录下的 `souls/`。
@@ -36,7 +41,8 @@
 - 面板新增两个独立配置页，不用再手改 JSON：
   - 「会话覆盖」页编辑 `chat-overrides.json`：按聊天键（`group:100` / `private:200`）列出覆盖项，
     可新增、修改、删除；可编辑字段与后端 `ChatOverride` 一一对应（`wake`、`wake.prefixes`、
-    `proactive.enabled`、`proactive.startProbability`、`agent`、`model`、`soulPath`、`soulName`）。
+    `proactive.enabled`、`proactive.startProbability`、`collect.privateMs`、`collect.groupMs`、
+    `agent`、`model`、`soulPath`、`soulName`）。
   - 「工具档案」页编辑 `tool-profiles.json`：改默认配置档、各档的 `allow` / `deny` 工具模式列表，
     以及聊天键到配置档的映射；内置档（`chat`、`readonly`、`proactive`、`admin`）标出来且不可删。
   - 接口：`GET/PUT /api/chat-overrides`、`GET/PUT /api/tool-profiles`。

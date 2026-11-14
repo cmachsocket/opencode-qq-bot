@@ -41,6 +41,14 @@ export interface WakeConfig {
   ignoreAtOthers: boolean
 }
 
+/** 消息收集窗口配置：收到消息后先攒一会儿，再合并成一轮一起回复。 */
+export interface CollectConfig {
+  /** 私聊的收集窗口（毫秒），0 表示收到消息立即回复。 */
+  privateMs: number
+  /** 群聊的收集窗口（毫秒），0 表示收到消息立即回复。 */
+  groupMs: number
+}
+
 /** 回复节奏配置：怎么拆段、怎么发。 */
 export interface ReplyConfig {
   /** 分段之间的最小间隔（毫秒）。 */
@@ -216,6 +224,7 @@ export interface QQBotConfig {
   reuseSession: boolean
   proactive: ProactiveConfig
   wake: WakeConfig
+  collect: CollectConfig
   reply: ReplyConfig
   trace: TraceConfig
   reminder: ReminderConfig

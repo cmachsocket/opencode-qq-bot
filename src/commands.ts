@@ -105,6 +105,7 @@ function sessionLine(manager: SessionManager, target: ChatTarget): string {
   parts.push(entry.busy ? "执行中" : "空闲")
   if (entry.buffered > 0) parts.push(`缓存 ${entry.buffered} 条`)
   if (entry.pending) parts.push("有待重试批次")
+  if (entry.collectUntil !== undefined) parts.push("收集消息中")
   return `${targetLabel(target)}：${parts.join("，")}`
 }
 
@@ -137,7 +138,9 @@ async function runStatus(context: CommandContext): Promise<string> {
   const lines: string[] = []
   for (const target of targets) {
     const override = await overrides.for(target)
-    lines.push(`${sessionLine(manager, target)}，${describeOverride(override)}`)
+    lines.push(
+      `${sessionLine(manager, target)}，${describeOverride(override, target, config.collect)}`,
+    )
   }
   return ["QQ 机器人状态", ...lines].join("\n")
 }

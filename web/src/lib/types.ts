@@ -105,6 +105,10 @@ export interface ChatOverride {
   "proactive.enabled"?: boolean
   /** 主动说话的触发概率。 */
   "proactive.startProbability"?: number
+  /** 私聊的消息收集窗口（毫秒）。 */
+  "collect.privateMs"?: number
+  /** 群聊的消息收集窗口（毫秒）。 */
+  "collect.groupMs"?: number
   /** 覆盖 agent。 */
   agent?: string
   /** 覆盖模型。 */

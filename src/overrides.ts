@@ -1,7 +1,13 @@
 import { readFile, stat } from "node:fs/promises"
 import { join, resolve } from "node:path"
 import { type ChatTarget, targetKey } from "./chat"
-import { DEFAULT_CONFIG, parseModelRef, type ModelRef, type WakeConfig } from "./config"
+import {
+  DEFAULT_CONFIG,
+  parseModelRef,
+  type CollectConfig,
+  type ModelRef,
+  type WakeConfig,
+} from "./config"
 import type { Logger } from "./logger"
 import { safeMap } from "./safe-object"
 import { SOUL_DIR, soulRoots, withinRoots } from "./session/soul-guard"
@@ -38,6 +44,12 @@ export const DEFAULT_WAKE_POLICY: WakePolicy = {
   prefixes: [...DEFAULT_CONFIG.wake.prefixes],
 }
 
+/** 全局收集窗口策略：与配置项 `collect` 同构。 */
+export type CollectPolicy = CollectConfig
+
+/** 内置的全局收集窗口策略，取自配置默认值。 */
+export const DEFAULT_COLLECT_POLICY: CollectPolicy = { ...DEFAULT_CONFIG.collect }
+
 /** 唤醒判定的结果。 */
 export interface WakeDecision {
   /** 本轮是否必须回复。 */
@@ -70,6 +82,10 @@ export interface ChatOverride {
   "proactive.enabled"?: boolean
   /** 这个聊天单次心跳的触发概率，对应全局 `proactive.startProbability`。 */
   "proactive.startProbability"?: number
+  /** 私聊的消息收集窗口（毫秒），对应全局 `collect.privateMs`。 */
+  "collect.privateMs"?: number
+  /** 群聊的消息收集窗口（毫秒），对应全局 `collect.groupMs`。 */
+  "collect.groupMs"?: number
   /** 覆盖该聊天使用的 OpenCode agent。 */
   agent?: string
   /** 覆盖该聊天使用的模型，格式 `provider/model[/variant]`。 */
@@ -130,6 +146,25 @@ function soulNameAllowed(value: string, options: ChatOverrideParseOptions): bool
   if (!options.home) return true
   const roots = soulRoots({ home: options.home, allowedPaths: options.allowedPaths })
   return withinRoots(join(options.home, SOUL_DIR, value), roots)
+}
+
+/** 从聊天键判断聊天类型：键形不对就返回 undefined。 */
+function chatKindOf(key: string): ChatTarget["kind"] | undefined {
+  if (key.startsWith("group:")) return "group"
+  if (key.startsWith("private:")) return "private"
+  return undefined
+}
+
+/** 解析收集窗口的毫秒数：不是 0 或更大的数字就返回 undefined。 */
+function parseCollectMs(raw: unknown): number | undefined {
+  const value =
+    typeof raw === "number"
+      ? raw
+      : typeof raw === "string" && raw.trim()
+        ? Number(raw.trim())
+        : Number.NaN
+  if (!Number.isFinite(value) || value < 0) return undefined
+  return Math.floor(value)
 }
 
 /**
@@ -232,6 +267,26 @@ export function parseChatOverrides(
         warn(`会话覆盖 ${key} 的 soulName 超出允许的目录，已忽略`)
       } else {
         override.soulName = value
+      }
+    }
+    if (record["collect.privateMs"] !== undefined) {
+      const value = parseCollectMs(record["collect.privateMs"])
+      if (value === undefined) {
+        warn(`会话覆盖 ${key} 的 collect.privateMs 必须是 0 或更大的毫秒数，已忽略`)
+      } else if (chatKindOf(key) === "group") {
+        warn(`会话覆盖 ${key} 是群聊，collect.privateMs 不适用，已忽略`)
+      } else {
+        override["collect.privateMs"] = value
+      }
+    }
+    if (record["collect.groupMs"] !== undefined) {
+      const value = parseCollectMs(record["collect.groupMs"])
+      if (value === undefined) {
+        warn(`会话覆盖 ${key} 的 collect.groupMs 必须是 0 或更大的毫秒数，已忽略`)
+      } else if (chatKindOf(key) === "private") {
+        warn(`会话覆盖 ${key} 是私聊，collect.groupMs 不适用，已忽略`)
+      } else {
+        override["collect.groupMs"] = value
       }
     }
     if (override.wake === "prefix" && !override["wake.prefixes"]?.length) {
@@ -358,8 +413,35 @@ export function proactiveAllowed(
   return list.includes(target.id)
 }
 
+/**
+ * 这个聊天实际生效的消息收集窗口（毫秒）。
+ *
+ * 聊天自己写的覆盖优先，没写就用全局的。私聊看 `collect.privateMs`，
+ * 群聊看 `collect.groupMs`。0 表示不收集：收到消息就立刻回复。
+ */
+export function collectWindowMs(
+  override: ChatOverride,
+  target: ChatTarget,
+  policy: CollectPolicy = DEFAULT_COLLECT_POLICY,
+): number {
+  const own = target.kind === "group" ? override["collect.groupMs"] : override["collect.privateMs"]
+  const fallback = target.kind === "group" ? policy.groupMs : policy.privateMs
+  const value = typeof own === "number" ? own : fallback
+  if (!Number.isFinite(value) || value <= 0) return 0
+  return Math.floor(value)
+}
+
+/** 收集窗口的简明写法：0 表示立即回复。 */
+function describeCollectMs(ms: number): string {
+  return ms > 0 ? `${ms}ms` : "立即"
+}
+
 /** 覆盖配置的简明描述，给 `/status` 看。 */
-export function describeOverride(override: ChatOverride): string {
+export function describeOverride(
+  override: ChatOverride,
+  target?: ChatTarget,
+  policy: CollectPolicy = DEFAULT_COLLECT_POLICY,
+): string {
   const parts: string[] = []
   parts.push(override.wake ? `唤醒 ${override.wake}` : "唤醒 mention（默认）")
   if (override.wake === "prefix") {
@@ -380,5 +462,12 @@ export function describeOverride(override: ChatOverride): string {
   if (override.model) parts.push(`模型 ${override.model.providerID}/${override.model.id}`)
   if (override.soulPath) parts.push(`角色设定 ${override.soulPath}`)
   else if (override.soulName) parts.push(`角色设定 ${override.soulName}`)
+  if (target) {
+    parts.push(`收集 ${describeCollectMs(collectWindowMs(override, target, policy))}`)
+  } else if (override["collect.privateMs"] !== undefined) {
+    parts.push(`私聊收集 ${describeCollectMs(override["collect.privateMs"])}`)
+  } else if (override["collect.groupMs"] !== undefined) {
+    parts.push(`群聊收集 ${describeCollectMs(override["collect.groupMs"])}`)
+  }
   return parts.join("，")
 }
