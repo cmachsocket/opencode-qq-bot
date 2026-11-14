@@ -1,9 +1,17 @@
-import { readFile, stat } from "node:fs/promises"
+import { mkdir, readFile, stat } from "node:fs/promises"
+import { basename, dirname, join } from "node:path"
 import { parseTargetKey } from "../chat"
-import { backupFile, writeJsonAtomic } from "../fs/atomic"
+import { backupFile, DIR_MODE, writeJsonAtomic } from "../fs/atomic"
 import { knownSecrets } from "../known-secrets"
-import { parseChatOverrides, resolveChatOverridesPath } from "../overrides"
+import {
+  parseChatOverrides,
+  resolveChatOverridesPath,
+  type ChatOverride,
+  type ChatOverrideParseOptions,
+} from "../overrides"
 import { maskKnownSecrets } from "../sensitive"
+import { copyToSafeMap, hasKey, isSafeKey, safeMap } from "../safe-object"
+import { acquireStateLock } from "../state-lock"
 import { defaultToolPolicy, parseToolPolicy, resolveToolProfilesPath } from "../tools/policy"
 import type { PanelRuntime } from "./runtime"
 
@@ -75,6 +83,19 @@ const CHAT_OVERRIDE_KEYS = ["chats"] as const
 /** 工具配置文件里允许出现的顶层字段。 */
 const TOOL_POLICY_KEYS = ["defaultProfile", "profiles", "chats"] as const
 
+/** 保存文档时的锁重试参数。 */
+const LOCK_RETRIES = { retries: 10, factor: 1.5, minTimeout: 20, maxTimeout: 200 }
+
+/**
+ * 配置档名字是否可用。
+ *
+ * 原型上的属性名（`__proto__` 之类）也要挡掉：拿它们索引普通对象会命中
+ * `Object.prototype`，「这个档存在吗」这类判断永远为真。
+ */
+function isProfileName(name: string): boolean {
+  return isSafeKey(name) && PROFILE_NAME.test(name)
+}
+
 /** 判断是不是普通对象（数组与 null 都不算）。 */
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value)
@@ -118,7 +139,14 @@ function maskDocument(
       const path = base ? `${base}.${key}` : key
       const masked = maskDocument(item, secrets, path, paths)
       if (masked.changed) changed = true
-      next[key] = masked.value
+      // 用 defineProperty 复制：`__proto__` 这类键走赋值会落到原型上，
+      // 键不再是自有属性，序列化时还会被丢掉，面板看到的内容就和磁盘对不上了。
+      Object.defineProperty(next, key, {
+        value: masked.value,
+        enumerable: true,
+        writable: true,
+        configurable: true,
+      })
     }
     return { value: next, changed }
   }
@@ -155,6 +183,39 @@ async function writeDocument(path: string, value: unknown): Promise<void> {
   await writeJsonAtomic(path, value)
 }
 
+/** 一次保存的结果：写成功、写不合法，或者锁被占用。 */
+type SaveOutcome<T> = { status: "saved"; result: T } | { status: "invalid" } | { status: "busy" }
+
+/**
+ * 在文件锁保护下读-改-写一个文档。
+ *
+ * 面板的保存是「读文件 → 合并 → 写回」：没有互斥的话两个并发请求会互相覆盖，
+ * 后写的拿自己的旧视图盖掉先写的改动，而且谁也不报错。
+ * 锁文件就放在文档旁边，两份文档各锁各的。
+ */
+async function withDocumentLock<T>(
+  path: string,
+  run: () => Promise<SaveOutcome<T>>,
+): Promise<SaveOutcome<T>> {
+  const lockPath = join(dirname(path), `.${basename(path)}.lock`)
+  await mkdir(dirname(lockPath), { recursive: true, mode: DIR_MODE })
+  const lock = await acquireStateLock(lockPath, { retries: LOCK_RETRIES })
+  if (!lock) return { status: "busy" }
+  try {
+    return await run()
+  } finally {
+    await lock.release()
+  }
+}
+
+/** 角色设定路径的边界选项：允许根来自配置。 */
+function soulParseOptions(runtime: PanelRuntime): ChatOverrideParseOptions {
+  return {
+    home: runtime.home.directory,
+    allowedPaths: runtime.config.soul?.allowedPaths ?? [],
+  }
+}
+
 /** 面板拿到的会话覆盖文件路径。 */
 export function chatOverridesPath(runtime: PanelRuntime): string {
   return resolveChatOverridesPath(runtime.config, runtime.home.directory)
@@ -170,7 +231,11 @@ export async function readChatOverrides(runtime: PanelRuntime): Promise<Document
   const path = chatOverridesPath(runtime)
   const { raw, exists } = await readJsonFile(path)
   const warnings: string[] = []
-  const value = parseChatOverrides(raw, (message) => warnings.push(message))
+  const value = parseChatOverrides(
+    raw,
+    (message) => warnings.push(message),
+    soulParseOptions(runtime),
+  )
   const secrets = knownSecrets(runtime.config)
   const maskedValue = maskView(value, secrets)
   const maskedFile = maskView(raw ?? null, secrets)
@@ -179,7 +244,8 @@ export async function readChatOverrides(runtime: PanelRuntime): Promise<Document
     exists,
     value: maskedValue.value,
     fileValue: maskedFile.value,
-    warnings,
+    // 告警去重：同一句话出现两次时，页面上不该挂两个一模一样的条目。
+    warnings: [...new Set(warnings)],
     masked: [...new Set([...maskedValue.masked, ...maskedFile.masked])],
   }
 }
@@ -198,7 +264,7 @@ export async function readToolProfiles(runtime: PanelRuntime): Promise<DocumentV
     exists,
     value: maskedValue.value,
     fileValue: maskedFile.value,
-    warnings,
+    warnings: [...new Set(warnings)],
     masked: [...new Set([...maskedValue.masked, ...maskedFile.masked])],
   }
 }
@@ -217,11 +283,6 @@ export async function saveChatOverrides(
   if (!isPlainObject(body)) {
     return { problems: [{ path: "", message: "请求体必须是一个 JSON 对象" }] }
   }
-  for (const key of Object.keys(body)) {
-    if (!(CHAT_OVERRIDE_KEYS as readonly string[]).includes(key)) {
-      problems.push({ path: key, message: "未知字段" })
-    }
-  }
   const patch = body.chats
   if (patch !== undefined && !isPlainObject(patch)) {
     problems.push({ path: "chats", message: "chats 必须是对象" })
@@ -229,65 +290,129 @@ export async function saveChatOverrides(
   if (problems.length > 0) return { problems }
 
   const path = chatOverridesPath(runtime)
-  const { raw } = await readJsonFile(path)
-  const base = isPlainObject(raw) && isPlainObject(raw.chats) ? { ...raw.chats } : {}
-  const chats = isPlainObject(patch) ? patch : {}
-  const warnings: string[] = []
+  const saved = await withDocumentLock(path, async () => {
+    const { raw } = await readJsonFile(path)
+    const source = isPlainObject(raw) ? raw : {}
+    // 文件里的其它顶层键原样保留：面板只管自己那几个字段，不该把别的抹掉。
+    const base = isPlainObject(source.chats) ? copyToSafeMap(source.chats) : safeMap()
+    const chats = isPlainObject(patch) ? patch : {}
+    const warnings: string[] = []
+    for (const key of Object.keys(body)) {
+      if (!(CHAT_OVERRIDE_KEYS as readonly string[]).includes(key)) {
+        warnings.push(`未知字段 ${key}，已忽略`)
+      }
+    }
 
-  for (const [key, entry] of Object.entries(chats)) {
-    const field = `chats.${key}`
-    if (!parseTargetKey(key)) {
-      problems.push({ path: field, message: "聊天键必须是 group:<群号> 或 private:<账号>" })
-      continue
-    }
-    if (entry === null) {
-      delete base[key]
-      continue
-    }
-    if (!isPlainObject(entry)) {
-      problems.push({ path: field, message: "会话覆盖必须是对象" })
-      continue
-    }
-    const current = isPlainObject(base[key]) ? { ...base[key] } : {}
-    for (const [name, value] of Object.entries(entry)) {
-      if (!(CHAT_OVERRIDE_FIELDS as readonly string[]).includes(name)) {
-        warnings.push(`会话覆盖 ${key} 的 ${name} 不是支持的字段，已忽略`)
+    for (const [key, entry] of Object.entries(chats)) {
+      const field = `chats.${key}`
+      if (!parseTargetKey(key)) {
+        problems.push({ path: field, message: "聊天键必须是 group:<群号> 或 private:<账号>" })
         continue
       }
-      if (value === null) {
-        delete current[name]
+      if (entry === null) {
+        if (!hasKey(base, key)) {
+          problems.push({ path: field, message: `会话覆盖 ${key} 不存在` })
+          continue
+        }
+        delete base[key]
         continue
       }
-      current[name] = value
+      if (!isPlainObject(entry)) {
+        problems.push({ path: field, message: "会话覆盖必须是对象" })
+        continue
+      }
+      const exists = hasKey(base, key)
+      const current = isPlainObject(base[key]) ? { ...base[key] } : {}
+      const known = Object.entries(entry).filter(([name]) =>
+        (CHAT_OVERRIDE_FIELDS as readonly string[]).includes(name),
+      )
+      for (const [name] of Object.entries(entry)) {
+        if (!(CHAT_OVERRIDE_FIELDS as readonly string[]).includes(name)) {
+          warnings.push(`会话覆盖 ${key} 的 ${name} 不是支持的字段，已忽略`)
+        }
+      }
+      if (known.length === 0) {
+        // 这一条没有能保存的字段：只告警，不动文件。
+        warnings.push(`会话覆盖 ${key} 没有可保存的字段，已忽略`)
+        continue
+      }
+      // 键本来就不存在，而这次提交的字段全是「删掉」：这是清空，不是新建。
+      if (!exists && known.every(([, value]) => value === null)) {
+        problems.push({ path: field, message: `会话覆盖 ${key} 不存在，不能靠清空字段来新建` })
+        continue
+      }
+      for (const [name, value] of known) {
+        if (value === null) {
+          delete current[name]
+          continue
+        }
+        current[name] = value
+      }
+      // 字段被删光了：这一条已经没有内容，等同于删掉它。
+      if (CHAT_OVERRIDE_FIELDS.every((name) => current[name] === undefined)) {
+        delete base[key]
+        continue
+      }
+      if (current.wake === "prefix") {
+        const prefixes = current["wake.prefixes"]
+        if (!Array.isArray(prefixes) || prefixes.length === 0) {
+          problems.push({
+            path: `chats.${key}.wake.prefixes`,
+            message: "选择 prefix 唤醒时必须写至少一个前缀",
+          })
+          continue
+        }
+      }
+      // 用解析器把这一条覆盖收拾干净：写错的字段只丢这一项，其余照常写进去。
+      const parsed = parseChatOverrides(
+        { chats: { [key]: current } },
+        (message) => {
+          warnings.push(message)
+        },
+        soulParseOptions(runtime),
+      )
+      const normalized: ChatOverride = { ...(parsed.chats[key] ?? {}) }
+      // 角色设定路径超出允许目录时解析器会丢掉它：文件里保留用户的原意，
+      // 运行时不会加载，告警里说清楚。
+      if (typeof current.soulPath === "string" && normalized.soulPath === undefined) {
+        normalized.soulPath = current.soulPath
+      }
+      if (typeof current.soulName === "string" && normalized.soulName === undefined) {
+        normalized.soulName = current.soulName
+      }
+      base[key] = normalized
     }
-    // 用解析器把这一条覆盖收拾干净：写错的字段只丢这一项，其余照常写进去。
-    const parsed = parseChatOverrides({ chats: { [key]: current } }, (message) => {
-      warnings.push(message)
-    })
-    base[key] = parsed.chats[key] ?? {}
-  }
-  if (problems.length > 0) return { problems }
+    if (problems.length > 0) return { status: "invalid" }
 
-  const next = { chats: base }
-  await writeDocument(path, next)
+    const next = copyToSafeMap(source)
+    delete next.chats
+    next.chats = base
+    await writeDocument(path, next)
 
-  const document = await readChatOverrides(runtime)
-  const expected = parseChatOverrides(next, () => undefined)
-  const live = await runtime.overrides?.current()
-  const applied = live ? JSON.stringify(live.chats) === JSON.stringify(expected.chats) : false
-  const restartRequired = runtime.overrides ? !applied : true
-  const note = restartRequired
-    ? "已保存，但运行时没有热加载这条配置，需要重启机器人才能生效。"
-    : "已保存，会话覆盖会在下一条消息到达时生效，无需重启。"
-  return {
-    problems: [],
-    result: {
-      document,
-      warnings: [...new Set([...warnings, ...document.warnings])],
-      restartRequired,
-      note,
-    },
+    const document = await readChatOverrides(runtime)
+    const expected = parseChatOverrides(next, () => undefined, soulParseOptions(runtime))
+    const live = await runtime.overrides?.current()
+    const applied = live ? JSON.stringify(live.chats) === JSON.stringify(expected.chats) : false
+    const restartRequired = runtime.overrides ? !applied : true
+    const note = restartRequired
+      ? "已保存，但运行时没有热加载这条配置，需要重启机器人才能生效。"
+      : "已保存，会话覆盖会在下一条消息到达时生效，无需重启。"
+    return {
+      status: "saved",
+      result: {
+        document,
+        warnings: [...new Set([...warnings, ...document.warnings])],
+        restartRequired,
+        note,
+      },
+    }
+  })
+
+  if (saved.status === "busy") {
+    return { problems: [{ path: "", message: "文件正被其它请求修改，请稍后重试" }] }
   }
+  if (saved.status === "invalid") return { problems }
+  return { problems: [], result: saved.result }
 }
 
 /**
@@ -303,11 +428,6 @@ export async function saveToolProfiles(
   if (!isPlainObject(body)) {
     return { problems: [{ path: "", message: "请求体必须是一个 JSON 对象" }] }
   }
-  for (const key of Object.keys(body)) {
-    if (!(TOOL_POLICY_KEYS as readonly string[]).includes(key)) {
-      problems.push({ path: key, message: "未知字段" })
-    }
-  }
   const profilePatch = body.profiles
   const chatPatch = body.chats
   if (profilePatch !== undefined && !isPlainObject(profilePatch)) {
@@ -319,133 +439,181 @@ export async function saveToolProfiles(
   if (problems.length > 0) return { problems }
 
   const path = toolProfilesPath(runtime)
-  const { raw } = await readJsonFile(path)
-  const source = isPlainObject(raw) ? raw : {}
-  const baseProfiles: Record<string, unknown> = isPlainObject(source.profiles)
-    ? { ...source.profiles }
-    : {}
-  const baseChats: Record<string, unknown> = isPlainObject(source.chats) ? { ...source.chats } : {}
-  let defaultProfile = typeof source.defaultProfile === "string" ? source.defaultProfile : ""
-  const warnings: string[] = []
-  const deletedProfiles = new Set<string>()
-
-  for (const [name, entry] of Object.entries(isPlainObject(profilePatch) ? profilePatch : {})) {
-    const field = `profiles.${name}`
-    if (!PROFILE_NAME.test(name)) {
-      problems.push({
-        path: field,
-        message: "配置档名字不能为空、不能含空格或控制字符，最长 64 个字符",
-      })
-      continue
+  const saved = await withDocumentLock(path, async () => {
+    const { raw } = await readJsonFile(path)
+    const source = isPlainObject(raw) ? raw : {}
+    const baseProfiles: Record<string, unknown> = isPlainObject(source.profiles)
+      ? copyToSafeMap(source.profiles)
+      : safeMap()
+    const baseChats: Record<string, unknown> = isPlainObject(source.chats)
+      ? copyToSafeMap(source.chats)
+      : safeMap()
+    let defaultProfile = typeof source.defaultProfile === "string" ? source.defaultProfile : ""
+    // 置空表示回到内置默认档：文件里干脆不写这个键，界面也就能显示「跟随默认」。
+    let omitDefault = false
+    const warnings: string[] = []
+    for (const key of Object.keys(body)) {
+      if (!(TOOL_POLICY_KEYS as readonly string[]).includes(key)) {
+        warnings.push(`未知字段 ${key}，已忽略`)
+      }
     }
-    if (entry === null) {
-      if (BUILTIN_PROFILES.includes(name) && !Object.hasOwn(baseProfiles, name)) {
-        problems.push({ path: field, message: `内置配置档 ${name} 不能删除` })
+    const deletedProfiles = new Set<string>()
+
+    for (const [name, entry] of Object.entries(isPlainObject(profilePatch) ? profilePatch : {})) {
+      const field = `profiles.${name}`
+      if (!isProfileName(name)) {
+        problems.push({
+          path: field,
+          message: "配置档名字不能为空、不能含空格或控制字符，最长 64 个字符",
+        })
         continue
       }
-      delete baseProfiles[name]
-      deletedProfiles.add(name)
-      continue
+      if (entry === null) {
+        if (BUILTIN_PROFILES.includes(name) && !hasKey(baseProfiles, name)) {
+          problems.push({ path: field, message: `内置配置档 ${name} 不能删除` })
+          continue
+        }
+        if (!hasKey(baseProfiles, name)) {
+          problems.push({ path: field, message: `配置档 ${name} 不存在` })
+          continue
+        }
+        delete baseProfiles[name]
+        deletedProfiles.add(name)
+        continue
+      }
+      if (!isPlainObject(entry)) {
+        problems.push({ path: field, message: "配置档必须是对象" })
+        continue
+      }
+      const exists = hasKey(baseProfiles, name)
+      const current = isPlainObject(baseProfiles[name]) ? { ...baseProfiles[name] } : {}
+      const known: Array<[string, unknown]> = []
+      for (const [key, value] of Object.entries(entry)) {
+        if (key !== "allow" && key !== "deny") {
+          warnings.push(`配置档 ${name} 的 ${key} 不是支持的字段，已忽略`)
+          continue
+        }
+        known.push([key, value])
+      }
+      if (known.length === 0) {
+        // 这一档没有能保存的字段：只告警，不动文件。
+        warnings.push(`配置档 ${name} 没有可保存的字段，已忽略`)
+        continue
+      }
+      // 档本来就不存在，而这次提交的字段全是「删掉」：这是清空，不是新建。
+      if (!exists && known.every(([, value]) => value === null)) {
+        problems.push({ path: field, message: `配置档 ${name} 不存在，不能靠清空字段来新建` })
+        continue
+      }
+      for (const [key, value] of known) {
+        if (value === null) {
+          delete current[key]
+          continue
+        }
+        current[key] = value
+      }
+      // 用解析器把这一档收拾干净：列表里的非字符串项按解析器的规则丢掉。
+      const parsed = parseToolPolicy({ profiles: { [name]: current } }, (message) => {
+        warnings.push(message)
+      })
+      baseProfiles[name] = parsed.profiles[name] ?? { allow: [], deny: [] }
     }
-    if (!isPlainObject(entry)) {
-      problems.push({ path: field, message: "配置档必须是对象" })
-      continue
-    }
-    const current = isPlainObject(baseProfiles[name]) ? { ...baseProfiles[name] } : {}
-    for (const [key, value] of Object.entries(entry)) {
-      if (key !== "allow" && key !== "deny") {
-        problems.push({ path: `${field}.${key}`, message: "未知字段" })
+
+    for (const [key, value] of Object.entries(isPlainObject(chatPatch) ? chatPatch : {})) {
+      const field = `chats.${key}`
+      if (!parseTargetKey(key)) {
+        problems.push({ path: field, message: "聊天键必须是 group:<群号> 或 private:<账号>" })
         continue
       }
       if (value === null) {
-        delete current[key]
+        if (!hasKey(baseChats, key)) {
+          problems.push({ path: field, message: `聊天映射 ${key} 不存在` })
+          continue
+        }
+        delete baseChats[key]
         continue
       }
-      current[key] = value
+      if (typeof value !== "string" || !value.trim()) {
+        problems.push({ path: field, message: "聊天映射必须是一个配置档名字" })
+        continue
+      }
+      baseChats[key] = value.trim()
     }
-    // 用解析器把这一档收拾干净：列表里的非字符串项按解析器的规则丢掉。
-    const parsed = parseToolPolicy({ profiles: { [name]: current } }, (message) => {
-      warnings.push(message)
-    })
-    baseProfiles[name] = parsed.profiles[name] ?? { allow: [], deny: [] }
-  }
 
-  for (const [key, value] of Object.entries(isPlainObject(chatPatch) ? chatPatch : {})) {
-    const field = `chats.${key}`
-    if (!parseTargetKey(key)) {
-      problems.push({ path: field, message: "聊天键必须是 group:<群号> 或 private:<账号>" })
-      continue
+    if (body.defaultProfile !== undefined) {
+      if (body.defaultProfile === null) {
+        // 置空表示回到内置默认档。
+        defaultProfile = ""
+        omitDefault = true
+      } else if (typeof body.defaultProfile !== "string" || !body.defaultProfile.trim()) {
+        problems.push({ path: "defaultProfile", message: "默认配置档必须是一个配置档名字" })
+      } else {
+        defaultProfile = body.defaultProfile.trim()
+        omitDefault = false
+      }
     }
-    if (value === null) {
-      delete baseChats[key]
-      continue
-    }
-    if (typeof value !== "string" || !value.trim()) {
-      problems.push({ path: field, message: "聊天映射必须是一个配置档名字" })
-      continue
-    }
-    baseChats[key] = value.trim()
-  }
+    if (problems.length > 0) return { status: "invalid" }
 
-  if (body.defaultProfile !== undefined) {
-    if (body.defaultProfile === null) {
-      // 置空表示回到内置默认档。
-      defaultProfile = ""
-    } else if (typeof body.defaultProfile !== "string" || !body.defaultProfile.trim()) {
-      problems.push({ path: "defaultProfile", message: "默认配置档必须是一个配置档名字" })
-    } else {
-      defaultProfile = body.defaultProfile.trim()
-    }
-  }
-  if (problems.length > 0) return { problems }
-
-  // 引用检查：档名必须存在，否则运行时会落到默认档，页面上写的意图等于白写。
-  const effective = parseToolPolicy(
-    { defaultProfile, profiles: baseProfiles, chats: baseChats },
-    (message) => warnings.push(message),
-  )
-  if (defaultProfile && !effective.profiles[defaultProfile]) {
-    problems.push({
-      path: "defaultProfile",
-      message: deletedProfiles.has(defaultProfile)
-        ? `配置档 ${defaultProfile} 已被删除，但 defaultProfile 还在用它`
-        : `defaultProfile 指向不存在的配置档 ${defaultProfile}`,
-    })
-  }
-  for (const [key, name] of Object.entries(effective.chats)) {
-    if (!effective.profiles[name]) {
+    // 引用检查：档名必须存在，否则运行时会落到默认档，页面上写的意图等于白写。
+    const effective = parseToolPolicy(
+      { defaultProfile, profiles: baseProfiles, chats: baseChats },
+      (message) => warnings.push(message),
+    )
+    if (defaultProfile && !hasKey(effective.profiles, defaultProfile)) {
       problems.push({
-        path: `chats.${key}`,
-        message: deletedProfiles.has(name)
-          ? `配置档 ${name} 已被删除，但 chats.${key} 还在引用它`
-          : `chats.${key} 指向不存在的配置档 ${name}`,
+        path: "defaultProfile",
+        message: deletedProfiles.has(defaultProfile)
+          ? `配置档 ${defaultProfile} 已被删除，但 defaultProfile 还在用它`
+          : `defaultProfile 指向不存在的配置档 ${defaultProfile}`,
       })
     }
-  }
-  if (problems.length > 0) return { problems }
+    for (const [key, name] of Object.entries(effective.chats)) {
+      if (!hasKey(effective.profiles, name)) {
+        problems.push({
+          path: `chats.${key}`,
+          message: deletedProfiles.has(name)
+            ? `配置档 ${name} 已被删除，但 chats.${key} 还在引用它`
+            : `chats.${key} 指向不存在的配置档 ${name}`,
+        })
+      }
+    }
+    if (problems.length > 0) return { status: "invalid" }
 
-  const next = {
-    defaultProfile: defaultProfile || effective.defaultProfile,
-    profiles: baseProfiles,
-    chats: baseChats,
-  }
-  await writeDocument(path, next)
+    // 文件里的其它顶层键原样保留：面板只管自己那几个字段，不该把别的抹掉。
+    const next = copyToSafeMap(source)
+    delete next.defaultProfile
+    delete next.profiles
+    delete next.chats
+    // 默认档没被指定过就不写进文件：写死了就分不清「用户选的」与「内置的」。
+    if (!omitDefault && (defaultProfile || hasKey(source, "defaultProfile"))) {
+      next.defaultProfile = defaultProfile || effective.defaultProfile
+    }
+    next.profiles = baseProfiles
+    next.chats = baseChats
+    await writeDocument(path, next)
 
-  const document = await readToolProfiles(runtime)
-  const expected = parseToolPolicy(next, () => undefined)
-  const live = await runtime.policy?.current()
-  const applied = live ? JSON.stringify(live) === JSON.stringify(expected) : false
-  const restartRequired = runtime.policy ? !applied : true
-  const note = restartRequired
-    ? "已保存，但运行时没有热加载这条配置，需要重启机器人才能生效。"
-    : "已保存，工具配置会在下一次工具调用前生效，无需重启。"
-  return {
-    problems: [],
-    result: {
-      document,
-      warnings: [...new Set([...warnings, ...document.warnings])],
-      restartRequired,
-      note,
-    },
+    const document = await readToolProfiles(runtime)
+    const expected = parseToolPolicy(next, () => undefined)
+    const live = await runtime.policy?.current()
+    const applied = live ? JSON.stringify(live) === JSON.stringify(expected) : false
+    const restartRequired = runtime.policy ? !applied : true
+    const note = restartRequired
+      ? "已保存，但运行时没有热加载这条配置，需要重启机器人才能生效。"
+      : "已保存，工具配置会在下一次工具调用前生效，无需重启。"
+    return {
+      status: "saved",
+      result: {
+        document,
+        warnings: [...new Set([...warnings, ...document.warnings])],
+        restartRequired,
+        note,
+      },
+    }
+  })
+
+  if (saved.status === "busy") {
+    return { problems: [{ path: "", message: "文件正被其它请求修改，请稍后重试" }] }
   }
+  if (saved.status === "invalid") return { problems }
+  return { problems: [], result: saved.result }
 }

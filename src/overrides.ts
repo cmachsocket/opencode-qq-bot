@@ -3,6 +3,8 @@ import { join, resolve } from "node:path"
 import { type ChatTarget, targetKey } from "./chat"
 import { DEFAULT_CONFIG, parseModelRef, type ModelRef, type WakeConfig } from "./config"
 import type { Logger } from "./logger"
+import { safeMap } from "./safe-object"
+import { SOUL_DIR, soulRoots, withinRoots } from "./session/soul-guard"
 
 /** 唤醒方式：决定群里的消息要不要让模型必须回复。 */
 export type WakeMode = "all" | "mention" | "prefix" | "none"
@@ -108,6 +110,28 @@ export function resolveChatOverridesPath(
   return configured ? resolve(home, configured) : defaultChatOverridesPath(home)
 }
 
+/** 解析会话覆盖时的边界选项。 */
+export interface ChatOverrideParseOptions {
+  /** 机器人工作目录：角色设定路径默认在它下面。 */
+  home?: string
+  /** 额外允许的角色设定根目录。 */
+  allowedPaths?: readonly string[]
+}
+
+/** 角色设定路径是否在允许的目录之内。 */
+function soulPathAllowed(value: string, options: ChatOverrideParseOptions): boolean {
+  if (!options.home) return true
+  const roots = soulRoots({ home: options.home, allowedPaths: options.allowedPaths })
+  return withinRoots(resolve(options.home, value), roots)
+}
+
+/** 角色设定文件名是否落在允许的目录之内。 */
+function soulNameAllowed(value: string, options: ChatOverrideParseOptions): boolean {
+  if (!options.home) return true
+  const roots = soulRoots({ home: options.home, allowedPaths: options.allowedPaths })
+  return withinRoots(join(options.home, SOUL_DIR, value), roots)
+}
+
 /**
  * 解析并校验覆盖配置。
  *
@@ -116,6 +140,7 @@ export function resolveChatOverridesPath(
 export function parseChatOverrides(
   value: unknown,
   warn: (message: string) => void,
+  options: ChatOverrideParseOptions = {},
 ): ChatOverridesFile {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     warn("会话覆盖必须是对象，已忽略")
@@ -128,7 +153,7 @@ export function parseChatOverrides(
     warn("chats 必须是对象，已忽略")
     return defaultChatOverrides()
   }
-  const chats: Record<string, ChatOverride> = {}
+  const chats = safeMap<ChatOverride>()
   for (const [key, entry] of Object.entries(source as Record<string, unknown>)) {
     if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
       warn(`会话覆盖 ${key} 必须是对象，已忽略`)
@@ -190,17 +215,23 @@ export function parseChatOverrides(
       else warn(`会话覆盖 ${key} 的 model 必须是 provider/model[/variant]，已忽略`)
     }
     if (record.soulPath !== undefined) {
-      if (typeof record.soulPath === "string" && record.soulPath.trim()) {
-        override.soulPath = record.soulPath.trim()
-      } else {
+      const value = typeof record.soulPath === "string" ? record.soulPath.trim() : ""
+      if (!value) {
         warn(`会话覆盖 ${key} 的 soulPath 必须是非空字符串，已忽略`)
+      } else if (!soulPathAllowed(value, options)) {
+        warn(`会话覆盖 ${key} 的 soulPath 超出允许的目录，已忽略`)
+      } else {
+        override.soulPath = value
       }
     }
     if (record.soulName !== undefined) {
-      if (typeof record.soulName === "string" && record.soulName.trim()) {
-        override.soulName = record.soulName.trim()
-      } else {
+      const value = typeof record.soulName === "string" ? record.soulName.trim() : ""
+      if (!value) {
         warn(`会话覆盖 ${key} 的 soulName 必须是非空字符串，已忽略`)
+      } else if (!soulNameAllowed(value, options)) {
+        warn(`会话覆盖 ${key} 的 soulName 超出允许的目录，已忽略`)
+      } else {
+        override.soulName = value
       }
     }
     if (override.wake === "prefix" && !override["wake.prefixes"]?.length) {
@@ -220,6 +251,7 @@ export class ChatOverrides {
   constructor(
     private readonly path: string,
     private readonly logger: Logger,
+    private readonly options: ChatOverrideParseOptions = {},
   ) {}
 
   /** 当前生效的覆盖配置；文件改动后按 mtime 重新读取。 */
@@ -232,9 +264,13 @@ export class ChatOverrides {
     if (this.cached && this.cached.mtime === info.mtimeMs) return this.cached.file
     try {
       const text = await readFile(this.path, "utf8")
-      const file = parseChatOverrides(JSON.parse(text), (message) => {
-        this.logger.warn(`会话覆盖 ${this.path}：${message}`)
-      })
+      const file = parseChatOverrides(
+        JSON.parse(text),
+        (message) => {
+          this.logger.warn(`会话覆盖 ${this.path}：${message}`)
+        },
+        this.options,
+      )
       this.cached = { mtime: info.mtimeMs, file }
       return file
     } catch (error) {

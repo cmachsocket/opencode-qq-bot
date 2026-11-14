@@ -171,6 +171,14 @@ export const CONFIG_FIELDS: readonly ConfigField[] = [
     description: "工作目录 souls 里的角色设定文件名",
     default: undefined,
   },
+  {
+    path: "soul.allowedPaths",
+    group: "general",
+    type: "stringList",
+    label: "角色设定允许目录",
+    description: "除工作目录外，还允许哪些目录里的角色设定文件生效；相对路径按工作目录解析",
+    default: [],
+  },
 
   // NapCat
   {
@@ -775,6 +783,16 @@ export const CONFIG_FIELDS: readonly ConfigField[] = [
     description: "留空时自动生成并写回配置文件",
     default: "",
     secret: true,
+    hot: true,
+  },
+  {
+    path: "panel.tokenRevoked",
+    group: "panel",
+    type: "boolean",
+    label: "吊销访问令牌",
+    description:
+      "吊销后旧令牌与已登录会话立即作废，面板不再自动补新令牌；恢复只需在配置文件里把它改回 false",
+    default: false,
     hot: true,
   },
 ]

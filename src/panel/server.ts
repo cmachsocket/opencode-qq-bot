@@ -116,6 +116,12 @@ export class PanelServer {
       this.auth.rotate(config.panel.token)
       this.options.logger.info("面板令牌已更新，已签发的会话全部作废")
     }
+    // 令牌被吊销：旧令牌与已登录会话立刻作废，服务也不再对外。
+    if (config.panel.tokenRevoked) {
+      this.auth.clear()
+      await this.closeServer()
+      return
+    }
     if (!config.panel.enabled) {
       await this.closeServer()
       return

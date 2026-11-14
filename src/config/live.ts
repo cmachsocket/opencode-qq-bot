@@ -81,10 +81,24 @@ export class ConfigController {
    *
    * 面板开着却没有令牌时生成一个并写回配置文件：令牌要留在文件里，
    * 重启后不变，面板也才有得登录。写不进去只告警，不影响机器人本身。
+   *
+   * 令牌被吊销时不再补：吊销的语义就是「这个令牌永远不能用」，
+   * 补一个新的只会让人以为已经吊销成功。
    */
   private async ensureSecrets(): Promise<void> {
     const live = this.config
     if (!live?.panel.enabled) return
+    if (live.panel.tokenRevoked) {
+      // 文件里的旧令牌一并删掉：留着就还有被捡回来的机会。
+      if (!live.panel.token) return
+      try {
+        await this.applyPatch({ "panel.token": null })
+        this.warn("面板访问令牌已吊销，面板不再对外服务")
+      } catch (error) {
+        this.warn(`面板访问令牌吊销失败：${error instanceof Error ? error.message : String(error)}`)
+      }
+      return
+    }
     if (live.panel.token) {
       if (live.panel.token.length < 16) this.warn("面板访问令牌太短，建议至少 16 个字符")
       return
@@ -96,6 +110,21 @@ export class ConfigController {
     } catch (error) {
       this.warn(`面板访问令牌生成失败：${error instanceof Error ? error.message : String(error)}`)
     }
+  }
+
+  /**
+   * 规整补丁：令牌与吊销状态保持一致。
+   *
+   * 写入新令牌就是恢复使用：顺带把吊销标记清掉，
+   * 否则会留下「令牌有了但面板还是关着」这种看不懂的状态。
+   * 清空令牌不当作吊销：吊销由 `panel.tokenRevoked` 单独表达，
+   * 这样「重置令牌」和「吊销面板」是两件事。
+   */
+  private normalizePatch(patch: ConfigPatch): ConfigPatch {
+    if (!("panel.token" in patch)) return patch
+    const value = patch["panel.token"]
+    if (typeof value !== "string" || !value.trim()) return patch
+    return { ...patch, "panel.tokenRevoked": false }
   }
 
   /** 解析文件内容；非法值告警并回退默认值。 */
@@ -114,11 +143,12 @@ export class ConfigController {
   async applyPatch(patch: ConfigPatch): Promise<ConfigUpdateResult> {
     const live = this.config
     if (!live) throw new Error("配置尚未加载")
-    for (const [path, value] of Object.entries(patch)) {
+    const normalized = this.normalizePatch(patch)
+    for (const [path, value] of Object.entries(normalized)) {
       const problem = requiredFieldProblem(path, value)
       if (problem) throw new Error(problem)
     }
-    const raw = await this.options.store.patch(patch)
+    const raw = await this.options.store.patch(normalized)
     // 先解析再落盘：配置装不起来时不能把文件改坏，旧配置继续用着。
     const next = this.resolve(raw)
     await this.options.store.write(raw)
@@ -130,7 +160,7 @@ export class ConfigController {
     await this.ensureSecrets()
     return {
       config: live,
-      restartRequired: Object.keys(patch).filter((path) => !isHotField(path)),
+      restartRequired: Object.keys(normalized).filter((path) => !isHotField(path)),
     }
   }
 

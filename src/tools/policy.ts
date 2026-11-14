@@ -3,6 +3,7 @@ import { join, resolve } from "node:path"
 import type { ChatTarget } from "../chat"
 import type { QQBotConfig } from "../config"
 import type { Logger } from "../logger"
+import { hasKey, isSafeKey, safeMap } from "../safe-object"
 
 /**
  * 消息发送者的角色，决定用哪一档工具配置。
@@ -44,10 +45,11 @@ export interface ToolPolicyFile {
 /**
  * 只对 owner 与 admin 开放的工具。
  *
- * 日记记录聊天内容，发文件能把本地文件送出去：两者都只给管理档。
- * 用 deny 而不是不放进 allow，是为了用户自定义配置档时也不会误放开。
+ * 日记记录聊天内容，发文件能把本地文件送出去，收藏表情会往本机写文件：
+ * 三者都只给管理档。用 deny 而不是不放进 allow，
+ * 是为了用户自定义配置档时也不会误放开。
  */
-const DIARY_DENY = ["qq_diary_*", "qq_send_file"]
+const ADMIN_DENY = ["qq_diary_*", "qq_send_file", "qq_collect_sticker"]
 
 /**
  * 只有 owner 能用的工具。
@@ -57,18 +59,25 @@ const DIARY_DENY = ["qq_diary_*", "qq_send_file"]
  */
 const OWNER_ONLY = ["qq_diary_*"]
 
+/**
+ * 只有管理角色（owner 与 admin）能用的工具。
+ *
+ * 按角色判定：用户自定义配置档写得多开放，这里也要再收一次。
+ */
+const ADMIN_ONLY = ["qq_collect_sticker"]
+
 /** 内置默认值：普通聊天只留联网搜索、网页抓取和发消息工具，管理档全开。 */
 export function defaultToolPolicy(): ToolPolicyFile {
+  const profiles = safeMap<ToolProfile>()
+  profiles.chat = { allow: ["websearch", "webfetch", "qq_*"], deny: [...ADMIN_DENY] }
+  profiles.readonly = { allow: ["read", "glob", "grep", "qq_*"], deny: [...ADMIN_DENY] }
+  // 主动说话没有人参与，权限不能跟着聊天内容走：与普通聊天同档。
+  profiles.proactive = { allow: ["websearch", "webfetch", "qq_*"], deny: [...ADMIN_DENY] }
+  profiles.admin = { allow: ["*"], deny: [] }
   return {
     defaultProfile: "chat",
-    profiles: {
-      chat: { allow: ["websearch", "webfetch", "qq_*"], deny: [...DIARY_DENY] },
-      readonly: { allow: ["read", "glob", "grep", "qq_*"], deny: [...DIARY_DENY] },
-      // 主动说话没有人参与，权限不能跟着聊天内容走：与普通聊天同档。
-      proactive: { allow: ["websearch", "webfetch", "qq_*"], deny: [...DIARY_DENY] },
-      admin: { allow: ["*"], deny: [] },
-    },
-    chats: {},
+    profiles,
+    chats: safeMap<string>(),
   }
 }
 
@@ -133,7 +142,7 @@ export function parseToolPolicy(value: unknown, warn: (message: string) => void)
     return fallback
   }
   const raw = value as Record<string, unknown>
-  const profiles: Record<string, ToolProfile> = {}
+  const profiles = safeMap<ToolProfile>()
   const source = raw.profiles
   if (source !== undefined) {
     if (!source || typeof source !== "object" || Array.isArray(source)) {
@@ -141,6 +150,10 @@ export function parseToolPolicy(value: unknown, warn: (message: string) => void)
       return fallback
     }
     for (const [name, entry] of Object.entries(source as Record<string, unknown>)) {
+      if (!isSafeKey(name)) {
+        warn(`工具配置档 ${name} 是保留名，已忽略`)
+        continue
+      }
       if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
         warn(`工具配置档 ${name} 必须是对象，已忽略`)
         continue
@@ -154,16 +167,16 @@ export function parseToolPolicy(value: unknown, warn: (message: string) => void)
   }
   // 用户没有覆盖的档沿用内置默认值，这样只写一档也能用。
   for (const [name, profile] of Object.entries(fallback.profiles)) {
-    if (!profiles[name]) profiles[name] = profile
+    if (!hasKey(profiles, name)) profiles[name] = profile
   }
   const defaultProfile =
     typeof raw.defaultProfile === "string" && raw.defaultProfile.trim()
       ? raw.defaultProfile.trim()
       : fallback.defaultProfile
-  if (!profiles[defaultProfile]) {
+  if (!hasKey(profiles, defaultProfile)) {
     warn(`defaultProfile 指向不存在的配置档 ${defaultProfile}，已回退到 ${fallback.defaultProfile}`)
   }
-  const chats: Record<string, string> = {}
+  const chats = safeMap<string>()
   if (raw.chats !== undefined) {
     if (!raw.chats || typeof raw.chats !== "object" || Array.isArray(raw.chats)) {
       warn("chats 必须是对象，已忽略")
@@ -178,7 +191,7 @@ export function parseToolPolicy(value: unknown, warn: (message: string) => void)
     }
   }
   return {
-    defaultProfile: profiles[defaultProfile] ? defaultProfile : fallback.defaultProfile,
+    defaultProfile: hasKey(profiles, defaultProfile) ? defaultProfile : fallback.defaultProfile,
     profiles,
     chats,
   }
@@ -192,21 +205,24 @@ export function parseToolPolicy(value: unknown, warn: (message: string) => void)
  */
 export function profileNameFor(file: ToolPolicyFile, role: Role, chatKey: string): string {
   if (role === "owner" || role === "admin") {
-    return file.profiles.admin ? "admin" : file.defaultProfile
+    return hasKey(file.profiles, "admin") ? "admin" : file.defaultProfile
   }
   if (role === "proactive") {
-    return file.profiles.proactive ? "proactive" : file.defaultProfile
+    return hasKey(file.profiles, "proactive") ? "proactive" : file.defaultProfile
   }
   const named = file.chats[chatKey]
-  if (named && file.profiles[named]) return named
+  if (named && hasKey(file.profiles, named)) return named
   return file.defaultProfile
 }
 
 /** 从工具名列表里筛出该配置档允许的项；deny 优先于 allow。 */
 export function allowedTools(profile: ToolProfile, names: readonly string[]): string[] {
+  // 配置档可能来自被污染过的文件：字段不是数组时按空列表算，不让整个机器人崩掉。
+  const deny = Array.isArray(profile?.deny) ? profile.deny : []
+  const allow = Array.isArray(profile?.allow) ? profile.allow : []
   const allowed = (name: string) =>
-    !profile.deny.some((pattern) => globMatch(pattern, name)) &&
-    (profile.allow.includes("*") || profile.allow.some((pattern) => globMatch(pattern, name)))
+    !deny.some((pattern) => globMatch(pattern, name)) &&
+    (allow.includes("*") || allow.some((pattern) => globMatch(pattern, name)))
   return names.filter(allowed)
 }
 
@@ -245,13 +261,24 @@ export class ToolPolicy {
   /** 某个角色在某个聊天里能用的工具子集。 */
   async allow(role: Role, chatKey: string, names: readonly string[]): Promise<Set<string>> {
     const file = await this.current()
-    const profile = file.profiles[profileNameFor(file, role, chatKey)]
-    if (!profile) return new Set(names)
+    const name = profileNameFor(file, role, chatKey)
+    const profile = hasKey(file.profiles, name) ? file.profiles[name] : undefined
+    if (!profile) {
+      // 找不到配置档时一律不放行：让配置坏了就等于机器人失去工具，比崩掉好。
+      this.logger.warn(`工具配置 ${this.path}：找不到配置档 ${name}，本轮不放行任何工具`)
+      return new Set<string>()
+    }
     const allowed = new Set(allowedTools(profile, names))
     // 配置档只按工具名分配，日记这类只给 owner 的工具要在这里再按角色收一次。
     if (role !== "owner") {
       for (const name of allowed) {
         if (OWNER_ONLY.some((pattern) => globMatch(pattern, name))) allowed.delete(name)
+      }
+    }
+    // 收藏表情会往本机写文件：只有管理角色能用，配置档放开也不行。
+    if (role !== "owner" && role !== "admin") {
+      for (const name of allowed) {
+        if (ADMIN_ONLY.some((pattern) => globMatch(pattern, name))) allowed.delete(name)
       }
     }
     return allowed

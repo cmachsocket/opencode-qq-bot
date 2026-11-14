@@ -268,14 +268,23 @@ export type FieldType =
 
 面板自身的配置项也是注册表的一员：
 
-| 配置项          | 默认值      | 说明                                         |
-| --------------- | ----------- | -------------------------------------------- |
-| `panel.enabled` | `true`      | 是否启用面板                                 |
-| `panel.host`    | `127.0.0.1` | 监听地址                                     |
-| `panel.port`    | `7391`      | 监听端口                                     |
-| `panel.token`   | 空          | 访问令牌；可手动配置，未配置时自动生成并落盘 |
+| 配置项               | 默认值      | 说明                                         |
+| -------------------- | ----------- | -------------------------------------------- |
+| `panel.enabled`      | `true`      | 是否启用面板                                 |
+| `panel.host`         | `127.0.0.1` | 监听地址                                     |
+| `panel.port`         | `7391`      | 监听端口                                     |
+| `panel.token`        | 空          | 访问令牌；可手动配置，未配置时自动生成并落盘 |
+| `panel.tokenRevoked` | `false`     | 吊销令牌；吊销后面板不再对外服务             |
 
 面板默认开启，只监听 `127.0.0.1`。令牌留空时自动生成并落盘；令牌改动属于热更新，但会立刻作废已签发的会话 Cookie。
+
+首次启动会在 `config.json` 里写入 `panel.token`，并在 `127.0.0.1:7391` 起一个只监听本机的面板服务。
+不需要面板就把 `panel.enabled` 设成 `false`。令牌在 `config.json` 的 `panel.token` 里：
+
+- **轮换**：改成一个新的字符串即可，旧令牌与已登录会话立即作废。
+- **吊销**：把 `panel.tokenRevoked` 设成 `true`，面板不再对外服务，也不会自动补新令牌；
+  改回 `false` 即可恢复（令牌会重新生成）。
+- **别把 `panel.host` 改成 `0.0.0.0`**：那会把面板暴露到网络上，鉴权只剩一个令牌。
 
 ### API
 
@@ -331,10 +340,13 @@ export type FieldType =
 }
 ```
 
-- 校验复用运行时的解析函数（`parseChatOverrides` 与 `parseToolPolicy`）：**单个字段写错只忽略这一项并告警，其余照常生效**，不会整份拒绝。
+- 校验复用运行时的解析函数（`parseChatOverrides` 与 `parseToolPolicy`）：**单个字段写错只忽略这一项并告警，其余照常生效**，不会整份拒绝。两个文件的处理一致：未知的字段、未知的顶层键都只告警并忽略。
 - 结构性问题（聊天键不合法、档名不存在、`defaultProfile` 指向不存在的档）返回 400，并带上 `fields[].path` 与 `fields[].message`。
 - 提交的是稀疏补丁：没提到的聊天、配置档与字段保持原样；字段传 `null` 表示删掉这一项。
-- 写盘与 `config.json` 同规则：先备份 `.bak`，再原子写，文件 `0600`、目录 `0700`。
+- 档名不能是 `__proto__`、`constructor`、`prototype` 这类原型上的属性名，会被拒绝。
+- 删除语义是「删掉这一项」，不是「把这一项清空」：给一个还不存在的键提交全 `null` 的补丁会被拒绝，不会把同名已有记录清成空对象。
+- 会话覆盖里的 `soulPath` / `soulName` 受角色设定的允许目录限制，超出会被忽略并告警（见 `docs/configuration.md` 的「角色设定」）。
+- 写盘与 `config.json` 同规则：先备份 `.bak`，再原子写，文件 `0600`、目录 `0700`；写入前会拿文件锁串行化「读—改—写」，文件里的其他顶层键原样保留。
 - 这两个文件都是热加载的（运行时按 mtime 重新读），保存后立即在下一条消息 / 下一次工具调用前生效，接口返回 `restartRequired: false` 与生效时机说明；运行时没有加载这两个文件时才会提示需重启。
 
 ## 状态面板
@@ -390,8 +402,9 @@ export type FieldType =
 - 顶栏：连接状态、版本、运行时长、「需重启生效」提示。
 - Tab：配置 / 会话覆盖 / 工具档案 / 状态 / 日志 / 追踪。
 - 配置页：左侧分组导航（`napcat`、`access`、`proactive`、`wake`、`reply`、`trace`、`reminder`、`keepAlive`、`history`、`rateLimit`、`sensitive`、`events`、`log`、`media`、`diary`、`panel`），右侧渲染当前分组的表单；每字段一行显示「当前值 / 来源（文件或默认）/ 说明」。
-- 会话覆盖页：列出 `chat-overrides.json` 里的每个聊天键（`group:100` / `private:200`）与它的覆盖项，可新增、修改、删除；可编辑字段严格等于后端 `ChatOverride` 的八个字段（`wake`、`wake.prefixes`、`proactive.enabled`、`proactive.startProbability`、`agent`、`model`、`soulPath`、`soulName`），不多不少。
-- 工具档案页：编辑 `tool-profiles.json` 的默认配置档、各档的 `allow` / `deny` 工具模式列表，以及聊天键到配置档的映射；内置档（`chat`、`readonly`、`proactive`、`admin`）标出来且不可删。
+- 会话覆盖页：列出 `chat-overrides.json` 里的每个聊天键（`group:100` / `private:200`）与它的覆盖项，可新增、修改、删除；可编辑字段严格等于后端 `ChatOverride` 的八个字段（`wake`、`wake.prefixes`、`proactive.enabled`、`proactive.startProbability`、`agent`、`model`、`soulPath`、`soulName`），不多不少。新增与修改分开：新增只提交真正填了的字段，不会把同名已有记录清空。
+- 工具档案页：编辑 `tool-profiles.json` 的默认配置档、各档的 `allow` / `deny` 工具模式列表，以及聊天键到配置档的映射；内置档（`chat`、`readonly`、`proactive`、`admin`）标出来且不可删。删除一个档时会顺带解掉引用它的聊天映射与默认档。
+- 两个新页的下拉框都有「跟随默认」一项，可以选回全局默认（唤醒方式、主动说话开关、默认工具档）。
 - 状态页：连接概览卡片、会话表、限流用量条、追踪时间线、日记卡片、当前 agent（只读，来自 `opencode.json`）。
 - 日志页：级别过滤、关键字过滤、自动滚动与暂停。
 
@@ -414,11 +427,12 @@ export type FieldType =
 
 ## 安全
 
-- 默认开启（`panel.enabled=true`），默认只监听 `127.0.0.1`。
+- 默认开启（`panel.enabled=true`），默认只监听 `127.0.0.1`。不想要面板就设 `panel.enabled: false`。
 - 必须有令牌：可手动配置，未配置时自动生成随机令牌并明文落盘到 `config.json`（`0600`），日志不打印明文。面板开着却没有令牌时也会自动补一个。
+- 吊销：`panel.tokenRevoked` 设为 `true` 会作废旧令牌与已登录会话，面板不再对外服务，也不自动补新令牌。
 - 令牌只写 `config.json`，**不回写 `opencode.json`**：`opencode.json` 归 OpenCode 管理，插件不写。
 - 手动配置的令牌短于 16 个字符时输出告警，不阻断启动。
-- 浏览器侧用 `HttpOnly` + `SameSite=Strict` 的会话 Cookie，写接口校验 Origin（`hono/csrf`）。
+- 浏览器侧用 `HttpOnly` + `SameSite=Strict` 的会话 Cookie，写接口校验 Origin（`hono/csrf`）；带 Cookie 的写请求缺少 `Origin` 头会被拒绝。
 - `config.json` 权限 `0600`，目录 `0700`；NapCat 令牌以明文存放，这是取消环境变量后的必然结果，面板全程掩码、接口不回显。
 - 静态资源带 CSP 响应头（`hono/secure-headers`）；写接口只接受 JSON 请求体。
 
@@ -528,8 +542,7 @@ web/                     Svelte 单页应用（独立 package.json）
 | `GET`  | `/api/chat-overrides` | 会话覆盖文件的生效值、文件值、告警与掩码字段                         |
 | `PUT`  | `/api/chat-overrides` | 提交稀疏改动；字段写错只忽略该项并告警，结构问题返回 `fields[].path` |
 | `GET`  | `/api/tool-profiles`  | 工具配置文件的生效值、文件值、告警与掩码字段                         |
-| `PUT`  | `/api/tool-profiles`  | 提交稀疏改动；档名或聊天键不合法时返回 `fields[].path`               |
-| `GET`  | `/api/models`         | OpenCode 可用模型与默认模型标记                                      |
+| `PUT`  | `/api/tool-profiles`  | 提交稀疏改动；档名或聊天键不合法时返回 `fields[].path`               |     | `GET` | `/api/models` | OpenCode 可用模型与默认模型标记 |
 | `GET`  | `/api/status`         | 运行状态快照                                                         |
 | `GET`  | `/api/logs`           | 环形缓冲尾部，支持 `limit` 与 `level`                                |
 | `GET`  | `/api/stream`         | SSE：`status` / `log` / `config`                                     |
@@ -553,7 +566,8 @@ web/                     Svelte 单页应用（独立 package.json）
 
 ### 安全与运维
 
-- 面板默认开启，默认只监听 `127.0.0.1:7391`。监听地址改成非本机前请确认网络边界。
+- 面板默认开启，默认只监听 `127.0.0.1:7391`。不想要面板就设 `panel.enabled: false`；监听地址改成非本机前请确认网络边界，别改成 `0.0.0.0`。
+- 令牌在 `config.json` 的 `panel.token` 里，可以随时改成一个新值来轮换；`panel.tokenRevoked` 设为 `true` 会吊销令牌并关掉面板。
 - 敏感字段（如 `napcat.token`、`panel.token`）不回显，只返回 `hasValue`；留空表示不修改。
 - `chat-overrides.json` 与 `tool-profiles.json` 同理：值里命中已知凭证的字段不回显，只在 `masked` 里给出字段路径。
 - 三个配置文件都是文件 `0600`、目录 `0700`，各自保留一份 `.bak`。

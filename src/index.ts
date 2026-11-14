@@ -366,6 +366,10 @@ export default Plugin.define({
           soulName: config.soulName,
           home: home.directory,
           moduleDir: packageDirectory(),
+          // 允许根之外的目录要显式放开；角色设定的内容会随每一轮发给模型服务商。
+          allowedPaths: config.soul.allowedPaths,
+          // 已知凭证明文：人格文件里出现就拒绝加载或掩码。
+          secrets: knownSecrets(config),
         }
         await seedSouls(soulOptions, logger)
         const souls = new SoulLibrary(soulOptions, logger)
@@ -432,7 +436,10 @@ export default Plugin.define({
         if (!config.chatOverridesPath) {
           await seedFile(join(packageRoot, "chat-overrides.example.json"), overridesPath, logger)
         }
-        const overrides = new ChatOverrides(overridesPath, logger)
+        const overrides = new ChatOverrides(overridesPath, logger, {
+          home: home.directory,
+          allowedPaths: config.soul.allowedPaths,
+        })
         panelRuntime.overrides = overrides
         // 调用链追踪：一条入站消息拿一个 trace_id，事后能把这轮串起来。
         // 追踪文件与日志放在一起，容量与保留天数都有上限。

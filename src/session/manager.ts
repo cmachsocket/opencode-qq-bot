@@ -59,6 +59,16 @@ const HANDOVER_WAIT_MS = 3_000
 const SESSION_CANDIDATES = 5
 /** 全局找历史会话时最多翻几页。 */
 const SESSION_SEARCH_PAGES = 5
+/** 共享状态写锁被占用时最多重试几次。 */
+const PERSIST_RETRY_LIMIT = 5
+/** 第一次重试等待多久（毫秒），之后按倍数退避。 */
+const PERSIST_RETRY_BASE_MS = 200
+/** 重试等待的上限（毫秒）。 */
+const PERSIST_RETRY_MAX_MS = 5_000
+/** 共享绑定表最多保留多少条：超出的按写入时间淘汰。 */
+const MAX_BINDINGS = 512
+/** 轮次结束记录最多保留多少条：超出的丢掉最旧的。 */
+const MAX_TURN_CLEARED = 256
 
 /** 插件自己往聊天里补话的通道，失败兜底用。 */
 export type FailureNotifier = (target: ChatTarget, text: string) => Promise<void>
@@ -442,6 +452,10 @@ export class SessionManager {
   private disposed = false
   /** 已经因为失去机器锁而停止写共享状态：只告警一次。 */
   private writeBlocked = false
+  /** 写锁没拿到时排的延迟重试。 */
+  private persistRetry: ReturnType<typeof setTimeout> | undefined
+  /** 已经重试过几次：超过上限就放弃，等下一次业务触发。 */
+  private persistRetries = 0
 
   constructor(
     private readonly ctx: Plugin.Context,
@@ -643,16 +657,44 @@ export class SessionManager {
       return
     }
     if (!lock) {
-      this.logger.warn("共享状态写锁被占用，本轮状态稍后重试保存")
+      this.logger.warn("共享状态写锁被占用，将稍后重试保存")
+      this.schedulePersistRetry()
       return
     }
     try {
       // 等锁期间可能已经失去机器锁：这时写出去只会覆盖接管者的状态。
       if (!this.writable()) return
       await this.persistTables()
+      this.persistRetries = 0
     } finally {
       await lock.release()
     }
+  }
+
+  /**
+   * 写锁没拿到时排一次延迟重试。
+   *
+   * 状态不能因为一次抢锁失败就没了：绑定表是跨重启存活的，
+   * 丢一次就等于白做。退避重试几次，还是拿不到就等下一次业务触发。
+   */
+  private schedulePersistRetry(): void {
+    if (this.persistRetry) return
+    if (this.persistRetries >= PERSIST_RETRY_LIMIT) {
+      this.logger.error("共享状态写锁一直被占用，本轮状态未落盘")
+      return
+    }
+    this.persistRetries += 1
+    const delay = Math.min(
+      PERSIST_RETRY_MAX_MS,
+      PERSIST_RETRY_BASE_MS * 2 ** (this.persistRetries - 1),
+    )
+    this.persistRetry = setTimeout(() => {
+      this.persistRetry = undefined
+      void this.saveMutex
+        .runExclusive(() => this.persist())
+        .catch((error: unknown) => this.logger.error("保存会话状态失败", error))
+    }, delay)
+    unrefTimer(this.persistRetry)
   }
 
   /** 把四张状态表写回插件存储。 */
@@ -780,6 +822,19 @@ export class SessionManager {
     for (const [key, at] of tombstones) {
       const current = merged.get(key)
       if (current && current.at <= at) merged.delete(key)
+    }
+    // 不再放行的目标不留绑定：被移出白名单的聊天会一直占着表，
+    // 共享状态文件就单调增长了。
+    for (const key of [...merged.keys()]) {
+      const target = parseTargetKey(key)
+      if (!target || !isTargetAllowed(this.config.access, target, this.config.ownerQQ)) {
+        merged.delete(key)
+      }
+    }
+    // 表还有上限：超出后按写入时间淘汰最旧的，别让它无界增长。
+    if (merged.size > MAX_BINDINGS) {
+      const ordered = [...merged.entries()].sort((left, right) => left[1].at - right[1].at)
+      for (const [key] of ordered.slice(0, merged.size - MAX_BINDINGS)) merged.delete(key)
     }
 
     // 墓碑先落盘：绑定还没删干净时，墓碑也拦得住别的实例把绑定写回来。
@@ -1267,6 +1322,12 @@ export class SessionManager {
       targetKey(state.target),
       state.turnStartedAt ?? state.lastDispatchAt ?? Date.now(),
     )
+    // 墓碑只用来盖掉存储里的旧记录，留最近这些就够：留着不清理会一直涨。
+    while (this.turnClearedAt.size > MAX_TURN_CLEARED) {
+      const oldest = this.turnClearedAt.keys().next()
+      if (oldest.done) break
+      this.turnClearedAt.delete(oldest.value)
+    }
     state.turnStartedAt = undefined
     // 发送权限只在本轮有效：轮次结束就收回，下一轮要重新说明理由。
     state.replyAllowed = false
@@ -1953,10 +2014,11 @@ export class SessionManager {
   }
 
   /**
-   * 同一个聊天上仍然存在的历史会话，按最近优先。
+   * 同一个聊天上仍然存在的历史会话。
    *
    * 先按会话标记匹配；老版本建的会话没有标记，退回按标题匹配。
-   * 两者都命中时以标记为准：标题可能被用户改过，标记是插件自己写的。
+   * 标题能被用户改过，跨目录又容易撞名，所以标题只在本工作目录里认，
+   * 跨目录一律按标记匹配，免得把别的项目里的会话接管过来。
    */
   private async findSessionCandidates(
     target: ChatTarget,
@@ -1975,30 +2037,34 @@ export class SessionManager {
       directory: string | undefined,
       failure: string,
       options: { limit: number; maxPages?: number },
-    ): Promise<ListedSession[]> => {
-      const found = await findSessions(
-        this.ctx,
-        directory,
-        (session) => byMetadata(session) || byTitle(session),
-        this.logger,
-        failure,
-        options,
-      )
-      const marked = found.filter(byMetadata)
-      return marked.length > 0 ? marked : found
-    }
+      match: (session: ListedSession) => boolean,
+    ): Promise<ListedSession[]> =>
+      await findSessions(this.ctx, directory, match, this.logger, failure, options)
     const inWorkspace = await collect(
       this.location.directory,
       `查找历史会话失败 ${targetLabel(target)}`,
       { limit: SESSION_CANDIDATES },
+      byMetadata,
     )
     if (inWorkspace.length > 0) return inWorkspace
+    const titled = await collect(
+      this.location.directory,
+      `查找历史会话失败 ${targetLabel(target)}`,
+      { limit: SESSION_CANDIDATES },
+      byTitle,
+    )
+    if (titled.length > 0) return titled
     // 工作目录里没有：老版本把会话建在项目目录里，再全局找一次。
-    // 标记带群号与私聊号，跨目录匹配也不会认错人。
-    return await collect(undefined, `全局查找历史会话失败 ${targetLabel(target)}`, {
-      limit: SESSION_CANDIDATES,
-      maxPages: SESSION_SEARCH_PAGES,
-    })
+    // 跨目录只认标记：标记带群号与私聊号，不会认错人。
+    return await collect(
+      undefined,
+      `全局查找历史会话失败 ${targetLabel(target)}`,
+      {
+        limit: SESSION_CANDIDATES,
+        maxPages: SESSION_SEARCH_PAGES,
+      },
+      byMetadata,
+    )
   }
 
   /** 选出消息最多的那条会话。 */
@@ -2148,15 +2214,15 @@ export class SessionManager {
     return true
   }
 
-  /** 查找带相同目标标记的历史会话，取最近的那条。 */
+  /** 查找带相同目标标记的历史会话，取最近的那一条。 */
   private async findExistingSession(
     target: ChatTarget,
     exclude?: string,
   ): Promise<string | undefined> {
     const candidates = await this.findSessionCandidates(target, exclude)
     if (candidates.length === 0) return undefined
-    // 候选按创建时间倒序，第一条就是「上一次的会话」。
-    // 恢复路径要的才是消息最多的那条，两件事不能混。
+    // 列表按创建时间倒序，第一条就是上一次的会话：
+    // 复用要的是「接着上次聊」，不是消息最多的那条（那是找回路径要的）。
     return candidates[0]?.id
   }
 

@@ -5,17 +5,20 @@ import { unrefTimer } from "../async"
 import { seedFile } from "../seed"
 import type { Logger } from "../logger"
 import { buildSystemPrompt } from "./prompt"
+import { checkSoulPath, readSoulContent, SOUL_DIR, type SoulGuardOptions } from "./soul-guard"
 
-/** 角色设定目录名。 */
-export const SOUL_DIR = "souls"
+export { SOUL_DIR }
 
 /** 默认角色设定文件名。 */
 export const DEFAULT_SOUL_NAME = "default.txt"
 
+/** 同时缓存多少份角色设定：超出后丢掉最早加载的。 */
+const MAX_SOUL_STORES = 32
+
 /** 文件变化后的合并等待时间，避免编辑器连续写盘时重复读取。 */
 const RELOAD_DEBOUNCE_MS = 150
 
-export interface SoulOptions {
+export interface SoulOptions extends SoulGuardOptions {
   /** 显式指定的角色设定文件或目录，优先于 soulName。 */
   soulPath?: string
   /** souls 目录里的文件名。 */
@@ -24,6 +27,8 @@ export interface SoulOptions {
   home: string
   /** 插件所在目录，用于查找随包分发的初始角色设定。 */
   moduleDir: string
+  /** 已知凭证明文：人格文件里出现就掩码或拒绝加载。 */
+  secrets?: readonly string[]
 }
 
 /** 工作目录里的角色设定目录。 */
@@ -132,8 +137,29 @@ export class SoulStore {
 
   /** 解析路径、读取内容并开始监听文件变化。 */
   async load(): Promise<void> {
-    this.#path = resolveSoulPath(this.options)
-    this.#text = await loadSoul(this.#path)
+    const target = resolveSoulPath(this.options)
+    const check = await checkSoulPath(target, this.options)
+    if (!check.ok) {
+      this.#text = ""
+      if (check.missing) {
+        // 文件还没建好：先盯着所在目录，等它出现再读。
+        this.#path = target
+        this.#logger.warn(`角色设定还不存在：${target}`)
+        this.#watch()
+        return
+      }
+      this.#path = undefined
+      this.#logger.warn(`角色设定不可用：${check.reason}`)
+      return
+    }
+    this.#path = check.path
+    const content = await readSoulContent(check.path, this.options.secrets ?? [])
+    if (content.reason) {
+      this.#text = ""
+      this.#logger.warn(`角色设定不可用：${content.reason}`)
+      return
+    }
+    this.#text = content.text
     if (!this.#text) this.#logger.warn(`角色设定读取失败：${this.#path}`)
     else this.#logger.info(`角色设定已加载：${this.#path}`)
     this.#watch()
@@ -142,9 +168,18 @@ export class SoulStore {
   /** 重新读取角色设定文件，内容有变化时返回 true。 */
   async reload(): Promise<boolean> {
     if (!this.#path) return false
-    const text = await loadSoul(this.#path)
-    if (text === this.#text) return false
-    this.#text = text
+    const check = await checkSoulPath(this.#path, this.options)
+    if (!check.ok) {
+      this.#logger.warn(`角色设定不可用：${check.reason}`)
+      return false
+    }
+    const content = await readSoulContent(check.path, this.options.secrets ?? [])
+    if (content.reason) {
+      this.#logger.warn(`角色设定不可用：${content.reason}`)
+      return false
+    }
+    if (content.text === this.#text) return false
+    this.#text = content.text
     this.#logger.info(`角色设定已更新：${this.#path}`)
     return true
   }
@@ -204,6 +239,8 @@ export function packageDirectory(): string {
  */
 export class SoulLibrary {
   readonly #stores = new Map<string, SoulStore>()
+  /** 路径解析结果的缓存：同一份设定不用每轮都去 stat 一遍。 */
+  readonly #resolved = new Map<string, string>()
   #defaultStore: SoulStore | undefined
 
   constructor(
@@ -225,18 +262,47 @@ export class SoulLibrary {
   /** 某个路径或名字的角色设定；都没给时用默认档。 */
   async at(path: string | undefined, name?: string): Promise<SoulStore> {
     if (!path?.trim() && !name?.trim()) return this.loadDefault()
-    const absolute = resolveSoulPath({ ...this.options, soulPath: path, soulName: name })
+    const key = `${path ?? ""}\u0000${name ?? ""}`
+    let absolute = this.#resolved.get(key)
+    if (!absolute) {
+      absolute = resolveSoulPath({ ...this.options, soulPath: path, soulName: name })
+      this.#resolved.set(key, absolute)
+      this.#evictResolved()
+    }
     const cached = this.#stores.get(absolute)
     if (cached) return cached
     const store = new SoulStore({ ...this.options, soulPath: absolute }, this.logger)
     await store.load()
     this.#stores.set(absolute, store)
+    this.#evict()
     return store
+  }
+
+  /** 缓存的设定份数有上限：超出后丢掉最早加载的，别让它无界增长。 */
+  #evict(): void {
+    while (this.#stores.size > MAX_SOUL_STORES) {
+      const oldest = this.#stores.keys().next()
+      if (oldest.done) break
+      const store = this.#stores.get(oldest.value)
+      if (store === this.#defaultStore) break
+      this.#stores.delete(oldest.value)
+      store?.dispose()
+    }
+  }
+
+  /** 路径解析结果的缓存同样有上限：聊天数不封顶时这张表会一直涨。 */
+  #evictResolved(): void {
+    while (this.#resolved.size > MAX_SOUL_STORES) {
+      const oldest = this.#resolved.keys().next()
+      if (oldest.done) break
+      this.#resolved.delete(oldest.value)
+    }
   }
 
   dispose(): void {
     for (const store of this.#stores.values()) store.dispose()
     this.#stores.clear()
+    this.#resolved.clear()
     this.#defaultStore = undefined
   }
 }

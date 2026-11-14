@@ -136,7 +136,7 @@ describe("SoulStore", () => {
     const file = join(root, "soul.txt")
     await writeFile(file, "你是白羽桃", "utf-8")
 
-    const store = new SoulStore(options({ soulPath: file }), logger)
+    const store = new SoulStore(options({ soulPath: file, home: root }), logger)
     await store.load()
 
     expect(store.path).toBe(file)
@@ -151,7 +151,7 @@ describe("SoulStore", () => {
     const file = join(root, "soul.txt")
     await writeFile(file, "第一版", "utf-8")
 
-    const store = new SoulStore(options({ soulPath: file }), logger)
+    const store = new SoulStore(options({ soulPath: file, home: root }), logger)
     await store.load()
     expect(store.prompt).toContain("第一版")
 
@@ -184,13 +184,87 @@ describe("SoulStore", () => {
   })
 })
 
+describe("角色设定的边界", () => {
+  it("允许目录之外的文件拒绝加载", async () => {
+    const home = await makeDir("soul-guard-home")
+    const outside = await makeDir("soul-guard-outside")
+    const file = join(outside, "soul.txt")
+    await writeFile(file, "越界的内容", "utf-8")
+
+    const store = new SoulStore(options({ soulPath: file, home }), logger)
+    await store.load()
+
+    expect(store.text).toBe("")
+    expect(store.prompt).not.toContain("越界的内容")
+    store.dispose()
+  })
+
+  it("声明了允许目录后就能加载", async () => {
+    const home = await makeDir("soul-guard-allowed-home")
+    const outside = await makeDir("soul-guard-allowed-dir")
+    const file = join(outside, "soul.txt")
+    await writeFile(file, "声明过的内容", "utf-8")
+
+    const store = new SoulStore(options({ soulPath: file, home, allowedPaths: [outside] }), logger)
+    await store.load()
+
+    expect(store.text).toContain("声明过的内容")
+    store.dispose()
+  })
+
+  it("含私钥的角色设定整份拒绝加载", async () => {
+    const root = await makeDir("soul-guard-key")
+    const file = join(root, "soul.txt")
+    await writeFile(
+      file,
+      "你好\n-----BEGIN RSA PRIVATE KEY-----\nabc\n-----END RSA PRIVATE KEY-----\n",
+      "utf-8",
+    )
+
+    const store = new SoulStore(options({ soulPath: file, home: root }), logger)
+    await store.load()
+
+    expect(store.text).toBe("")
+    expect(store.prompt).not.toContain("PRIVATE KEY")
+    store.dispose()
+  })
+
+  it("已知凭证明文被替换成占位符", async () => {
+    const root = await makeDir("soul-guard-secret")
+    const file = join(root, "soul.txt")
+    await writeFile(file, "令牌是 panel-secret-token-123456", "utf-8")
+
+    const store = new SoulStore(
+      options({ soulPath: file, home: root, secrets: ["panel-secret-token-123456"] }),
+      logger,
+    )
+    await store.load()
+
+    expect(store.text).toContain("[REDACTED]")
+    expect(store.text).not.toContain("panel-secret-token-123456")
+    store.dispose()
+  })
+
+  it("超过大小上限的文件拒绝加载", async () => {
+    const root = await makeDir("soul-guard-size")
+    const file = join(root, "soul.txt")
+    await writeFile(file, "字".repeat(70 * 1024), "utf-8")
+
+    const store = new SoulStore(options({ soulPath: file, home: root }), logger)
+    await store.load()
+
+    expect(store.text).toBe("")
+    store.dispose()
+  })
+})
+
 describe("SoulLibrary", () => {
   it("默认档与指定路径各自生效", async () => {
     const root = await makeDir("soul-library")
     const custom = join(root, "custom.txt")
     await writeFile(custom, "你是审阅者", "utf-8")
 
-    const library = new SoulLibrary(options({ soulPath: custom }), logger)
+    const library = new SoulLibrary(options({ soulPath: custom, home: root }), logger)
     const fallback = await library.loadDefault()
     expect(fallback.text).toBe("你是审阅者")
 
@@ -208,7 +282,7 @@ describe("SoulLibrary", () => {
     const custom = join(root, "custom.txt")
     await writeFile(custom, "默认设定", "utf-8")
 
-    const library = new SoulLibrary(options({ soulPath: custom }), logger)
+    const library = new SoulLibrary(options({ soulPath: custom, home: root }), logger)
     const first = await library.at(undefined)
     const second = await library.at(custom)
     expect(second).toBe(first)

@@ -72,6 +72,8 @@ bun install
 - 标「立即」的字段保存即生效，标「重启」的字段要重载插件。
 - 会话的 cwd、文件工具、`AGENTS.md` 与 git 都取这个工作目录，不跟随加载插件的项目目录。
 - 面板（默认开启，只监听 `127.0.0.1:7391`）可以可视化编辑这份配置，见 [docs/panel.md](docs/panel.md)。
+  首次启动会在 `config.json` 里写入 `panel.token`；不想要面板就设 `panel.enabled: false`，
+  令牌可以随时改值轮换，也可以用 `panel.tokenRevoked` 吊销。别把 `panel.host` 改成 `0.0.0.0`。
 - 面板里还有两个独立页面：「会话覆盖」编辑 `chat-overrides.json`，「工具档案」编辑 `tool-profiles.json`，都不用手改文件。
 - 日志写在 `$XDG_STATE_HOME/opencode-qq-bot/logs`，写盘前统一脱敏；`trace.*` 打开时会在同目录记录一条入站消息的完整处理链。
 

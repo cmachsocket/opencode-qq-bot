@@ -96,20 +96,24 @@ export function createPanelApp(options: PanelAppOptions): Hono {
     }),
   )
 
-  // 写接口校验 Origin：带 Origin 的请求必须同源，不带的（curl）放行。
+  // 写接口校验 Origin：带 Origin 的请求必须同源。
+  // 带会话 Cookie 的请求必须带 Origin：Cookie 会被浏览器自动带上，
+  // 没有 Origin 的请求才可能是脚本伪造的。Bearer 令牌走命令行，不带 Origin 是正常的。
   app.use("/api/*", async (c, next) => {
     if (SAFE_METHODS.has(c.req.method)) return await next()
     const origin = c.req.header("Origin")
+    let expected = ""
+    try {
+      expected = new URL(c.req.url).origin
+    } catch {
+      expected = ""
+    }
     if (origin) {
-      let expected = ""
-      try {
-        expected = new URL(c.req.url).origin
-      } catch {
-        expected = ""
-      }
       if (origin !== expected) {
         return c.json({ error: "forbidden", message: "跨站请求已被拒绝" }, 403)
       }
+    } else if (getCookie(c, SESSION_COOKIE)) {
+      return c.json({ error: "forbidden", message: "缺少 Origin 头，请求已被拒绝" }, 403)
     }
     return await next()
   })
@@ -205,6 +209,10 @@ export function createPanelApp(options: PanelAppOptions): Hono {
 
   // 保存会话覆盖：稀疏改动，校验在服务端做。
   app.put("/api/chat-overrides", async (c) => {
+    const contentType = c.req.header("Content-Type") ?? ""
+    if (!contentType.toLowerCase().includes("application/json")) {
+      return c.json({ error: "unsupported_media_type", message: "只接受 JSON 请求体" }, 415)
+    }
     const body = await readJson(c.req.raw)
     const { problems, result } = await saveChatOverrides(runtime, body)
     if (!result) {
@@ -223,6 +231,10 @@ export function createPanelApp(options: PanelAppOptions): Hono {
 
   // 保存工具配置：稀疏改动，校验在服务端做。
   app.put("/api/tool-profiles", async (c) => {
+    const contentType = c.req.header("Content-Type") ?? ""
+    if (!contentType.toLowerCase().includes("application/json")) {
+      return c.json({ error: "unsupported_media_type", message: "只接受 JSON 请求体" }, 415)
+    }
     const body = await readJson(c.req.raw)
     const { problems, result } = await saveToolProfiles(runtime, body)
     if (!result) {

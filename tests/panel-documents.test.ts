@@ -38,7 +38,7 @@ beforeEach(async () => {
   const config = await controller.load()
   runtime = new PanelRuntime({ config, home: { directory: root }, logger })
   // 运行时句柄：面板保存后要靠它确认新配置已经热加载。
-  runtime.overrides = new ChatOverrides(join(root, "chat-overrides.json"), logger)
+  runtime.overrides = new ChatOverrides(join(root, "chat-overrides.json"), logger, { home: root })
   runtime.policy = new ToolPolicy(join(root, "tool-profiles.json"), logger)
   app = createPanelApp({
     auth: new PanelAuth(TOKEN),
@@ -214,6 +214,61 @@ describe("会话覆盖", () => {
     const body = JSON.parse(text) as { masked: string[] }
     expect(body.masked).toContain("chats.group:100.soulPath")
   })
+
+  it("不能靠清空字段来新建一条覆盖", async () => {
+    const response = await put("/api/chat-overrides", {
+      chats: { "group:100": { wake: null, agent: null } },
+    })
+    expect(response.status).toBe(400)
+    const body = (await response.json()) as {
+      fields: Array<{ path: string; message: string }>
+    }
+    expect(body.fields[0]?.path).toBe("chats.group:100")
+    expect(body.fields[0]?.message).toContain("不存在")
+  })
+
+  it("删掉已有覆盖的最后一项时整条被移除", async () => {
+    await put("/api/chat-overrides", { chats: { "group:100": { wake: "all" } } })
+    const response = await put("/api/chat-overrides", { chats: { "group:100": { wake: null } } })
+    expect(response.status).toBe(200)
+    expect(await readJson(join(root, "chat-overrides.json"))).toEqual({ chats: {} })
+  })
+
+  it("保存时保留文件里的其他顶层键", async () => {
+    await writeFile(
+      join(root, "chat-overrides.json"),
+      JSON.stringify({ version: 2, comment: "保留我", chats: { "group:100": { wake: "all" } } }),
+    )
+    const response = await put("/api/chat-overrides", {
+      chats: { "group:100": { agent: "build" } },
+    })
+    expect(response.status).toBe(200)
+    expect(await readJson(join(root, "chat-overrides.json"))).toEqual({
+      version: 2,
+      comment: "保留我",
+      chats: { "group:100": { wake: "all", agent: "build" } },
+    })
+  })
+
+  it("并发保存不会互相覆盖", async () => {
+    const responses = await Promise.all([
+      put("/api/chat-overrides", { chats: { "group:100": { wake: "all" } } }),
+      put("/api/chat-overrides", { chats: { "private:200": { wake: "none" } } }),
+    ])
+    expect(responses.map((response) => response.status)).toEqual([200, 200])
+    expect(await readJson(join(root, "chat-overrides.json"))).toEqual({
+      chats: { "group:100": { wake: "all" }, "private:200": { wake: "none" } },
+    })
+  })
+
+  it("选前缀唤醒却不写前缀时保存被拒绝", async () => {
+    const response = await put("/api/chat-overrides", {
+      chats: { "group:100": { wake: "prefix", "wake.prefixes": [] } },
+    })
+    expect(response.status).toBe(400)
+    const body = (await response.json()) as { fields: Array<{ path: string }> }
+    expect(body.fields[0]?.path).toBe("chats.group:100.wake.prefixes")
+  })
 })
 
 describe("工具档案", () => {
@@ -337,5 +392,61 @@ describe("工具档案", () => {
     }
     expect(body.warnings.join("；")).toContain("allow")
     expect(body.document.value.profiles.readonly?.allow).toEqual(["read"])
+  })
+
+  it("原型上的属性名不能当配置档名", async () => {
+    // JSON.parse 会把 __proto__ 变成自有属性，正好复现「面板写进原型属性名」这条路。
+    const body = JSON.parse('{"profiles":{"__proto__":{"allow":["read"],"deny":[]}}}')
+    const response = await put("/api/tool-profiles", body)
+    expect(response.status).toBe(400)
+    const payload = (await response.json()) as { fields: Array<{ path: string }> }
+    expect(payload.fields[0]?.path).toBe("profiles.__proto__")
+  })
+
+  it("不能靠清空字段来新建一个配置档", async () => {
+    const response = await put("/api/tool-profiles", {
+      profiles: { custom: { allow: null, deny: null } },
+    })
+    expect(response.status).toBe(400)
+    const body = (await response.json()) as {
+      fields: Array<{ path: string; message: string }>
+    }
+    expect(body.fields[0]?.path).toBe("profiles.custom")
+    expect(body.fields[0]?.message).toContain("不存在")
+  })
+
+  it("保存时保留文件里的其他顶层键", async () => {
+    await writeFile(
+      join(root, "tool-profiles.json"),
+      JSON.stringify({ version: 2, comment: "保留我", profiles: { custom: { allow: ["read"] } } }),
+    )
+    const response = await put("/api/tool-profiles", {
+      profiles: { custom: { allow: ["read", "grep"] } },
+    })
+    expect(response.status).toBe(200)
+    const saved = await readJson(join(root, "tool-profiles.json"))
+    expect(saved.version).toBe(2)
+    expect(saved.comment).toBe("保留我")
+  })
+
+  it("默认配置档可以置空，回到内置默认", async () => {
+    await put("/api/tool-profiles", { defaultProfile: "readonly" })
+    const response = await put("/api/tool-profiles", { defaultProfile: null })
+    expect(response.status).toBe(200)
+    const saved = await readJson(join(root, "tool-profiles.json"))
+    expect(saved.defaultProfile).toBeUndefined()
+  })
+
+  it("并发保存不会互相覆盖", async () => {
+    const responses = await Promise.all([
+      put("/api/tool-profiles", { profiles: { custom: { allow: ["read"] } } }),
+      put("/api/tool-profiles", { chats: { "group:100": "chat" } }),
+    ])
+    expect(responses.map((response) => response.status)).toEqual([200, 200])
+    const saved = await readJson(join(root, "tool-profiles.json"))
+    expect(saved).toMatchObject({
+      profiles: { custom: { allow: ["read"] } },
+      chats: { "group:100": "chat" },
+    })
   })
 })

@@ -47,8 +47,13 @@
       { allow: string[]; deny: string[] }
     >,
   )
+  /** 文件里写着的默认档：没写就是跟随内置默认。 */
+  let fileDefault = $derived((doc?.fileValue as ToolPolicyFile | undefined)?.defaultProfile ?? "")
   /** 所有可用的配置档名。 */
   let profileNames = $derived(Object.keys(policy?.profiles ?? {}))
+
+  /** 下拉框里的「跟随默认」哨兵：单选下拉选中后清不掉，只能靠这个假值切回去。 */
+  const EMPTY_CHOICE = "__empty__"
 
   onMount(() => {
     void load()
@@ -118,12 +123,28 @@
       message = "配置档名字不能为空"
       return
     }
+    // 新增模式下这个档名必须还不存在：存在时只有「编辑」能改它，
+    // 否则新增表单里的空列表会把已有档整条清空。
+    const creating = editing === ""
+    if (creating && Object.hasOwn(policy?.profiles ?? {}, name)) {
+      errors = { name: "这个配置档已经存在，点「编辑」来改" }
+      tone = "error"
+      message = "这个配置档已经存在，点「编辑」来改"
+      return
+    }
     const entry: Record<string, unknown> = {}
     if (!(isMasked(`profiles.${name}.allow`) && allowInput.length === 0)) {
-      entry.allow = allowInput
+      // 新增时只提交真填了的列表：空列表不能把同名已有档清空。
+      if (!creating || allowInput.length > 0) entry.allow = allowInput
     }
     if (!(isMasked(`profiles.${name}.deny`) && denyInput.length === 0)) {
-      entry.deny = denyInput
+      if (!creating || denyInput.length > 0) entry.deny = denyInput
+    }
+    if (Object.keys(entry).length === 0) {
+      errors = { name: "至少填写一个工具名再保存" }
+      tone = "error"
+      message = "至少填写一个工具名再保存"
+      return
     }
     busy = true
     try {
@@ -142,16 +163,36 @@
     }
   }
 
-  /** 删掉一个配置档。 */
+  /** 删掉一个配置档：还在被引用的地方一并解掉。 */
   async function removeProfile(name: string): Promise<void> {
+    // 被引用的档直接删会留下一地悬空引用：这里把引用一起清掉，
+    // 用户只需要知道「哪些地方不再指向它了」。
+    const patch: Record<string, unknown> = { profiles: { [name]: null } }
+    const chats: Record<string, null> = {}
+    const unlinked: string[] = []
+    for (const [key, profile] of Object.entries(policy?.chats ?? {})) {
+      if (profile === name) {
+        chats[key] = null
+        unlinked.push(key)
+      }
+    }
+    if (Object.keys(chats).length > 0) patch.chats = chats
+    let defaultUnlinked = false
+    if (fileDefault === name) {
+      patch.defaultProfile = null
+      defaultUnlinked = true
+    }
     busy = true
     try {
-      const result = await api.saveToolProfiles({ profiles: { [name]: null } })
+      const result = await api.saveToolProfiles(patch)
       doc = result.document
       warnings = result.warnings ?? []
       errors = {}
       tone = "ok"
-      message = `已删除配置档 ${name}。${result.note}`
+      const notes: string[] = []
+      if (unlinked.length > 0) notes.push(`已解掉聊天映射 ${unlinked.join("、")}`)
+      if (defaultUnlinked) notes.push("已把默认配置档改回内置默认")
+      message = [`已删除配置档 ${name}。`, ...notes, result.note].join(" ")
       if (editing === name) editing = undefined
     } catch (cause) {
       fail(cause)
@@ -160,8 +201,8 @@
     }
   }
 
-  /** 改默认配置档。 */
-  async function saveDefault(name: string): Promise<void> {
+  /** 改默认配置档；传 null 表示回到内置默认。 */
+  async function saveDefault(name: string | null): Promise<void> {
     busy = true
     try {
       const result = await api.saveToolProfiles({ defaultProfile: name })
@@ -297,7 +338,7 @@
   {/if}
   {#if warnings.length > 0}
     <ul class="text-muted-foreground space-y-1 text-xs">
-      {#each warnings as warning (warning)}
+      {#each warnings as warning, index (index)}
         <li>· {warning}</li>
       {/each}
     </ul>
@@ -311,22 +352,24 @@
       <div class="flex flex-wrap items-center gap-2">
         <Select.Root
           type="single"
-          value={policy?.defaultProfile ?? ""}
+          value={fileDefault === "" ? EMPTY_CHOICE : fileDefault}
           onValueChange={(next) => {
-            if (next) void saveDefault(next)
+            if (next === EMPTY_CHOICE) void saveDefault(null)
+            else if (next) void saveDefault(next)
           }}
         >
           <Select.Trigger class="w-64">
             <Select.Value placeholder="选择默认配置档" />
           </Select.Trigger>
           <Select.Content>
+            <Select.Item value={EMPTY_CHOICE}>跟随默认</Select.Item>
             {#each profileNames as name (name)}
               <Select.Item value={name}>{name}</Select.Item>
             {/each}
           </Select.Content>
         </Select.Root>
         <span class="text-muted-foreground text-xs">
-          没有按聊天指定的配置档时用这一档。
+          没有按聊天指定的配置档时用这一档；「跟随默认」表示用内置默认档。
         </span>
       </div>
       {#if errorFor("defaultProfile")}

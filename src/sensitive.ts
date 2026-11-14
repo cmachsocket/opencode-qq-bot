@@ -266,6 +266,8 @@ export interface SensitiveCheckerOptions {
   knownSecrets?: string[]
   /** 是否启用检查，默认启用。 */
   enabled?: boolean
+  /** 要排除的检测器：某些场景下某一类不该拦。 */
+  exclude?: readonly string[]
 }
 
 /**
@@ -290,7 +292,10 @@ export class SensitiveChecker {
     )
     const known = knownSecretDetector(this.knownSecrets)
     this.custom = known ? [known, SENSITIVE_PATH_DETECTOR] : [SENSITIVE_PATH_DETECTOR]
-    this.only = [...SECRET_DETECTORS, ...this.custom.map((detector) => detector.id)]
+    const excluded = new Set(options.exclude ?? [])
+    this.only = [...SECRET_DETECTORS, ...this.custom.map((detector) => detector.id)].filter(
+      (id) => !excluded.has(id),
+    )
   }
 
   /** 打开或关闭检查：开关是热字段，改完立即生效。 */
@@ -327,16 +332,22 @@ export class SensitiveChecker {
   }
 }
 
+/** 掩码时已知凭证的最短长度：再短就容易撞上普通文本。 */
+const MIN_MASKED_SECRET_LENGTH = 4
+
 /**
  * 把已知凭证明文换成占位符。
  *
  * 只认环境里已知的那些明文（面板令牌、NapCat 令牌、环境变量里的密钥），
  * 不跑通用检测器：面板要回显的是配置内容，路径与地址不该被误伤。
+ *
+ * 这里不再按通用的 12 字符下限过滤：已知凭证就是凭证，用户自己设的短令牌
+ * 同样不能原样回显。
  */
 export function maskKnownSecrets(text: string, secrets: readonly string[]): string {
   let masked = text
   for (const secret of secrets) {
-    if (secret.length < MIN_SECRET_LENGTH) continue
+    if (secret.length < MIN_MASKED_SECRET_LENGTH) continue
     if (!masked.includes(secret)) continue
     masked = masked.split(secret).join("[REDACTED]")
   }

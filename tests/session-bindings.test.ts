@@ -319,11 +319,22 @@ describe("绑定表本身", () => {
 
   it("没有标记的老会话按标题找回", async () => {
     const world = createWorld()
-    world.addSession({ id: "ses_legacy", directory: "/project", title: "QQ 群 100" })
+    // 工作目录里没标记的老会话：按标题认，标题只在本工作目录里算数。
+    world.addSession({ id: "ses_legacy", directory: "/tmp", title: "QQ 群 100" })
 
     const one = world.createInstance("one")
     expect(await one.manager.ensureSession(group(100))).toBe("ses_legacy")
     expect(one.sessionCreate).not.toHaveBeenCalled()
+  })
+
+  it("别的目录里只对上标题的会话不会被接管", async () => {
+    const world = createWorld()
+    // 标题是用户能改的：别的项目里同名的会话不能被当成本聊天的会话接过去。
+    world.addSession({ id: "ses_other_project", directory: "/project", title: "QQ 群 100" })
+
+    const one = world.createInstance("one")
+    expect(await one.manager.ensureSession(group(100))).toBe("one-1")
+    expect(one.sessionCreate).toHaveBeenCalled()
   })
 
   it("绑定的会话失效后不会再复用它", async () => {

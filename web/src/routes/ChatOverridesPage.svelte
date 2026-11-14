@@ -39,6 +39,9 @@
   /** 唤醒方式的候选项。 */
   const WAKE_MODES = ["all", "mention", "prefix", "none"]
 
+  /** 下拉框里的「跟随默认」哨兵：单选下拉选中后清不掉，只能靠这个假值切回去。 */
+  const EMPTY_CHOICE = "__empty__"
+
   let doc = $state<DocumentResponse | undefined>(undefined)
   let loading = $state(true)
   let busy = $state(false)
@@ -173,11 +176,35 @@
       message = "聊天键不能为空"
       return
     }
+    // 新增模式下这个键必须还不存在：存在时只有「编辑」能改它，
+    // 否则新增表单里的空字段会把已有记录整条清空。
+    const creating = editing === ""
+    if (creating && Object.hasOwn(chats, key)) {
+      errors = { key: "这个聊天已经有覆盖了，点「编辑」来改" }
+      tone = "error"
+      message = "这个聊天已经有覆盖了，点「编辑」来改"
+      return
+    }
+    if (draft.wake === "prefix" && listValue(draft["wake.prefixes"]).length === 0) {
+      errors = { [`chats.${key}.wake.prefixes`]: "选择 prefix 唤醒时必须写至少一个前缀" }
+      tone = "error"
+      message = "选择 prefix 唤醒时必须写至少一个前缀"
+      return
+    }
     const entry: Record<string, unknown> = {}
     for (const field of FIELDS) {
       // 被掩码的字段留空时不提交：原值保持不变。
       if (isMasked(`chats.${key}.${field.path}`) && isBlank(draft[field.path])) continue
-      entry[field.path] = patchValue(field.path)
+      const value = patchValue(field.path)
+      // 新增时只提交真填了的字段：空字段不能把同名已有记录清空。
+      if (creating && value === null) continue
+      entry[field.path] = value
+    }
+    if (Object.keys(entry).length === 0) {
+      errors = { key: "至少填写一项再保存" }
+      tone = "error"
+      message = "至少填写一项再保存"
+      return
     }
     busy = true
     try {
@@ -273,7 +300,7 @@
   {/if}
   {#if warnings.length > 0}
     <ul class="text-muted-foreground space-y-1 text-xs">
-      {#each warnings as warning (warning)}
+      {#each warnings as warning, index (index)}
         <li>· {warning}</li>
       {/each}
     </ul>
@@ -372,13 +399,15 @@
               {#if field.path === "wake"}
                 <Select.Root
                   type="single"
-                  value={String(draft[field.path] ?? "")}
-                  onValueChange={(next) => (draft[field.path] = next ?? "")}
+                  value={String(draft[field.path] ?? "") === "" ? EMPTY_CHOICE : String(draft[field.path])}
+                  onValueChange={(next) =>
+                    (draft[field.path] = next === EMPTY_CHOICE ? "" : (next ?? ""))}
                 >
                   <Select.Trigger id={`chat-${field.path}`} class="w-full">
                     <Select.Value placeholder="跟随默认" />
                   </Select.Trigger>
                   <Select.Content>
+                    <Select.Item value={EMPTY_CHOICE}>跟随默认</Select.Item>
                     {#each WAKE_MODES as mode (mode)}
                       <Select.Item value={mode}>{mode}</Select.Item>
                     {/each}
@@ -394,13 +423,15 @@
               {:else if field.path === "proactive.enabled"}
                 <Select.Root
                   type="single"
-                  value={String(draft[field.path] ?? "")}
-                  onValueChange={(next) => (draft[field.path] = next ?? "")}
+                  value={String(draft[field.path] ?? "") === "" ? EMPTY_CHOICE : String(draft[field.path])}
+                  onValueChange={(next) =>
+                    (draft[field.path] = next === EMPTY_CHOICE ? "" : (next ?? ""))}
                 >
                   <Select.Trigger id={`chat-${field.path}`} class="w-full">
                     <Select.Value placeholder="跟随默认" />
                   </Select.Trigger>
                   <Select.Content>
+                    <Select.Item value={EMPTY_CHOICE}>跟随默认</Select.Item>
                     <Select.Item value="true">允许</Select.Item>
                     <Select.Item value="false">不允许</Select.Item>
                   </Select.Content>

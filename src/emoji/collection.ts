@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto"
 import { chmod, copyFile, mkdir, open, readFile, unlink } from "node:fs/promises"
-import { extname, join } from "node:path"
+import { extname, join, resolve, sep } from "node:path"
 import { fileURLToPath } from "node:url"
 import type { Plugin } from "@opencode/plugin"
 import { Mutex } from "async-mutex"
@@ -123,12 +123,21 @@ export class CollectionStore {
     while (this.items.length > MAX_COLLECTED_STICKERS) {
       const oldest = this.items.shift()
       if (!oldest) break
+      // 只删收藏目录里的文件：存储被污染过时不能让它去删别处的文件。
+      if (!this.insideCollection(oldest.file)) continue
       try {
         await unlink(oldest.file)
       } catch {
         // 文件可能已经被删掉，不影响清单。
       }
     }
+  }
+
+  /** 这个路径是不是收藏目录里的文件。 */
+  private insideCollection(file: string): boolean {
+    const dir = resolve(this.root, COLLECTION_DIR)
+    const target = resolve(file)
+    return target.startsWith(`${dir}${sep}`)
   }
 
   /** 从插件存储恢复清单；读取失败下次重试。 */
@@ -156,6 +165,11 @@ export class CollectionStore {
       if (typeof md5 !== "string" || md5.length === 0) continue
       if (typeof description !== "string" || description.length === 0) continue
       if (typeof file !== "string" || file.length === 0) continue
+      // 存储里的路径必须落在收藏目录里：清单被污染时不至于指到别处。
+      if (!this.insideCollection(file)) {
+        this.logger.warn(`收藏清单里的文件路径不在收藏目录内，已忽略：${file}`)
+        continue
+      }
       items.push({
         md5,
         description,
@@ -180,6 +194,8 @@ export class CollectionStore {
 export const RECENT_IMAGE_TTL_MS = 30 * 60 * 1000
 /** 每个聊天最多保留多少张最近收到的图片。 */
 export const MAX_RECENT_IMAGES = 12
+/** 同时记着多少个聊天：聊天数不封顶时这张表会一直涨。 */
+export const MAX_TRACKED_CHATS = 64
 
 /** 收到的一张图片。 */
 export interface ReceivedImage {
@@ -262,9 +278,25 @@ export class RecentImages {
     }
     if (images.length === 0) return
     const key = targetKey(target)
+    if (!this.chats.has(key)) this.evictChat()
     const items = [...(this.chats.get(key) ?? []), ...images]
     while (items.length > MAX_RECENT_IMAGES) items.shift()
     this.chats.set(key, items)
+  }
+
+  /** 聊天太多时丢掉最久没更新的那个。 */
+  private evictChat(): void {
+    if (this.chats.size < MAX_TRACKED_CHATS) return
+    let oldestKey: string | undefined
+    let oldestAt = Number.POSITIVE_INFINITY
+    for (const [key, items] of this.chats) {
+      const at = items[items.length - 1]?.at ?? 0
+      if (at < oldestAt) {
+        oldestAt = at
+        oldestKey = key
+      }
+    }
+    if (oldestKey !== undefined) this.chats.delete(oldestKey)
   }
 
   /** 这个聊天最近收到的图片，只返回还在保留期内的。 */

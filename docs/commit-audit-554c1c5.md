@@ -3,7 +3,8 @@
 > 状态：审计完成。范围内 22 个提交（面板新页面 + 会话绑定持久化 + 收藏表情工具 + 3 次发布 + CI/文档改动），
 > 发现 4 个高危、9 个中危、12 个低危问题。高危 1、3、4 与中危 13 用真实模块实测复现过，
 > 其余各条给出了可复现的代码路径与位置。
-> 修复状态：除中危 8（面板默认开启，已定为设计决定、保持现状）外，其余全部待修复。
+> 修复状态：除中危 8（面板默认开启，已定为设计决定、保持现状）外，其余全部已修复，
+> 各条末尾记录了做法。
 
 审计范围：`554c1c5562848fc76dc5faf5486d5237145f11f9` 之后的全部提交，直到 `0af32e6`。
 
@@ -53,20 +54,20 @@
 
 | 编号    | 问题                                     | 状态     | 做法                                   |
 | ------- | ---------------------------------------- | -------- | -------------------------------------- |
-| 高危 1  | 原型属性名当配置档 → 工具策略崩溃        | 待修复   | —                                      |
-| 高危 2  | 面板新增记录会清空同名已有记录           | 待修复   | —                                      |
-| 高危 3  | 会话覆盖可把任意本机文件注入系统提示词   | 待修复   | —                                      |
-| 高危 4  | 两个文档读—改—写无锁，并发保存静默丢改动 | 待修复   | —                                      |
-| 中危 5  | 写锁拿不到时只打日志不重试，状态直接丢失 | 待修复   | —                                      |
-| 中危 6  | 共享绑定表只增不减                       | 待修复   | —                                      |
-| 中危 7  | `panel.token` 永远删不掉                 | 待修复   | —                                      |
+| 高危 1  | 原型属性名当配置档 → 工具策略崩溃        | 已修复   | 解析器改用无原型映射 + 保留名拒绝      |
+| 高危 2  | 面板新增记录会清空同名已有记录           | 已修复   | 新建与编辑分开；服务端拒绝清空式新建   |
+| 高危 3  | 会话覆盖可把任意本机文件注入系统提示词   | 已修复   | 允许目录 + 内容闸门（大小/凭证/掩码）  |
+| 高危 4  | 两个文档读—改—写无锁，并发保存静默丢改动 | 已修复   | 两次保存共用一把文件锁                 |
+| 中危 5  | 写锁拿不到时只打日志不重试，状态直接丢失 | 已修复   | 退避重试，仍失败才记错误               |
+| 中危 6  | 共享绑定表只增不减                       | 已修复   | 清理失效条目 + 容量上限                |
+| 中危 7  | `panel.token` 永远删不掉                 | 已修复   | 新增 `panel.tokenRevoked` 吊销开关     |
 | 中危 8  | 面板默认开启                             | 保持现状 | 决策保持默认开启，只补文档与 CHANGELOG |
-| 中危 9  | 告警文本当 `{#each}` 的 key → 整页白屏   | 待修复   | —                                      |
-| 中危 10 | 新页面没有「跟随默认」选项，选了回不去   | 待修复   | —                                      |
-| 中危 11 | 客户端与服务端的唤醒前缀校验不一致       | 待修复   | —                                      |
-| 中危 12 | 被引用的配置档在界面上永远删不掉         | 待修复   | —                                      |
-| 中危 13 | 保存时抹掉文件里的其他顶层键             | 待修复   | —                                      |
-| 低危    | 见下文「低危 / 提示」                    | 待修复   | —                                      |
+| 中危 9  | 告警文本当 `{#each}` 的 key → 整页白屏   | 已修复   | 告警去重 + 页面改用下标作 key          |
+| 中危 10 | 新页面没有「跟随默认」选项，选了回不去   | 已修复   | 两个新页面复用 `EMPTY_CHOICE` 哨兵     |
+| 中危 11 | 客户端与服务端的唤醒前缀校验不一致       | 已修复   | 服务端校验并拒绝，页面前置提示         |
+| 中危 12 | 被引用的配置档在界面上永远删不掉         | 已修复   | 删除时自动解除引用                     |
+| 中危 13 | 保存时抹掉文件里的其他顶层键             | 已修复   | 写回时保留原文件的其它顶层键           |
+| 低危    | 见下文「低危 / 提示」                    | 已修复   | 12 条逐条处理，见各条末尾              |
 
 ---
 
@@ -114,6 +115,13 @@ saveToolProfiles(runtime, { defaultProfile: "__proto__" })
 
 位置：`src/panel/documents.ts:67,407,416`、`src/tools/policy.ts:149,201,208`
 
+**已修复**：新增 `src/safe-object.ts`（`safeMap()` / `isSafeKey()` / `hasKey()` / `copyToSafeMap()`）。
+`parseToolPolicy()` 与 `parseChatOverrides()` 的映射改用 `Object.create(null)`，
+存在性判断统一走 `Object.hasOwn()`；`PROFILE_NAME` 之外再挡一层保留名
+（`__proto__` / `constructor` / `prototype`），面板的引用检查与运行时解析共用同一套判断。
+`allowedTools()` 对缺失的 `allow` / `deny` 兜底成空数组，档缺失时 `ToolPolicy.allow()` 返回空集合并告警，
+不再抛 `profile.deny.some`。测试见 `tests/policy.test.ts` 与 `tests/panel-documents.test.ts`。
+
 ### 2. 面板新增记录会把同名已有记录整条清空
 
 `web/src/routes/ChatOverridesPage.svelte:176-184` 的 `save()` 提交**全部 8 个字段**，
@@ -144,6 +152,12 @@ if (value === null) {
 
 位置：`web/src/routes/ChatOverridesPage.svelte:147-184`、
 `web/src/routes/ToolProfilesPage.svelte:113-143`、`src/panel/documents.ts:251-262,354-364`
+
+**已修复**：前端区分「新增」与「编辑」——新增时只提交用户真正填了的字段，
+新建一个已存在的键直接在前端拦下并提示去点「编辑」。
+服务端对「键不存在 + 这一条所有字段都是删除意图」明确拒绝（400），
+对「这一条没有任何可保存的字段」只告警并跳过，文件不动。
+两个页面都补了回归测试。
 
 ### 3. 「会话覆盖」能把任意本机文件注入系统提示词
 
@@ -213,6 +227,19 @@ saveChatOverrides(runtime, { chats: { "group:1": { soulPath: "/etc/passwd" } } }
 位置：`src/panel/documents.ts:261`、`src/session/soul.ts:79-86`、`src/overrides.ts:192-205`、
 `src/index.ts:663`
 
+**已修复**：新增 `src/session/soul-guard.ts`，按审计给的思路落地：
+
+1. 路径先 `resolve` 再 `realpath`，跟允许根比较，允许根 = 工作目录 + `souls.allowedPaths`（新增配置项）
+   - 工作目录下的 `souls/`；符号链接按目标判定；
+2. 内容闸门：只读常规文件、大小上限 64KB，命中私钥等凭证形状就整份拒绝加载并告警，
+   机器人自己的已知凭证明文替换成 `[REDACTED]`，控制字符剔除；
+3. 越界的条目在告警里说清楚，面板保存时保留用户的原意（文件里写着，运行时忽略）；
+4. 允许根之外的文件不建 FSWatcher；文件还不存在时只在允许根内留监听；
+5. 按 mtime 缓存正文，缓存条数有上限；
+6. 校验放在 `parseChatOverrides()` 里，手改 JSON 同样拦得住。
+
+测试见 `tests/soul.test.ts`（越界拒绝、私钥拒绝、已知密钥掩码、超大文件拒绝）。
+
 ### 4. 两个文档的「读—改—写」没有互斥，并发保存静默丢改动
 
 `src/panel/documents.ts:232-272`（会话覆盖）与 `:322-432`（工具档案）都是同一个套路：
@@ -235,6 +262,11 @@ PUT /api/chat-overrides {"chats":{"group:2":{"wake":"none"}}}     ← 同时发
 或者在 `PanelServer` 内加一个进程内互斥 + 文件锁的两层保护。
 
 位置：`src/panel/documents.ts:232-272,322-432`、`src/state-lock.ts`
+
+**已修复**：面板的两次保存都走 `withDocumentLock()`：锁文件放在文档旁边
+（`.<文件名>.lock`），用 `acquireStateLock()` 拿锁，「读—改—写」整段都在锁里，
+拿不到锁时返回 409 语义的提示而不是静默覆盖。
+回归测试见 `tests/panel-documents.test.ts` 的「并发保存不会互相覆盖」。
 
 ---
 
@@ -260,6 +292,9 @@ if (!lock) {
 
 位置：`src/session/manager.ts:627-656`
 
+**已修复**：`persist()` 拿不到写锁时排一次延迟重试（指数退避，最多 5 次，最长 5 秒），
+日志文案改成「将稍后重试保存」；重试次数用尽才记一条错误日志，日志与行为一致。
+
 ### 6. 共享绑定表只增不减
 
 `src/session/manager.ts:746-801` 的 `writeBindings()` 合并存量绑定时**永远保留存量条目**，
@@ -280,6 +315,12 @@ if (!lock) {
 让「删掉」与「自动补一个」区分开。
 
 位置：`src/config/live.ts:85-99`、`src/config/fields.ts`（`panel.token`）
+
+**已修复**：新增 `panel.tokenRevoked` 布尔字段（`src/config/fields.ts`）。面板里的「吊销」会清空 `token`、
+置 `tokenRevoked: true` 并停止面板（`src/panel/server.ts` 的 `apply()` 调用 `auth.clear()` + `closeServer()`）；
+`ensureSecrets()` 只对未吊销的面板补发令牌，吊销状态下不再重新生成。写入非空 `panel.token` 会把
+`tokenRevoked` 复位为 `false`，所以「轮换令牌」仍是直接换值；仅清空令牌不算吊销。
+`docs/panel.md` 补了吊销与轮换说明，测试见 `tests/panel-server.test.ts`。
 
 ### 8. 面板默认从关闭改成开启（设计决定：保持默认开启）
 
@@ -305,6 +346,10 @@ if (!lock) {
 
 位置：`src/config/fields.ts:741-748`、`src/config/live.ts:85-99`
 
+**已修复（仅补文档）**：按要求保持默认开启，未改默认值。`CHANGELOG.md` 的 `[Unreleased]` 点名了默认值变更、
+首次启动会写入 `panel.token` 并监听 `127.0.0.1:7391`，同时给出关闭（`panel.enabled: false`）、轮换与吊销的方法；
+`docs/panel.md`、`docs/configuration.md` 与 `README.md` 已同步说明，并明确提示不要把 `panel.host` 改成 `0.0.0.0`。
+
 ### 9. 告警文本当 `{#each}` 的 key，重复告警直接把页面打崩
 
 `web/src/routes/ChatOverridesPage.svelte:276` 与 `web/src/routes/ToolProfilesPage.svelte:300`：
@@ -326,6 +371,9 @@ Svelte 的 keyed each 遇到重复 key 会抛未捕获的 `each_key_duplicate` �
 位置：`web/src/routes/ChatOverridesPage.svelte:276`、`web/src/routes/ToolProfilesPage.svelte:300`、
 `src/panel/documents.ts:191-203,446`
 
+**已修复**：`readChatOverrides()` 与 `readToolProfiles()` 的 `warnings` 统一去重（保存路径同样），
+两个页面的 `{#each}` 改用下标作 key，重复告警不会再触发 `each_key_duplicate`。
+
 ### 10. 新页面没有「跟随默认」选项，一旦选中就回不去
 
 `ChatOverridesPage.svelte` 的唤醒模式下拉只有 `all / mention / prefix / none`，
@@ -343,6 +391,10 @@ Svelte 的 keyed each 遇到重复 key 会抛未捕获的 `each_key_duplicate` �
 位置：`web/src/routes/ChatOverridesPage.svelte`、`web/src/routes/ToolProfilesPage.svelte`、
 `web/src/routes/ConfigPage.svelte:235,314-322`
 
+**已修复**：两个新页面复用 `ConfigPage.svelte` 的 `EMPTY_CHOICE = "__empty__"` 哨兵：
+唤醒模式、`proactive.enabled`、工具档案默认档都能选回「跟随默认」（`defaultProfile: null`），
+提交时把哨兵转成 `null`。
+
 ### 11. 客户端与服务端对「唤醒前缀」的校验不一致
 
 界面允许选「前缀唤醒」但前缀列表留空。空列表在前端被转成 `null`（删字段），
@@ -355,6 +407,9 @@ Svelte 的 keyed each 遇到重复 key 会抛未捕获的 `each_key_duplicate` �
 或者至少让保存结果明确回报「wake 已被重置」。
 
 位置：`src/overrides.ts:206-210`、`web/src/routes/ChatOverridesPage.svelte`
+
+**已修复**：`saveChatOverrides()` 在服务端校验「`wake: "prefix"` 但没有前缀」并返回 400，
+不再静默删掉 `wake`；页面按同一规则前置提示并禁用保存。
 
 ### 12. 被引用的配置档在界面上永远删不掉
 
@@ -374,6 +429,9 @@ API 其实支持组合删除（`profiles:{custom:null}, chats:{"group:100":null}
 
 位置：`web/src/routes/ToolProfilesPage.svelte:146-161`、`src/panel/documents.ts:407-424`
 
+**已修复**：`removeProfile()` 删除配置档时一并提交所有引用它的 `chats.*: null`（以及 `defaultProfile: null`），
+服务端按合并后的文档校验通过，提示文案会列出被解除的引用。
+
 ### 13. 保存时抹掉文件里的其他顶层键
 
 `src/panel/documents.ts:271` 写回 `const next = { chats: base }`，`:427-431` 写回
@@ -386,6 +444,9 @@ API 其实支持组合删除（`profiles:{custom:null}, chats:{"group:100":null}
 建议：写回时保留原文件的其它顶层键（读进来、合并、整体写回）。
 
 位置：`src/panel/documents.ts:271,427-431`
+
+**已修复**：两处保存都先读入原文档，只替换自己管理的顶层键（`chats`；`defaultProfile` + `profiles` + `chats`），
+其余键（`version`、`comment` 等）原样写回。回归测试见 `tests/panel-documents.test.ts` 的「保留顶层键」用例。
 
 ---
 
@@ -431,6 +492,21 @@ API 其实支持组合删除（`profiles:{custom:null}, chats:{"group:100":null}
     既不覆盖其它检测器也不校验发现，强度低于这个步骤名字给人的印象。
     `scripts/trufflehog.yml` 另新增 4 条 allowlist（面板/napcat/查询串测试令牌）。
 
+**已修复**：12 条逐条处理：
+
+1. `maskDocument()` 改用 `Object.defineProperty` 重建对象，`__proto__` 等键原样保留；
+2. 已知密钥命中即掩码，不再看长度（≥4 字符），自设短令牌不会回显；
+3. `src/fs/atomic.ts` 写入前 `lstat`，目标是符号链接直接拒绝（`write-file-atomic` 会 realpath 到链接目标）；
+4. rename 之后 fsync 父目录，模块注释改成与实现一致的崩溃安全表述；
+5. 两个新 PUT 端点与 `/api/config` 一致：要求 `application/json`（否则 415），带 Cookie 的非安全请求必须带 Origin；
+6. 两个文档的未知字段统一为「告警 + 忽略」（200），`docs/panel.md` 的说法与实现对齐；
+7. `turnClearedAt` 上限 256、`SoulLibrary` 缓存上限 32、`RecentImages` 跟踪的 chat 上限 64；
+8. `state.lock` 过期时间改为 120s、心跳间隔 30s，降低误抢占；
+9. 标题匹配只在工作区内生效且仅在元数据匹配不到时兜底；`reuseSession` 取「最近」，`recoverSession` 取「最丰富」；
+10. `CollectionStore` 落盘与删除前都校验路径在收藏目录内，越界条目直接忽略；
+11. `qq_collect_sticker` 移入 `ADMIN_DENY` / `ADMIN_ONLY`，仅管理员/群主可用；`docs/emoji.md` 注明动图按静态图发送；
+12. CI 的隐私扫描加 `--fail` 阻断，并新增一步跑全部检测器（`--only-verified --fail`）。
+
 ---
 
 ## 值得肯定的部分
@@ -456,7 +532,7 @@ API 其实支持组合删除（`profiles:{custom:null}, chats:{"group:100":null}
 
 ---
 
-## 建议的修复顺序
+## 建议的修复顺序（已按此执行）
 
 1. **高危 1**：`PROFILE_NAME` 排除原型属性名，并把 `parseToolPolicy()` / `parseChatOverrides()`
    的映射改成 `Object.create(null)` —— 根因在解析器，不在面板。

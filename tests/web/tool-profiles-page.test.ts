@@ -92,7 +92,7 @@ describe("工具档案页", () => {
     })
   })
 
-  it("删掉一个配置档时提交空补丁", async () => {
+  it("删掉一个配置档时顺带解掉引用它的聊天", async () => {
     const requests = stubFetch((request) => {
       if (request.method === "PUT") return { body: { ok: true, document: documentResponse() } }
       return { body: documentResponse() }
@@ -102,7 +102,11 @@ describe("工具档案页", () => {
     within(rowOf("readonly")).getByText("删除").click()
     await waitFor(() => expect(requests.some((item) => item.method === "PUT")).toBe(true))
     const put = requests.find((item) => item.method === "PUT")
-    expect(put?.body).toEqual({ profiles: { readonly: null } })
+    // 引用这个档的聊天映射一起删掉，否则服务端会以「仍被引用」拒绝整单。
+    expect(put?.body).toEqual({
+      profiles: { readonly: null },
+      chats: { "group:100": null },
+    })
   })
 
   it("删掉一个聊天映射时提交空补丁", async () => {

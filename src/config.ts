@@ -30,6 +30,7 @@ export type {
   ReminderConfig,
   ReplyConfig,
   SensitiveConfig,
+  SoulConfig,
   TraceConfig,
   WakeConfig,
 } from "./config/types"
@@ -145,6 +146,7 @@ export function resolveConfig(
     },
     log: { ...parsed.log },
     media: { allowedDirs: [...parsed.media.allowedDirs] },
+    soul: { allowedPaths: [...parsed.soul.allowedPaths] },
     diary: {
       ...parsed.diary,
       summaryTargets: [...parsed.diary.summaryTargets],

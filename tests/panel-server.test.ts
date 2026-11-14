@@ -248,6 +248,43 @@ describe("面板默认开启", () => {
   })
 })
 
+describe("令牌吊销", () => {
+  it("吊销后面板不再对外服务，也不会自动补新令牌", async () => {
+    const port = await freePort()
+    await controller.applyPatch({ "panel.port": port })
+    const server = createServer(port)
+    await server.start()
+
+    await controller.applyPatch({ "panel.tokenRevoked": true })
+
+    // 面板不再响应：吊销的语义是「这个令牌永远不能用」。
+    await waitFor(async () => {
+      try {
+        const response = await fetch(`http://127.0.0.1:${port}/api/status`, {
+          headers: { Authorization: `Bearer ${TOKEN}` },
+        })
+        return response.status !== 200
+      } catch {
+        return true
+      }
+    })
+    // 旧令牌也被清掉了，不会再自动补一个新的。
+    expect(panelToken(controller)).toBe("")
+    await controller.applyPatch({ "panel.tokenRevoked": false })
+    await waitFor(async () => panelToken(controller).length > 0)
+  })
+
+  it("写入新令牌就是恢复使用", async () => {
+    await controller.applyPatch({ "panel.tokenRevoked": true })
+    expect(controller.current?.panel.tokenRevoked).toBe(true)
+
+    await controller.applyPatch({ "panel.token": "another-panel-token-value" })
+
+    expect(controller.current?.panel.tokenRevoked).toBe(false)
+    expect(panelToken(controller)).toBe("another-panel-token-value")
+  })
+})
+
 describe("配置文件写坏了", () => {
   it("删掉必填项会被拒绝，文件保持原样", async () => {
     const before = await store.read()

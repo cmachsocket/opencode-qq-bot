@@ -173,6 +173,8 @@ export interface PanelConfig {
   port: number
   /** 访问令牌；留空时自动生成并写回配置文件。 */
   token: string
+  /** 是否已吊销访问令牌：吊销后不再自动补令牌，面板也不再对外服务。 */
+  tokenRevoked: boolean
 }
 
 export interface ModelRef {
@@ -200,6 +202,8 @@ export interface QQBotConfig {
   soulPath?: string
   /** 工作目录 souls 里的角色设定文件名，默认 default.txt。 */
   soulName?: string
+  /** 角色设定的边界：允许哪些目录里的文件能进提示词。 */
+  soul: SoulConfig
   /** QQ 会话使用的 OpenCode agent。 */
   agent?: string
   /** QQ 会话使用的模型。 */
@@ -224,6 +228,17 @@ export interface QQBotConfig {
   media: MediaConfig
   diary: DiaryConfig
   panel: PanelConfig
+}
+
+/** 角色设定的边界配置。 */
+export interface SoulConfig {
+  /**
+   * 允许的角色设定根目录；相对路径按机器人工作目录解析。
+   *
+   * 默认只有工作目录：角色设定的内容会随每一轮发给模型服务商，
+   * 越出允许根的文件不会被加载。
+   */
+  allowedPaths: string[]
 }
 
 /** 准入配置。 */

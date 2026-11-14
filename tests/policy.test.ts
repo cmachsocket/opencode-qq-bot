@@ -69,6 +69,20 @@ describe("parseToolPolicy", () => {
     expect(file.profiles.chat?.deny).toEqual([])
     expect(warn).toHaveBeenCalled()
   })
+
+  it("ignores profile names taken from the prototype", () => {
+    const warn = vi.fn()
+    // JSON.parse 会把 __proto__ 变成自有属性，正好复现「配置档名是原型属性名」这条路。
+    const raw = JSON.parse(
+      '{"profiles":{"__proto__":{"allow":["read"],"deny":[]},"constructor":{"allow":["read"]}}}',
+    )
+    const file = parseToolPolicy(raw, warn)
+    expect(Object.hasOwn(file.profiles, "__proto__")).toBe(false)
+    expect(Object.hasOwn(file.profiles, "constructor")).toBe(false)
+    expect(warn).toHaveBeenCalled()
+    // 名字取不到时退回默认档，而不是取到 Object.prototype 上的东西。
+    expect(profileNameFor(file, "member", "group:1")).toBe("chat")
+  })
 })
 
 describe("defaultToolPolicy", () => {
