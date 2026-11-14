@@ -1,7 +1,7 @@
 {
   "name": "@cmach_socket/opencode-qq-bot-panel",
   "private": true,
-  "version": "0.9.2",
+  "version": "0.10.0",
   "type": "module",
   "description": "状态面板前端：Svelte 5 + Vite + Tailwind v4 + shadcn-svelte。",
   "scripts": {

@@ -20,8 +20,8 @@
 
 ## 版本现状
 
-- npm 最新：`0.9.0`（`@cmach_socket/opencode-qq-bot`）；`0.9.1` 已暂存，等 2FA 批准。
-- 仓库当前：`0.9.2`。
+- npm 最新：`0.9.0`（`@cmach_socket/opencode-qq-bot`）；`0.9.1`、`0.9.2`、`0.10.0` 已暂存，等 2FA 批准。
+- 仓库当前：`0.10.0`。
 - `0.9.0` 起 npm 包里带上面板前端产物（`web/dist`）：发布工作流会在 `npm stage publish`
   之前构建前端，`web/dist` 与 `web/node_modules` 都在 `.gitignore` 里，打包不会带上多余文件。
 - `0.7.1` 曾打过 tag，但版本号不合上表的策略（工具入参与日记范围属于不兼容变更），
