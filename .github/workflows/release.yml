@@ -29,15 +29,16 @@ jobs:
         id: scan-base
         run: echo "commit=$(git rev-list --max-parents=0 HEAD | head -n 1)" >> "$GITHUB_OUTPUT"
 
-      # 自定义检测器是本项目自己的隐私规则（群号、凭证赋值、私钥块），
-      # 离线跑，命中即失败：--fail 让 trufflehog 有结果时返回非零。
+      # 自定义检测器是本项目自己的隐私规则（群号、凭证赋值、私钥块），离线跑。
+      # 命中即失败是 action 自带的行为（它已经传了 --fail），不要再写进
+      # extra_args：trufflehog 不接受重复的 --fail，会直接报错退出。
       - name: 隐私扫描（自定义检测器，离线）
         uses: trufflesecurity/trufflehog@v3.99.8
         with:
           version: 3.99.8
           base: ${{ steps.scan-base.outputs.commit }}
           head: ${{ github.sha }}
-          extra_args: --config=scripts/trufflehog.yml --include-detectors=CustomRegex --no-verification --fail
+          extra_args: --config=scripts/trufflehog.yml --include-detectors=CustomRegex --no-verification
 
       # 内置检测器覆盖自定义规则之外的凭证（云厂商密钥、令牌、密码等）。
       # 只认已验证的泄漏：--only-verified 会拿命中的凭证去实际验证一次，
@@ -48,7 +49,7 @@ jobs:
           version: 3.99.8
           base: ${{ steps.scan-base.outputs.commit }}
           head: ${{ github.sha }}
-          extra_args: --only-verified --fail
+          extra_args: --only-verified
 
       - uses: oven-sh/setup-bun@v2
         with:
