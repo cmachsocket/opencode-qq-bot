@@ -149,6 +149,8 @@ interface LoggerHandle {
   files: FileTransport[]
   /** 当前最低级别：热更新时跟着变。 */
   level: LogLevel
+  /** 已经关闭：之后的写入直接丢弃。 */
+  closed: boolean
 }
 
 const handles = new Set<LoggerHandle>()
@@ -297,7 +299,13 @@ export function createLogger(prefix: string, options: LoggerOptions | LogLevel =
     exitOnError: false,
   })
   /** 当前级别：热更新时跟着变，缓冲的过滤要与输出一致。 */
-  const handle: LoggerHandle = { api: undefined as unknown as Logger, logger, files, level }
+  const handle: LoggerHandle = {
+    api: undefined as unknown as Logger,
+    logger,
+    files,
+    level,
+    closed: false,
+  }
 
   // 传输出错时不能让进程崩掉，也不能让错误本身带着凭证进日志。
   logger.on("error", (error: Error) => {
@@ -306,6 +314,9 @@ export function createLogger(prefix: string, options: LoggerOptions | LogLevel =
   })
 
   const write = (target: LogLevel, message: string, meta: unknown[]) => {
+    // 日志器已经关闭就不再写：winston 关闭后传输已被摘掉，
+    // 继续写只会让 winston 刷"no transports"警告，日志本身也落不下去。
+    if (handle.closed) return
     // 低于当前级别的日志不进缓冲：面板看到的级别过滤和文件里一致。
     if (LEVEL_ORDER.indexOf(target) < LEVEL_ORDER.indexOf(handle.level)) return
     const details = normalizeMeta(meta)
@@ -360,7 +371,11 @@ function waitFinish(transport: DailyRotateFile): Promise<void> {
  */
 export async function closeLogger(target?: Logger): Promise<void> {
   const closing = target ? [...handles].filter((handle) => handle.api === target) : [...handles]
-  for (const handle of closing) handles.delete(handle)
+  for (const handle of closing) {
+    // 先标记关闭：卸载途中还有异步回调在写日志，这些写入直接丢弃。
+    handle.closed = true
+    handles.delete(handle)
+  }
   await Promise.all(
     closing.map(async (handle) => {
       const waits = handle.files.map((file) => waitFinish(file.transport))

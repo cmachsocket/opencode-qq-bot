@@ -359,6 +359,8 @@ export default Plugin.define({
       // 卸载已经开始就不再搭运行时：这时注册会覆盖接管方的工具。
       canStart: () => !disposed,
       setup: async () => {
+        // 被接管或卸载后立刻停下：继续搭运行时会和接管方抢机器人连接。
+        if (disposed) return
         // 角色设定：先把随包分发的初始文件补进工作目录，之后一直读工作目录里的副本，
         // 升级插件不会覆盖掉用户改过的设定。默认档之外还能按聊天覆盖，改完下一轮即生效。
         const soulOptions = {
@@ -481,6 +483,8 @@ export default Plugin.define({
           },
           CleanupOrder.handover,
         )
+        // 被接管后共享状态归接管方写，这里再写会把它的绑定冲掉。
+        if (disposed) return
         await manager.load()
         // 接管上一实例留下的在途状态：那一轮还在上游跑，丢掉的话这轮的回复就没了。
         // 只有真的接管了旧实例才有东西可接。
@@ -1068,6 +1072,8 @@ export default Plugin.define({
 
         // 工具先注册，模型这一轮就能看到 qq_*；再连 NapCat 开始消费。
         await registerRuntime()
+        // 连接前再确认一次：被接管后不能再连 NapCat，否则会有两条连接同时收消息。
+        if (disposed) return
         await startConsuming()
         logger.info("机器人已接管，开始接收 QQ 消息")
       },
@@ -1115,13 +1121,16 @@ export default Plugin.define({
       )
     }
 
-    logger.info("插件已加载", {
-      allowGroups: config.access.allow.groups,
-      allowUsers: config.access.allow.users,
-      napcat: redactUrl(config.napcat.url),
-      agent: config.agent ?? "(默认)",
-      locked: botLock !== undefined,
-    })
+    // 被接管或卸载的实例不算加载成功：它已经交棒给别的实例了。
+    if (!disposed) {
+      logger.info("插件已加载", {
+        allowGroups: config.access.allow.groups,
+        allowUsers: config.access.allow.users,
+        napcat: redactUrl(config.napcat.url),
+        agent: config.agent ?? "(默认)",
+        locked: botLock !== undefined,
+      })
+    }
 
     return dispose
   },

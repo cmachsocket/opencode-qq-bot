@@ -241,6 +241,36 @@ describe("日志器", () => {
   })
 })
 
+describe("关闭后的日志器", () => {
+  it("关闭后继续写不再触发 winston 的无传输警告", async () => {
+    const capture = captureConsole()
+    const logger = createLogger("[closed]", { file: false })
+    await closeLogger(logger)
+    logger.info("关闭之后的日志")
+    capture.restore()
+    expect(capture.text()).not.toContain("no transports")
+    expect(capture.text()).not.toContain("关闭之后的日志")
+  })
+
+  it("关闭后写入不再进缓冲", async () => {
+    const logger = createLogger("[closed]", { file: false })
+    await closeLogger(logger)
+    logger.info("关闭之后不进缓冲")
+    const entries = readLogTail({ limit: 50 })
+    expect(entries.some((entry) => entry.message === "关闭之后不进缓冲")).toBe(false)
+  })
+
+  it("关闭一个日志器不影响其它日志器", async () => {
+    const a = createLogger("[a]", { file: false })
+    const b = createLogger("[b]", { file: false })
+    await closeLogger(a)
+    b.info("另一个日志器照常写")
+    const entries = readLogTail({ limit: 50 })
+    expect(entries.some((entry) => entry.message === "另一个日志器照常写")).toBe(true)
+    await closeLogger(b)
+  })
+})
+
 describe("日志环形缓冲", () => {
   it("写入的日志进缓冲，可以按条数与级别读回", async () => {
     const logger = createLogger("[buffer]", { file: false })
