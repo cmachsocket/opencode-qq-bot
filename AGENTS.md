@@ -31,6 +31,8 @@ Annotations must be concise and unambiguous, conveying only what is necessary. D
 
 # Testing and Quality Assurance
 
+Tests must be fit to purpose, covering the functionality of the code and ensuring it behaves as expected. Do not bypass or rewrite existing tests without a valid reason.
+
 No tests should be written or added to the production codebase. All tests should be written in the `tests/` folder.
 
 Use `eslint .` and `tsc --noEmit` to check the code for errors or warnings. If any errors or warnings are found, you must fix them before proceeding.
