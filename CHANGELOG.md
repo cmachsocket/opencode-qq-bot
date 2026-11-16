@@ -2,6 +2,15 @@
 
 本文件记录 opencode-qq-bot 的重要变更。
 
+## [Unreleased]
+
+### Fixed
+
+- 实例被新实例接管后立刻收手：旧实例不再继续搭建运行时，不写共享会话状态，也不再连第二条
+  NapCat 连接，接管后不会出现重复投递与状态互相覆盖。
+- 不再刷 `[winston] Attempt to write logs with no transports`：日志器关闭后继续写入的日志
+  直接丢弃，winston 不会再警告，这些日志本来也落不下去。
+
 ## [0.10.0] - 2026-11-14
 
 ### Breaking Changes
