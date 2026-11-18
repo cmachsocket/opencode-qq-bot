@@ -324,6 +324,15 @@ export const CONFIG_FIELDS: readonly ConfigField[] = [
     hot: true,
   },
   {
+    path: "wake.ignorePrefixes",
+    group: "wake",
+    type: "stringList",
+    label: "忽略前缀",
+    description: "消息以这些前缀开头就完全不理：不回复，也不进模型上下文",
+    default: [],
+    hot: true,
+  },
+  {
     path: "wake.ignoreAtAll",
     group: "wake",
     type: "boolean",

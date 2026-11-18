@@ -63,6 +63,7 @@ export interface DocumentSaveResult {
 const CHAT_OVERRIDE_FIELDS = [
   "wake",
   "wake.prefixes",
+  "wake.ignorePrefixes",
   "proactive.enabled",
   "proactive.startProbability",
   "collect.privateMs",

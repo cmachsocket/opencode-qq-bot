@@ -10,6 +10,7 @@ import {
   DEFAULT_COLLECT_POLICY,
   DEFAULT_WAKE_POLICY,
   describeOverride,
+  ignoredByPrefix,
   parseChatOverrides,
   proactiveAllowed,
   wakeDecision,
@@ -223,6 +224,32 @@ describe("parseChatOverrides", () => {
     expect(warn).toHaveBeenCalledTimes(2)
   })
 
+  it("读取忽略前缀", () => {
+    const warn = vi.fn()
+    const file = parseChatOverrides(
+      { chats: { "group:100": { "wake.ignorePrefixes": ["!", "bot,"] } } },
+      warn,
+    )
+    expect(file.chats["group:100"]).toEqual({ "wake.ignorePrefixes": ["!", "bot,"] })
+    expect(warn).not.toHaveBeenCalled()
+  })
+
+  it("wake.ignorePrefixes 写错时只忽略这一项", () => {
+    const warn = vi.fn()
+    const file = parseChatOverrides(
+      {
+        chats: {
+          "group:100": { "wake.ignorePrefixes": "!" },
+          "group:200": { "wake.ignorePrefixes": ["  "] },
+        },
+      },
+      warn,
+    )
+    expect(file.chats["group:100"]).toEqual({})
+    expect(file.chats["group:200"]).toEqual({})
+    expect(warn).toHaveBeenCalledTimes(2)
+  })
+
   it("读取主动说话概率", () => {
     const warn = vi.fn()
     const file = parseChatOverrides(
@@ -255,6 +282,25 @@ describe("chatMuted", () => {
     expect(chatMuted({ wake: "none" }, group(100))).toBe(true)
     expect(chatMuted({ wake: "none" }, priv(200))).toBe(false)
     expect(chatMuted({ wake: "all" }, group(100))).toBe(false)
+  })
+})
+
+describe("ignoredByPrefix", () => {
+  const policy = { ...DEFAULT_WAKE_POLICY, ignorePrefixes: ["!"] }
+
+  it("命中全局忽略前缀", () => {
+    expect(ignoredByPrefix({}, "!别的机器人", policy)).toBe(true)
+    expect(ignoredByPrefix({}, "  !别的机器人", policy)).toBe(true)
+    expect(ignoredByPrefix({}, "闲聊", policy)).toBe(false)
+  })
+
+  it("会话覆盖的忽略前缀替换全局的", () => {
+    expect(ignoredByPrefix({ "wake.ignorePrefixes": ["@bot"] }, "!别的机器人", policy)).toBe(false)
+    expect(ignoredByPrefix({ "wake.ignorePrefixes": ["@bot"] }, "@bot 别理我", policy)).toBe(true)
+  })
+
+  it("默认没有忽略前缀", () => {
+    expect(ignoredByPrefix({}, "!别的机器人")).toBe(false)
   })
 })
 
@@ -377,6 +423,23 @@ describe("wakeDecision", () => {
     ).toEqual({ required: true, reason: "all" })
   })
 
+  it("命中忽略前缀时不回，连被 @ 与私聊也不回", () => {
+    const policy = { ...DEFAULT_WAKE_POLICY, ignorePrefixes: ["!"] }
+    expect(
+      wakeDecision({}, group(100), ctx({ mentioned: true, text: "!别的机器人" }), policy),
+    ).toEqual({ required: false, ignored: true })
+    expect(wakeDecision({ wake: "all" }, group(100), ctx({ text: "!别的机器人" }), policy)).toEqual(
+      {
+        required: false,
+        ignored: true,
+      },
+    )
+    expect(wakeDecision({}, priv(200), ctx({ text: "!别的机器人" }), policy)).toEqual({
+      required: false,
+      ignored: true,
+    })
+  })
+
   it("关掉“@了别人就不理”之后照旧判定", () => {
     expect(
       wakeDecision({}, group(100), ctx({ atOthersFirst: true, text: "@张三 帮忙看下" }), {
@@ -431,6 +494,9 @@ describe("describeOverride", () => {
     )
     expect(describeOverride({ "proactive.enabled": false })).toBe(
       "唤醒 mention（默认），不主动说话",
+    )
+    expect(describeOverride({ "wake.ignorePrefixes": ["!", "bot,"] })).toBe(
+      "唤醒 mention（默认），忽略前缀 ! / bot,，主动说话跟随白名单",
     )
   })
 

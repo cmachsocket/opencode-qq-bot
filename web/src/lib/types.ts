@@ -101,6 +101,8 @@ export interface ChatOverride {
   wake?: string
   /** 唤醒前缀。 */
   "wake.prefixes"?: string[]
+  /** 忽略前缀：命中即整条不理。 */
+  "wake.ignorePrefixes"?: string[]
   /** 是否允许主动说话。 */
   "proactive.enabled"?: boolean
   /** 主动说话的触发概率。 */

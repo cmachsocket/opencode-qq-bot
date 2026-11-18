@@ -42,6 +42,7 @@ export type WakePolicy = WakeConfig
 export const DEFAULT_WAKE_POLICY: WakePolicy = {
   ...DEFAULT_CONFIG.wake,
   prefixes: [...DEFAULT_CONFIG.wake.prefixes],
+  ignorePrefixes: [...DEFAULT_CONFIG.wake.ignorePrefixes],
 }
 
 /** 全局收集窗口策略：与配置项 `collect` 同构。 */
@@ -58,6 +59,8 @@ export interface WakeDecision {
   reason?: WakeReason
   /** 这条消息明确不是在跟机器人说话，别插话。 */
   suppress?: boolean
+  /** 这条消息命中忽略前缀：整条都不该进模型上下文。 */
+  ignored?: boolean
 }
 
 /** 主动说话的白名单。 */
@@ -78,6 +81,8 @@ export interface ChatOverride {
   wake?: WakeMode
   /** 唤醒前缀，`wake` 为 `prefix` 时用；与全局 `wake.prefixes` 同名同形。 */
   "wake.prefixes"?: string[]
+  /** 忽略前缀，命中即整条不理；与全局 `wake.ignorePrefixes` 同名同形。 */
+  "wake.ignorePrefixes"?: string[]
   /** 是否允许主动说话，对应全局 `proactive.enabled`。 */
   "proactive.enabled"?: boolean
   /** 这个聊天单次心跳的触发概率，对应全局 `proactive.startProbability`。 */
@@ -168,6 +173,31 @@ function parseCollectMs(raw: unknown): number | undefined {
 }
 
 /**
+ * 解析前缀列表：必须是字符串数组，空白项丢掉。
+ *
+ * 全是空白项时视为没写：留着空列表没有意义，还会把全局值顶掉。
+ */
+function parsePrefixes(
+  raw: unknown,
+  label: string,
+  warn: (message: string) => void,
+): string[] | undefined {
+  if (!Array.isArray(raw)) {
+    warn(`${label} 必须是字符串数组，已忽略`)
+    return undefined
+  }
+  const prefixes = raw
+    .filter((item): item is string => typeof item === "string")
+    .map((item) => item.trim())
+    .filter((item) => item.length > 0)
+  if (prefixes.length === 0) {
+    warn(`${label} 至少要有一个非空前缀，已忽略`)
+    return undefined
+  }
+  return prefixes
+}
+
+/**
  * 解析并校验覆盖配置。
  *
  * 写错的字段只忽略这一项并告警，其余照常生效：一处笔误不该让整个文件失效。
@@ -204,17 +234,20 @@ export function parseChatOverrides(
       }
     }
     if (record["wake.prefixes"] !== undefined) {
-      const raw = record["wake.prefixes"]
-      if (!Array.isArray(raw)) {
-        warn(`会话覆盖 ${key} 的 wake.prefixes 必须是字符串数组，已忽略`)
-      } else {
-        const prefixes = raw
-          .filter((item): item is string => typeof item === "string")
-          .map((item) => item.trim())
-          .filter((item) => item.length > 0)
-        if (prefixes.length > 0) override["wake.prefixes"] = prefixes
-        else warn(`会话覆盖 ${key} 的 wake.prefixes 至少要有一个非空前缀，已忽略`)
-      }
+      const prefixes = parsePrefixes(
+        record["wake.prefixes"],
+        `会话覆盖 ${key} 的 wake.prefixes`,
+        warn,
+      )
+      if (prefixes) override["wake.prefixes"] = prefixes
+    }
+    if (record["wake.ignorePrefixes"] !== undefined) {
+      const prefixes = parsePrefixes(
+        record["wake.ignorePrefixes"],
+        `会话覆盖 ${key} 的 wake.ignorePrefixes`,
+        warn,
+      )
+      if (prefixes) override["wake.ignorePrefixes"] = prefixes
     }
     if (record["proactive.enabled"] !== undefined) {
       if (typeof record["proactive.enabled"] === "boolean") {
@@ -349,10 +382,27 @@ export function chatMuted(override: ChatOverride, target: ChatTarget): boolean {
 }
 
 /**
+ * 这条消息是不是命中了忽略前缀。
+ *
+ * 命中就整条丢掉：不进模型上下文，也不回复。忽略前缀比任何唤醒规则都优先，
+ * 连直接 @ 机器人也一样：运营方说这条不理，就不理。
+ * 会话覆盖里写了忽略前缀就完全替换全局的，没写才用全局的。
+ */
+export function ignoredByPrefix(
+  override: ChatOverride,
+  text: string,
+  policy: WakePolicy = DEFAULT_WAKE_POLICY,
+): boolean {
+  const prefixes = override["wake.ignorePrefixes"] ?? policy.ignorePrefixes
+  const trimmed = text.trimStart()
+  return prefixes.some((prefix) => prefix && trimmed.startsWith(prefix))
+}
+
+/**
  * 这次要不要让模型必须回复，以及为什么。
  *
- * 判定顺序：私聊必回；聊天自己写死的唤醒方式优先；被直接 @ 一定回；
- * 群里第一个 @ 指向别人时这条消息不是跟机器人说的；
+ * 判定顺序：命中忽略前缀就整条不理；私聊必回；聊天自己写死的唤醒方式优先；
+ * 被直接 @ 一定回；群里第一个 @ 指向别人时这条消息不是跟机器人说的；
  * 其余看全局前缀、@全体成员与回复机器人自己。
  */
 export function wakeDecision(
@@ -361,6 +411,8 @@ export function wakeDecision(
   context: WakeContext,
   policy: WakePolicy = DEFAULT_WAKE_POLICY,
 ): WakeDecision {
+  // 忽略前缀最先看：命中就整条丢掉，连 @ 了机器人也不回。
+  if (ignoredByPrefix(override, context.text, policy)) return { required: false, ignored: true }
   // 私聊都是冲着机器人来的，永远必回。
   if (target.kind === "private") return { required: true, reason: "private" }
   // 静音的群完全不理。
@@ -447,6 +499,9 @@ export function describeOverride(
   if (override.wake === "prefix") {
     const prefixes = override["wake.prefixes"]?.join(" / ")
     parts.push(`前缀 ${prefixes ?? "（未设置）"}`)
+  }
+  if (override["wake.ignorePrefixes"]?.length) {
+    parts.push(`忽略前缀 ${override["wake.ignorePrefixes"].join(" / ")}`)
   }
   parts.push(
     override["proactive.enabled"] === true

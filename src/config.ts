@@ -132,7 +132,11 @@ export function resolveConfig(
       allowGroups: [...parsed.proactive.allowGroups],
       allowUsers: [...parsed.proactive.allowUsers],
     },
-    wake: { ...parsed.wake, prefixes: [...parsed.wake.prefixes] },
+    wake: {
+      ...parsed.wake,
+      prefixes: [...parsed.wake.prefixes],
+      ignorePrefixes: [...parsed.wake.ignorePrefixes],
+    },
     reply: { ...parsed.reply },
     trace: { ...parsed.trace },
     reminder: { ...parsed.reminder },

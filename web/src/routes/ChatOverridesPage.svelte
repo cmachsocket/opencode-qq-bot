@@ -28,6 +28,7 @@
   const FIELDS = [
     { path: "wake", label: "唤醒方式", hint: "all / mention / prefix / none" },
     { path: "wake.prefixes", label: "唤醒前缀", hint: "wake 为 prefix 时用，留空表示不覆盖" },
+    { path: "wake.ignorePrefixes", label: "忽略前缀", hint: "命中即整条不理，留空表示跟随全局" },
     { path: "proactive.enabled", label: "主动说话", hint: "留空表示跟随全局白名单" },
     { path: "proactive.startProbability", label: "主动概率", hint: "0 到 1 之间的数字" },
     { path: "collect.privateMs", label: "私聊收集窗口（毫秒）", hint: "留空表示跟随全局，0 表示立即回复" },
@@ -103,6 +104,7 @@
     draft = {
       wake: override?.wake ?? "",
       "wake.prefixes": listValue(override?.["wake.prefixes"]),
+      "wake.ignorePrefixes": listValue(override?.["wake.ignorePrefixes"]),
       "proactive.enabled":
         override?.["proactive.enabled"] === undefined
           ? ""
@@ -139,6 +141,7 @@
     draft = {
       wake: "",
       "wake.prefixes": [],
+      "wake.ignorePrefixes": [],
       "proactive.enabled": "",
       "proactive.startProbability": "",
       "collect.privateMs": "",
@@ -161,7 +164,7 @@
   /** 表单值变成补丁值：空表示删掉这个字段。 */
   function patchValue(path: string): unknown {
     const value = draft[path]
-    if (path === "wake.prefixes") {
+    if (path === "wake.prefixes" || path === "wake.ignorePrefixes") {
       const list = listValue(value)
       return list.length > 0 ? list : null
     }
@@ -346,6 +349,7 @@
               <Table.Head>聊天键</Table.Head>
               <Table.Head>唤醒</Table.Head>
               <Table.Head>前缀</Table.Head>
+              <Table.Head>忽略前缀</Table.Head>
               <Table.Head>主动</Table.Head>
               <Table.Head>概率</Table.Head>
               <Table.Head>收集</Table.Head>
@@ -361,6 +365,7 @@
                 <Table.Cell class="font-mono text-xs">{key}</Table.Cell>
                 <Table.Cell>{summary(override.wake)}</Table.Cell>
                 <Table.Cell class="text-xs">{summary(override["wake.prefixes"])}</Table.Cell>
+                <Table.Cell class="text-xs">{summary(override["wake.ignorePrefixes"])}</Table.Cell>
                 <Table.Cell>
                   {override["proactive.enabled"] === undefined
                     ? "默认"
@@ -441,7 +446,7 @@
                     {/each}
                   </Select.Content>
                 </Select.Root>
-              {:else if field.path === "wake.prefixes"}
+              {:else if field.path === "wake.prefixes" || field.path === "wake.ignorePrefixes"}
                 <TagInput
                   id={`chat-${field.path}`}
                   value={listValue(draft[field.path])}

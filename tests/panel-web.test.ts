@@ -61,6 +61,7 @@ describe("独立配置页面", () => {
     for (const field of [
       "wake",
       "wake.prefixes",
+      "wake.ignorePrefixes",
       "proactive.enabled",
       "proactive.startProbability",
       "collect.privateMs",

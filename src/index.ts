@@ -48,6 +48,7 @@ import { COMMANDS, handleCommand, isCommandChat } from "./commands"
 import {
   chatMuted,
   ChatOverrides,
+  ignoredByPrefix,
   proactiveAllowed,
   resolveChatOverridesPath,
   wakeDecision,
@@ -843,6 +844,14 @@ export default Plugin.define({
                 commands,
               )
               if (handled) return
+            }
+            // 命中忽略前缀的消息整条丢掉：不进上下文，也不回复。
+            // 管理命令在前面已经处理过，命令不受忽略前缀影响。
+            if (ignoredByPrefix(override, messageText(event), config.wake)) {
+              logger.debug(`${targetLabel(target)} 消息命中忽略前缀，已忽略`, {
+                user: String(event.user_id),
+              })
+              return
             }
             if (!shouldProcess(event.message, selfId)) return
 

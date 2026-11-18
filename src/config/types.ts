@@ -33,6 +33,8 @@ export interface ProactiveConfig {
 export interface WakeConfig {
   /** 全局唤醒前缀，命中即必回。 */
   prefixes: string[]
+  /** 忽略前缀，命中即整条不理：不回复，也不进模型上下文。 */
+  ignorePrefixes: string[]
   /** 是否忽略 @全体成员。 */
   ignoreAtAll: boolean
   /** 回复机器人自己的消息是否必回。 */
