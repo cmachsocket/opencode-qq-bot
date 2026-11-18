@@ -13,6 +13,9 @@
 
 ### Fixed
 
+- CI 的依赖漏洞扫描不再被 picomatch 的上游公告卡死：`GHSA-fc5q-39xc-vjpf`（picomatch ReDoS）
+  上游还没有修复版本，先在扫描步骤里只豁免这一条，其余高危照常拦截；
+  picomatch 出了修复版就把豁免去掉。
 - 实例被新实例接管后立刻收手：旧实例不再继续搭建运行时，不写共享会话状态，也不再连第二条
   NapCat 连接，接管后不会出现重复投递与状态互相覆盖。
 - 不再刷 `[winston] Attempt to write logs with no transports`：日志器关闭后继续写入的日志

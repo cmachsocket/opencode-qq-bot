@@ -261,3 +261,32 @@ if (!force && state.sessionID && this.verifiedSessions.has(state.sessionID)) {
 - `src/diary/scheduler.ts`：定时 tick 与推送。
 - `src/session/manager.ts`：`exportHandover()`、`adoptHandover()`。
 - `src/index.ts`：`lease.handover(...)` 的实例交接点。
+
+## 依赖漏洞扫描被 picomatch 的上游公告卡住
+
+### 现象
+
+- CI 的「依赖漏洞扫描」步骤失败，报 `picomatch@4.0.7` 高危：
+  `picomatch vulnerable to ReDoS through single-branch repeated extglobs`
+  （`GHSA-fc5q-39xc-vjpf` / `CVE-2026-112366`）。
+- 这条公告 2026-11-17 才被 GitHub Advisory Database 复核并更新，所以 2026-11-16 之前的
+  CI 还是绿的——与仓库代码改动无关。
+
+### 现状
+
+- 公告写的受影响范围是 `<= 4.0.7`，「修复版本」一栏是 **None**：npm 上 picomatch 的
+  最新版本就是 4.0.7，没有可升级的目标版本。
+- 依赖路径只有 `vite` / `tinyglobby` → `fdir` → `picomatch`，挂在
+  `@opencode/plugin`、`vitest`、`@sveltejs/vite-plugin-svelte` 等包下面。
+- 触发 ReDoS 要让攻击者控制传给 picomatch 的 **glob 模式**。本仓库传进去的模式都是
+  自己写死的构建期配置，没有外部输入路径，实际风险低。
+
+### 处置
+
+- 扫描步骤加了 `--ignore=GHSA-fc5q-39xc-vjpf`，只豁免这一条，其余高危仍然拦截。
+- 豁免是临时的，不是把门禁关掉。
+
+### 移除条件
+
+- picomatch 发布修复版（≥ 4.0.8）后升到该版本并去掉 `--ignore`；
+  或上游撤下这条公告。两者任一成立就该把豁免拿掉。

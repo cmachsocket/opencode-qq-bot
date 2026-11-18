@@ -63,5 +63,8 @@ jobs:
       - name: 测试
         run: bun run test
 
+      # GHSA-fc5q-39xc-vjpf（picomatch ReDoS）上游还没有修复版本（Advisory 的 Patched 列为 None），
+      # 只能等 picomatch 发新版；picomatch 只经 vite/tinyglobby 出现在依赖树里，
+      # 命中的 glob 模式都是本仓库自己写的，不是外部输入。先豁免这条，见 docs/known-issues.md。
       - name: 依赖漏洞扫描（只查运行时依赖，高危及以上）
-        run: bun audit --production --audit-level=high
+        run: bun audit --production --audit-level=high --ignore=GHSA-fc5q-39xc-vjpf
