@@ -300,6 +300,7 @@ export type FieldType =
 | PUT  | `/api/tool-profiles`  | 提交工具配置的稀疏改动                |
 | GET  | `/api/models`         | 可用模型列表（`model` 字段的候选项）  |
 | GET  | `/api/status`         | 运行状态快照                          |
+| POST | `/api/restart`        | 就地重启插件：重新读取配置并初始化    |
 | GET  | `/api/logs`           | 日志尾部（内存环形缓冲）              |
 | GET  | `/api/stream`         | SSE：状态、配置变更与日志推送         |
 | GET  | `/*`                  | Svelte 构建产物                       |
@@ -399,7 +400,7 @@ export type FieldType =
 
 ### 页面
 
-- 顶栏：连接状态、版本、运行时长、「需重启生效」提示。
+- 顶栏：连接状态、版本、运行时长、「需重启生效」提示与「重启插件」按钮。
 - Tab：配置 / 会话覆盖 / 工具档案 / 状态 / 日志 / 追踪。
 - 配置页：左侧分组导航（`napcat`、`access`、`proactive`、`wake`、`reply`、`trace`、`reminder`、`keepAlive`、`history`、`rateLimit`、`sensitive`、`events`、`log`、`media`、`diary`、`panel`），右侧渲染当前分组的表单；每字段一行显示「当前值 / 来源（文件或默认）/ 说明」。
 - 会话覆盖页：列出 `chat-overrides.json` 里的每个聊天键（`group:100` / `private:200`）与它的覆盖项，可新增、修改、删除；可编辑字段严格等于后端 `ChatOverride` 的十一个字段（`wake`、`wake.prefixes`、`wake.ignorePrefixes`、`proactive.enabled`、`proactive.startProbability`、`collect.privateMs`、`collect.groupMs`、`agent`、`model`、`soulPath`、`soulName`），不多不少。新增与修改分开：新增只提交真正填了的字段，不会把同名已有记录清空。
@@ -421,6 +422,7 @@ export type FieldType =
 - 生效分两类：
   - **可热更新**（注册表里 `hot: true`）：放行名单、拒绝名单、事件订阅、限流参数、回复分段与延迟、日志级别、面板自身设置。这些字段在运行时被读取，改完立即生效。
   - **需重启**：NapCat 地址与令牌、角色设定路径、保活间隔、日记路径与保留天数等启动期读取的字段。面板在保存后明确列出这些字段并提示重启。
+- 顶栏的「重启插件」会先完整卸载当前运行时，再用 `config.json` 的最新值重新初始化，等同于重载插件。接口先返回 202，前端随后轮询 `/api/status`，服务恢复后自动刷新；令牌没变时会保留已登录的会话。
 - 保存即写进 `config.json`，是唯一的权威值，下次启动仍然生效，不存在被别处覆盖的情况。
 
 保存失败要区分「校验不通过」与「写入失败」，两者都返回具体到字段的原因，不做笼统报错。
@@ -544,6 +546,7 @@ web/                     Svelte 单页应用（独立 package.json）
 | `GET`  | `/api/tool-profiles`  | 工具配置文件的生效值、文件值、告警与掩码字段                         |
 | `PUT`  | `/api/tool-profiles`  | 提交稀疏改动；档名或聊天键不合法时返回 `fields[].path`               |     | `GET` | `/api/models` | OpenCode 可用模型与默认模型标记 |
 | `GET`  | `/api/status`         | 运行状态快照                                                         |
+| `POST` | `/api/restart`        | 就地重启：先返回 202，再重新读取配置并初始化                         |
 | `GET`  | `/api/logs`           | 环形缓冲尾部，支持 `limit` 与 `level`                                |
 | `GET`  | `/api/stream`         | SSE：`status` / `log` / `config`                                     |
 

@@ -2,7 +2,7 @@ import { mkdtemp, readFile, rm } from "node:fs/promises"
 import { randomUUID } from "node:crypto"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { afterEach, beforeEach, describe, expect, it } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { ConfigController } from "../src/config/live"
 import { ConfigStore } from "../src/config/store"
 import type { Logger } from "../src/logger"
@@ -162,6 +162,65 @@ describe("面板服务的生命周期", () => {
       headers: { Authorization: `Bearer ${TOKEN}` },
     })
     expect(stale.status).toBe(401)
+  })
+
+  it("重建面板服务时沿用同一份登录会话", async () => {
+    const firstPort = await freePort()
+    await controller.applyPatch({ "panel.port": firstPort })
+    const first = createServer(firstPort)
+    await first.start()
+
+    const login = await fetch(`http://127.0.0.1:${firstPort}/api/login`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Origin: `http://127.0.0.1:${firstPort}` },
+      body: JSON.stringify({ token: TOKEN }),
+    })
+    expect(login.status).toBe(200)
+    const cookie = (login.headers.get("set-cookie") ?? "").split(";")[0] ?? ""
+    await first.stop()
+
+    const secondPort = await freePort()
+    await controller.applyPatch({ "panel.port": secondPort })
+    const second = new PanelServer({
+      controller,
+      runtime,
+      models: { list: async () => [] },
+      logger,
+      auth: first.sessions,
+    })
+    servers.push(second)
+    await second.start()
+
+    const response = await fetch(`http://127.0.0.1:${secondPort}/api/status`, {
+      headers: { Cookie: cookie },
+    })
+    expect(response.status).toBe(200)
+  })
+
+  it("重启接口会调用注入的重启回调", async () => {
+    const port = await freePort()
+    await controller.applyPatch({ "panel.port": port })
+    const restarted = vi.fn()
+    const server = new PanelServer({
+      controller,
+      runtime,
+      models: { list: async () => [] },
+      logger,
+      onRestart: restarted,
+      restartDelayMs: 0,
+    })
+    servers.push(server)
+    await server.start()
+
+    const response = await fetch(`http://127.0.0.1:${port}/api/restart`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${TOKEN}`,
+        Origin: `http://127.0.0.1:${port}`,
+      },
+    })
+    expect(response.status).toBe(202)
+    await vi.waitFor(() => expect(restarted).toHaveBeenCalledTimes(1))
   })
 
   it("停止服务之后端口不再响应", async () => {

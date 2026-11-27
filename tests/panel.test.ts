@@ -1,7 +1,7 @@
 import { mkdtemp, readFile, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { afterEach, beforeEach, describe, expect, it } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { ConfigController } from "../src/config/live"
 import { ConfigStore } from "../src/config/store"
 import { createLogger, type Logger } from "../src/logger"
@@ -20,6 +20,7 @@ const logger: Logger = {
 
 let root: string
 let controller: ConfigController
+let runtime: PanelRuntime
 let app: ReturnType<typeof createPanelApp>
 
 beforeEach(async () => {
@@ -31,7 +32,7 @@ beforeEach(async () => {
   })
   controller = new ConfigController({ store, logger })
   const config = await controller.load()
-  const runtime = new PanelRuntime({ config, home: { directory: root }, logger })
+  runtime = new PanelRuntime({ config, home: { directory: root }, logger })
   app = createPanelApp({
     auth: new PanelAuth(TOKEN),
     controller,
@@ -225,6 +226,44 @@ describe("SSE", () => {
     const text = new TextDecoder().decode(first?.value)
     expect(text).toContain("event: status")
     await reader?.cancel()
+  })
+})
+
+describe("重启接口", () => {
+  it("没有重启回调时返回 501", async () => {
+    const response = await app.request("/api/restart", {
+      method: "POST",
+      headers: { ...auth, Origin: "http://localhost" },
+    })
+    expect(response.status).toBe(501)
+  })
+
+  it("未授权时返回 401", async () => {
+    const response = await app.request("/api/restart", {
+      method: "POST",
+      headers: { Origin: "http://localhost" },
+    })
+    expect(response.status).toBe(401)
+  })
+
+  it("先返回 202，再执行重启回调", async () => {
+    const restarted = vi.fn()
+    const restartApp = createPanelApp({
+      auth: new PanelAuth(TOKEN),
+      controller,
+      runtime,
+      models: { list: async () => [] },
+      onRestart: restarted,
+      restartDelayMs: 0,
+    })
+
+    const response = await restartApp.request("/api/restart", {
+      method: "POST",
+      headers: { ...auth, Origin: "http://localhost" },
+    })
+    expect(response.status).toBe(202)
+    expect(await response.json()).toEqual({ ok: true, restarting: true })
+    await vi.waitFor(() => expect(restarted).toHaveBeenCalledTimes(1))
   })
 })
 

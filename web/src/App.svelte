@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte"
-  import { Activity, LogOut, RefreshCw } from "lucide-svelte"
+  import { Activity, LogOut, RefreshCw, RotateCw } from "lucide-svelte"
   import { api, ApiError, openStream } from "$lib/api"
   import { Badge } from "$lib/components/ui/badge"
   import { Button } from "$lib/components/ui/button"
@@ -25,7 +25,12 @@
   let logs = $state<LogEntry[]>([])
   let config = $state<ConfigResponse | undefined>(undefined)
   let stopStream: (() => void) | undefined
-  let restarting = $state(false)
+  /** 有冷配置变更，提示需要重启。 */
+  let needsRestart = $state(false)
+  /** 正在执行面板触发的重启。 */
+  let restartBusy = $state(false)
+  /** 登录成功的令牌，用于重启后自动重新登录。 */
+  let sessionToken = $state("")
 
   /** 时间与数字的格式化：平台原生，自带中文本地化。 */
   const time = new Intl.DateTimeFormat("zh-CN", { timeStyle: "medium" })
@@ -74,6 +79,7 @@
     error = ""
     try {
       await api.login(token)
+      sessionToken = token
       token = ""
       await refresh()
     } catch (cause) {
@@ -85,7 +91,69 @@
 
   /** 保存后如果提示要重启，这里把重启按钮点亮。 */
   function onRestartNeeded(): void {
-    restarting = true
+    needsRestart = true
+  }
+
+  /** 面板触发就地重启：等插件重新初始化完成后刷新状态。 */
+  async function restartPlugin(): Promise<void> {
+    if (restartBusy) return
+    restartBusy = true
+    error = ""
+    // 服务马上会断开，先停掉 SSE，避免自动重连刷错误。
+    stopStream?.()
+    stopStream = undefined
+    try {
+      await api.restart()
+      const ready = await waitForRestart()
+      if (!ready) return
+      needsRestart = false
+    } catch (cause) {
+      error =
+        cause instanceof ApiError && cause.status === 501
+          ? "当前运行时不支持重启，请手动重启。"
+          : cause instanceof Error
+            ? cause.message
+            : String(cause)
+    } finally {
+      restartBusy = false
+    }
+  }
+
+  /** 轮询状态直到插件重新就绪；返回是否成功连回。 */
+  async function waitForRestart(): Promise<boolean> {
+    for (let attempt = 0; attempt < 60; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 500))
+      try {
+        status = await api.status()
+        authenticated = true
+        // 新进程的日志缓冲是空的，别把上一代的日志留在页面上。
+        logs = []
+        connect()
+        return true
+      } catch (cause) {
+        if (cause instanceof ApiError && cause.status === 401) {
+          // 令牌没变的话会话通常会带过来；没带过来就用内存里的令牌重登。
+          if (sessionToken && (await relogin())) continue
+          authenticated = false
+          error = "插件已重启，请重新登录。"
+          return false
+        }
+        // 端口还没开始监听，继续等。
+      }
+    }
+    error = "重启超时，请手动刷新页面。"
+    return false
+  }
+
+  /** 重启后会话失效时，用登录时记下的令牌重新换 Cookie。 */
+  async function relogin(): Promise<boolean> {
+    try {
+      await api.login(sessionToken)
+      return true
+    } catch {
+      sessionToken = ""
+      return false
+    }
   }
 </script>
 
@@ -100,10 +168,19 @@
         v{status.version} · 运行 {Math.floor(status.uptimeMs / 1000)} 秒
       </span>
       <div class="ml-auto flex items-center gap-2">
-        {#if restarting}
+        {#if needsRestart}
           <Badge variant="outline">有字段需要重启生效</Badge>
         {/if}
-        <Button variant="ghost" size="sm" onclick={() => void refresh()}>
+        <Button
+          variant={needsRestart ? "default" : "outline"}
+          size="sm"
+          disabled={restartBusy}
+          onclick={() => void restartPlugin()}
+        >
+          <RotateCw class={restartBusy ? "size-4 animate-spin" : "size-4"} />
+          {restartBusy ? "正在重启…" : "重启插件"}
+        </Button>
+        <Button variant="ghost" size="sm" disabled={restartBusy} onclick={() => void refresh()}>
           <RefreshCw class="size-4" />
           刷新
         </Button>
@@ -112,6 +189,10 @@
   </header>
 
   <Separator />
+
+  {#if authenticated && error}
+    <p class="text-destructive text-sm">{error}</p>
+  {/if}
 
   {#if !authenticated}
     <div class="mx-auto mt-16 w-full max-w-sm space-y-3">

@@ -88,6 +88,10 @@ export const api = {
   status(): Promise<Status> {
     return request<Status>("/api/status")
   },
+  /** 就地重启插件：重新读取配置并初始化。 */
+  restart(): Promise<{ ok: boolean }> {
+    return request<{ ok: boolean }>("/api/restart", { method: "POST" })
+  },
   /** 日志尾部。 */
   logs(options: { limit?: number; level?: string } = {}): Promise<{ entries: LogEntry[] }> {
     const query = new URLSearchParams()

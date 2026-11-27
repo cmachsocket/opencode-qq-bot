@@ -48,6 +48,10 @@ export interface PanelAppOptions {
   models: ModelProvider
   /** 前端构建产物目录；没有就不托管静态资源。 */
   staticDir?: string
+  /** 面板触发重启时调用；不传表示当前环境不支持重启。 */
+  onRestart?: () => void | Promise<void>
+  /** 重启请求先返回响应，再延迟这么久执行（毫秒）。 */
+  restartDelayMs?: number
 }
 
 /** 状态推送的间隔（毫秒）。 */
@@ -261,6 +265,20 @@ export function createPanelApp(options: PanelAppOptions): Hono {
   // 运行状态快照。
   app.get("/api/status", async (c) => {
     return c.json(await collectStatus(runtime))
+  })
+
+  // 就地重启插件：先返回响应，再卸载当前运行时并用最新配置重新初始化。
+  app.post("/api/restart", (c) => {
+    if (!options.onRestart) {
+      return c.json({ error: "unsupported", message: "当前运行时不支持重启" }, 501)
+    }
+    const timer = setTimeout(() => {
+      void Promise.resolve(options.onRestart?.()).catch((error: unknown) => {
+        runtime.logger.error("面板触发重启失败", error)
+      })
+    }, options.restartDelayMs ?? 200)
+    timer.unref?.()
+    return c.json({ ok: true, restarting: true }, 202)
   })
 
   // 日志尾部。

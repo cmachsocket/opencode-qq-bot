@@ -31,9 +31,11 @@ import {
   resolveUserName,
   shouldProcess,
 } from "./naplink/render"
+import type { PanelAuth } from "./panel/auth"
 import { PanelRuntime } from "./panel/runtime"
 import { createModelProvider } from "./panel/models"
 import { PanelServer } from "./panel/server"
+import { RestartableSetup, type SetupGeneration } from "./restartable"
 import { SendRateLimiter } from "./rate-limit"
 import { startClaimTimer } from "./runtime/claim"
 import { RuntimeStart } from "./runtime/start"
@@ -140,9 +142,19 @@ function eventTarget(event: MessageEvent): ChatTarget {
     : { kind: "private", id: event.user_id }
 }
 
-export default Plugin.define({
-  id: "opencode-qq-bot",
-  async setup(ctx) {
+/**
+ * 跑一遍插件初始化。
+ *
+ * 面板触发重启时这一份会再跑一次：上一代先完整卸载，再从 `config.json`
+ * 重新读取配置。`previousPanelAuth` 用来把面板会话带到新一代，
+ * 令牌没变的话已登录的浏览器不用重新登录。
+ */
+const initializer = {
+  async initialize(
+    ctx: Plugin.Context,
+    previousPanelAuth?: PanelAuth,
+    restart?: () => void,
+  ): Promise<SetupGeneration<PanelAuth>> {
     // 配置还没解析出来，先用一个只写控制台的日志器兜底，解析完再换成正式日志器。
     const bootstrap = createLogger("[qq-bot]", { file: false })
     const version = pluginVersion()
@@ -170,7 +182,7 @@ export default Plugin.define({
       bootstrap.info(`opencode-qq-bot v${version}`)
       bootstrap.error(error instanceof Error ? error.message : String(error))
       await closeLogger(bootstrap)
-      return
+      return { dispose: async () => {} }
     }
 
     const logger = createLogger("[qq-bot]", {
@@ -203,6 +215,8 @@ export default Plugin.define({
       runtime: panelRuntime,
       models: createModelProvider(ctx.model),
       logger,
+      ...(previousPanelAuth ? { auth: previousPanelAuth } : {}),
+      ...(restart ? { onRestart: restart } : {}),
     })
 
     // 配置文件被外部改动时热更新：日志级别这类字段改完立即生效。
@@ -225,7 +239,7 @@ export default Plugin.define({
       controller.stop()
       unsubscribeLevel()
       await closeLogger(logger)
-      return
+      return { dispose: async () => {} }
     }
 
     // 机器级锁：抢不到就保持安静，等持有者退出后再接管。
@@ -1148,6 +1162,27 @@ export default Plugin.define({
       })
     }
 
-    return dispose
+    return { dispose, carry: panel.sessions }
+  },
+}
+
+export default Plugin.define({
+  id: "opencode-qq-bot",
+  async setup(ctx) {
+    // 重启入口由面板调用：先卸载当前一代，再用最新配置重新初始化。
+    let restart: () => void = () => {}
+    const lifecycle = new RestartableSetup<PanelAuth>((carry) =>
+      initializer.initialize(ctx, carry, () => restart()),
+    )
+    restart = () => {
+      void lifecycle.restart().catch((error: unknown) => {
+        console.error(
+          "[qq-bot] 重启插件失败",
+          error instanceof Error ? error.message : String(error),
+        )
+      })
+    }
+    await lifecycle.begin()
+    return () => lifecycle.dispose()
   },
 })

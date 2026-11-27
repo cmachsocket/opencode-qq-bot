@@ -25,6 +25,12 @@ export interface PanelServerOptions {
   models: ModelProvider
   /** 日志器。 */
   logger: Logger
+  /** 跨重启复用的面板鉴权；令牌变化时自动换成新的。 */
+  auth?: PanelAuth
+  /** 面板触发重启时调用；不传表示当前环境不支持重启。 */
+  onRestart?: () => void | Promise<void>
+  /** 重启请求先返回响应，再延迟这么久执行（毫秒）。 */
+  restartDelayMs?: number
   /** 端口被占用时的重试次数与间隔（毫秒）。 */
   retry?: { times: number; intervalMs: number }
 }
@@ -55,7 +61,8 @@ export class PanelServer {
 
   constructor(private readonly options: PanelServerOptions) {
     this.token = options.runtime.config.panel.token
-    this.auth = new PanelAuth(this.token)
+    // 插件就地重启时沿用同一份鉴权：令牌没变，已登录的会话继续有效。
+    this.auth = options.auth?.matches(this.token) ? options.auth : new PanelAuth(this.token)
     this.retry = options.retry ?? { times: PORT_RETRY_TIMES, intervalMs: PORT_RETRY_INTERVAL_MS }
   }
 
@@ -150,6 +157,10 @@ export class PanelServer {
       runtime: this.options.runtime,
       models: this.options.models,
       ...(existsSync(panelStaticDir()) ? { staticDir: panelStaticDir() } : {}),
+      ...(this.options.onRestart ? { onRestart: this.options.onRestart } : {}),
+      ...(this.options.restartDelayMs !== undefined
+        ? { restartDelayMs: this.options.restartDelayMs }
+        : {}),
     })
     const samePort = this.listening?.port === port
     if (samePort) await this.closeServer()
