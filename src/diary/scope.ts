@@ -5,7 +5,7 @@ import type { QQBotConfig } from "../config"
  * 日记的范围：只有 owner 与机器人的那条私聊。
  *
  * 维护者裁定（日记范围收窄到 owner 的会话）：
- * 采集、总结、工具、命令与推送都只认这一条会话，
+ * 采集、生成、工具、命令与推送都只认这一条会话，
  * 剩下的会话一旦只有一条，跨聊天串档的前提就不存在了。
  */
 export function diaryScopeChat(config: QQBotConfig): ChatTarget | undefined {

@@ -175,23 +175,23 @@ if (!force && state.sessionID && this.verifiedSessions.has(state.sessionID)) {
   `upstreamRunning()`。
 - `src/index.ts`：上游事件订阅、`scheduleMessage`、`handleMessage`。
 
-## 日记总结会话长期复用，上下文只增不减
+## 日记生成会话长期复用，上下文只增不减
 
 ### 现象
 
-- 每天的自动总结都复用同一个上游会话，提示词叠在旧上下文上。
-- 运行足够久之后，总结请求会因超出模型上下文而持续失败。
+- 每天的自动生成都复用同一个上游会话，提示词叠在旧上下文上。
+- 运行足够久之后，生成请求会因超出模型上下文而持续失败。
 
 ### 现状
 
 - 会话 ID 存在 `ctx.storage` 的 `diary-summary-session`，重启后继续复用（`src/diary/summary.ts`）。
-- 目前只有单次总结的 120 秒超时，没有轮次上限，也没有按天重建。
+- 目前只有单次生成的 120 秒超时，没有轮次上限，也没有按天重建。
 - 2026-11-11 的审计把它列为低危，未要求本轮修复。
 
 ### 候选方案
 
-- **A. 按天换总结会话。** 把 `ctx.storage` 的键从 `diary-summary-session` 换成带日期的键
-  （如 `diary-summary-session:2026-11-11`），每天第一次总结时新建会话，昨天的会话用
+- **A. 按天换生成会话。** 把 `ctx.storage` 的键从 `diary-summary-session` 换成带日期的键
+  （如 `diary-summary-session:2026-11-11`），每天第一次生成时新建会话，昨天的会话用
   `ctx.session.remove()` 清掉。状态源：上游会话本身 + storage 里记的当前会话 ID。
   风险：每天多一个会话需要清理；跨天不再共享上下文。
 - **B. 每轮结束后压缩历史。** 用 `ctx.session.compact({ sessionID })`（上游自带 compaction，
@@ -199,17 +199,17 @@ if (!force && state.sessionID && this.verifiedSessions.has(state.sessionID)) {
   结果。风险：compact 自己要跑一次模型，多一次开销和失败点；`session.compaction.*` 事件
   要单独处理。
 - **C. 给素材总量加字节上限。** 超过上限就截断或分批，避免单次提示词本身过大。
-  状态源：输入素材本身。风险：截断会让总结漏掉后面的内容。
-- **D. 素材分片 + 多次总结再合并。** 把一天素材按字节切成 N 片，每片单独总结，再把 N 个
+  状态源：输入素材本身。风险：截断会让生成漏掉后面的内容。
+- **D. 素材分片 + 多次生成再合并。** 把一天素材按字节切成 N 片，每片单独生成，再把 N 个
   摘要合并成一篇。状态源：输入素材（分片是纯函数）。风险：模型调用次数和延迟成倍上升；
   合并那一步仍可能超上下文，还要再兜一层上限。
-- **E. 改用无状态生成。** 用 `ctx.experimental.generate.text({ prompt, model })` 做总结：
-  它没有会话、没有历史、没有工具，天然不累积上下文；同时也不需要「给总结会话摘工具」
+- **E. 改用无状态生成。** 用 `ctx.experimental.generate.text({ prompt, model })` 做生成：
+  它没有会话、没有历史、没有工具，天然不累积上下文；同时也不需要「给生成会话摘工具」
   （`isSummarySession()`）和「从 session 事件里捞文本」（`buffers` / `waiters`）。
   状态源：返回值 `{ text }`。风险：没有会话就没有 `session.execution.*` 事件可订阅，超时
-  只能靠请求取消；这次总结在 TUI 里看不到；输出格式要求要写进提示词。
-- **F. 轮次上限兜底。** 同一个总结会话累计 N 轮后强制换新（即使还没跨天），防止同一天内
-  多轮总结也把上下文撑爆。状态源：上游会话的轮次计数。风险：N 不好定，估大了照样超。
+  只能靠请求取消；这次生成在 TUI 里看不到；输出格式要求要写进提示词。
+- **F. 轮次上限兜底。** 同一个生成会话累计 N 轮后强制换新（即使还没跨天），防止同一天内
+  多轮生成也把上下文撑爆。状态源：上游会话的轮次计数。风险：N 不好定，估大了照样超。
 
 ### 相关代码位置
 
@@ -217,7 +217,7 @@ if (!force && state.sessionID && this.verifiedSessions.has(state.sessionID)) {
   `DIARY_SUMMARY_SESSION_KEY`。
 - `src/diary/collector.ts`：素材收集与保留天数。
 
-## 日记总结超时只放弃等待，不取消上游请求
+## 日记生成超时只放弃等待，不取消上游请求
 
 ### 现象
 
@@ -236,9 +236,9 @@ if (!force && state.sessionID && this.verifiedSessions.has(state.sessionID)) {
   `ctx.session.interrupt({ sessionID })`，让上游那次执行停下来；上游随后会发
   `session.execution.interrupted`（`reason` 取值见上游枚举 `user` / `shutdown` /
   `superseded` / `inactivity`，主动打断对应哪一个要实测确认）。
-  状态源：上游的 interrupt 结果。风险：interrupt 打断的是整个会话的当前执行，如果总结
+  状态源：上游的 interrupt 结果。风险：interrupt 打断的是整个会话的当前执行，如果生成
   会话和别的逻辑共用就会误伤；要确认 interrupt 之后上游不会再吐 `session.text.ended`。
-- **B. 每次总结用独立会话 + 独立 buffer key。** 不再复用一个总结会话，每次尝试（或每个
+- **B. 每次生成用独立会话 + 独立 buffer key。** 不再复用一个生成会话，每次尝试（或每个
   `chat#date`）一个会话，`buffers` / `waiters` 的 key 带上这次尝试的标识，迟到的
   `session.text.ended` 落到别的 key 上，不会被下一轮误消费。状态源：每次尝试自己的 key。
   风险：会话数量增加；失去跨轮上下文（和上一节的方案 A / F 是一致的方向）。
@@ -249,8 +249,8 @@ if (!force && state.sessionID && this.verifiedSessions.has(state.sessionID)) {
 - **D. 调度互斥从全局锁改成按 `chat#date` 粒度。** 现在一把 `Mutex` 串行所有聊天，一个
   聊天卡住就堵住别人；改成按 `chat#date` 加锁，不同聊天可以并行。状态源：各自的上游执行
   状态。风险：并发送盘要保证同一目录下的写入不互相覆盖。
-- **E. 实例交接时移交在途总结状态。** 复用 `exportHandover()` / `adoptHandover()` 的做法，
-  把在途总结的 sessionID 和 buffer 一起移交，旧实例退出后不再处理这些事件。
+- **E. 实例交接时移交在途生成状态。** 复用 `exportHandover()` / `adoptHandover()` 的做法，
+  把在途生成的 sessionID 和 buffer 一起移交，旧实例退出后不再处理这些事件。
   状态源：交接数据。风险：交接协议要加字段；旧实例已经 resolve、但上游仍在跑的那部分
   仍要单独处理。
 

@@ -7,7 +7,7 @@ import { parseTargetKey, targetLabel } from "../chat"
  * 程序读它，人也能直接打开看。
  */
 
-/** 日记来源：自动总结、命令手写、模型用工具写入。 */
+/** 日记来源：自动生成、命令手写、模型用工具写入。 */
 export type DiarySource = "auto" | "manual" | "model"
 
 /** 日记的元数据，对应文件里的 front matter。 */

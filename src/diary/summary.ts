@@ -13,11 +13,11 @@ import type { DiaryCollector, DiaryLine } from "./collector"
 import { chatLabel, fallbackTitle } from "./format"
 import type { DiaryStore } from "./store"
 
-/** 插件存储里保存总结会话 ID 的键。 */
+/** 插件存储里保存生成会话 ID 的键。 */
 export const DIARY_SUMMARY_SESSION_KEY = "diary-summary-session"
-/** 会话标记：用来认出已经建好的总结会话。 */
+/** 会话标记：用来认出已经建好的生成会话。 */
 export const DIARY_SUMMARY_MARKER = "qqDiarySummary"
-/** 等待模型总结的超时时间。 */
+/** 等待模型生成日记的超时时间。 */
 export const DIARY_SUMMARY_TIMEOUT_MS = 120_000
 /** 标题最长字符数。 */
 export const DIARY_TITLE_MAX_CHARS = 20
@@ -27,7 +27,7 @@ export const DIARY_BODY_MAX_CHARS = 800
 const RETRY_DELAY_MS = 10_000
 
 /**
- * 生成总结用的提示词。
+ * 生成日记用的提示词。
  *
  * 素材是群友可控文本，所以先净化结构标签再包进 `<chat>`，
  * 并在提示词里说明标签内是素材而不是指令；聊天标识写进提示词，
@@ -75,7 +75,7 @@ function formatClock(seconds: number): string {
  * 清洗模型给出的日记。
  *
  * 去掉 markdown 装饰与首尾空行，取第一行做标题，其余做正文。
- * 正文为空时返回 undefined：这次总结作废，不写文件。
+ * 正文为空时返回 undefined：这次生成作废，不写文件。
  */
 export function cleanDiarySummary(raw: string): { title: string; body: string } | undefined {
   const plain = toPlainText(String(raw ?? ""))
@@ -98,11 +98,11 @@ export function cleanDiarySummary(raw: string): { title: string; body: string } 
   }
 }
 
-/** 总结器的依赖。 */
+/** 日记生成器的依赖。 */
 export interface DiarySummarizerDeps {
   ctx: Plugin.Context
   config: QQBotConfig
-  /** 机器人工作目录，总结会话也建在这里。 */
+  /** 机器人工作目录，生成会话也建在这里。 */
   home: BotHome
   logger: Logger
   /** 素材读取。 */
@@ -114,7 +114,7 @@ export interface DiarySummarizerDeps {
 }
 
 /**
- * 用模型把当天的聊天素材总结成一篇日记。
+ * 用模型把当天的聊天素材整理成一篇日记。
  *
  * 走一个专用的会话：这个会话不绑定任何 QQ 目标，
  * 因此不会触发角色设定里“必须调用 qq_send_message”的守则。
@@ -128,27 +128,27 @@ export class DiarySummarizer {
   private listener: Promise<void> | undefined
   private sessionID: string | undefined
   private creating: Promise<string> | undefined
-  /** 同一时间只跑一个总结：全局总结会话的缓冲区不能同时承载两份素材。 */
+  /** 同一时间只跑一个生成：全局生成会话的缓冲区不能同时承载两份素材。 */
   private readonly mutex = new Mutex()
-  /** 同一聊天同一天的总结只跑一次；两个入口同时来的时候共享同一个结果。 */
+  /** 同一聊天同一天的生成只跑一次；两个入口同时来的时候共享同一个结果。 */
   private readonly inflight = new Map<string, Promise<string | undefined>>()
 
   constructor(private readonly deps: DiarySummarizerDeps) {}
 
-  /** 总结会话统一落在机器人工作目录，不跟随加载插件的项目目录。 */
+  /** 生成会话统一落在机器人工作目录，不跟随加载插件的项目目录。 */
   private get location(): Location.PublicRef {
     return { directory: this.deps.home.directory as Location.PublicRef["directory"] }
   }
 
-  /** 标注是否已中止；插件卸载后应停止一切总结动作。 */
+  /** 标注是否已中止；插件卸载后应停止一切生成动作。 */
   get signal(): AbortSignal {
     return this.abort.signal
   }
 
   /**
-   * 这个会话是不是日记总结会话。
+   * 这个会话是不是日记生成会话。
    *
-   * 总结会话不绑定 QQ 目标，拿不到按聊天的工具限制，
+   * 生成会话不绑定 QQ 目标，拿不到按聊天的工具限制，
    * 而它的输入是群友可控的聊天记录，所以这个会话必须单独把工具全部摘掉。
    */
   async isSummarySession(sessionID: string): Promise<boolean> {
@@ -157,7 +157,7 @@ export class DiarySummarizer {
       const info = await this.deps.ctx.session.get({ sessionID })
       return info?.metadata?.[DIARY_SUMMARY_MARKER] === true
     } catch {
-      // 查不出来时按总结会话处理：它的输入是群友可控文本，工具必须摘掉。
+      // 查不出来时按生成会话处理：它的输入是群友可控文本，工具必须摘掉。
       return true
     }
   }
@@ -201,7 +201,7 @@ export class DiarySummarizer {
         }
       } catch (error) {
         if (this.abort.signal.aborted) return
-        this.deps.logger.error("订阅日记总结事件失败，稍后重试", error)
+        this.deps.logger.error("订阅日记生成事件失败，稍后重试", error)
       }
       if (this.abort.signal.aborted) return
       await delay(1000)
@@ -210,7 +210,7 @@ export class DiarySummarizer {
 
   /** 累加模型输出的一段文本；一轮回复可能拆成多段。 */
   private push(sessionID: string, text: string): void {
-    // 全局事件里夹着所有会话的输出，只留总结会话自己的。
+    // 全局事件里夹着所有会话的输出，只留生成会话自己的。
     if (this.sessionID !== sessionID) return
     const buffer = `${this.buffers.get(sessionID) ?? ""}${text}`
     this.buffers.set(sessionID, buffer)
@@ -262,7 +262,7 @@ export class DiarySummarizer {
     })
   }
 
-  /** 取得（必要时创建）专用的总结会话。 */
+  /** 取得（必要时创建）专用的生成会话。 */
   private async ensureSession(): Promise<string> {
     if (this.sessionID) return this.sessionID
     this.creating ??= this.resolveSession().finally(() => {
@@ -281,11 +281,11 @@ export class DiarySummarizer {
     if (found) {
       this.sessionID = found
       await this.writeStoredSession(found)
-      this.deps.logger.info(`复用日记总结会话 ${found}`)
+      this.deps.logger.info(`复用日记生成会话 ${found}`)
       return found
     }
     const created = await this.deps.ctx.session.create({
-      title: "日记总结",
+      title: "日记生成",
       location: this.location,
       ...(this.deps.config.agent ? { agent: this.deps.config.agent } : {}),
       ...(this.deps.config.model ? { model: this.deps.config.model } : {}),
@@ -293,7 +293,7 @@ export class DiarySummarizer {
     })
     this.sessionID = created.id
     await this.writeStoredSession(created.id)
-    this.deps.logger.info(`新建日记总结会话 ${created.id}`)
+    this.deps.logger.info(`新建日记生成会话 ${created.id}`)
     return created.id
   }
 
@@ -303,12 +303,12 @@ export class DiarySummarizer {
       if (typeof stored !== "string" || stored.length === 0) return undefined
       const info = await this.deps.ctx.session.get({ sessionID: stored })
       if (info?.location?.directory !== this.location.directory) {
-        this.deps.logger.debug(`存储里的日记总结会话 ${stored} 不在机器人工作目录，忽略`)
+        this.deps.logger.debug(`存储里的日记生成会话 ${stored} 不在机器人工作目录，忽略`)
         return undefined
       }
       return info?.id ?? stored
     } catch (error) {
-      this.deps.logger.debug("读取日记总结会话失败，将新建会话", error)
+      this.deps.logger.debug("读取日记生成会话失败，将新建会话", error)
       return undefined
     }
   }
@@ -317,27 +317,27 @@ export class DiarySummarizer {
     try {
       await this.deps.ctx.storage.set(DIARY_SUMMARY_SESSION_KEY, sessionID)
     } catch (error) {
-      this.deps.logger.warn("保存日记总结会话失败", error)
+      this.deps.logger.warn("保存日记生成会话失败", error)
     }
   }
 
-  /** 查找带总结标记的历史会话。 */
+  /** 查找带生成标记的历史会话。 */
   private async findSummarySession(): Promise<string | undefined> {
     return await findSession(
       this.deps.ctx,
       this.location.directory,
       (session) => session.metadata?.[DIARY_SUMMARY_MARKER] === true,
       this.deps.logger,
-      "查找日记总结会话失败",
+      "查找日记生成会话失败",
     )
   }
 
   /**
-   * 把某天的素材总结成一篇日记并写盘。
+   * 用某天的素材生成一篇日记并写盘。
    *
    * 失败最多重试一次，仍失败则不写文件，素材留着等下一次机会。
    *
-   * @returns 写进去的日记；没有素材或总结失败时返回 undefined。
+   * @returns 写进去的日记；没有素材或生成失败时返回 undefined。
    */
   async summarize(chat: string, date: string): Promise<string | undefined> {
     const key = `${chat}#${date}`
@@ -352,12 +352,12 @@ export class DiarySummarizer {
     }
   }
 
-  /** 真正跑总结；同一时间只允许一个总结占用全局总结会话。 */
+  /** 真正跑生成；同一时间只允许一个生成占用全局生成会话。 */
   private async runSummary(chat: string, date: string): Promise<string | undefined> {
     if (this.abort.signal.aborted) return undefined
     const lines = await this.deps.collector.read(chat, date)
     if (lines.length === 0) {
-      this.deps.logger.info(`${chat} ${date} 没有素材，跳过日记总结`)
+      this.deps.logger.info(`${chat} ${date} 没有素材，跳过日记生成`)
       return undefined
     }
     this.start()
@@ -378,11 +378,11 @@ export class DiarySummarizer {
       this.deps.logger.info(`${chat} ${date} 的日记已生成：${entry.title}`)
       return entry.title
     }
-    this.deps.logger.warn(`${chat} ${date} 的日记总结失败，素材保留待下次重试`)
+    this.deps.logger.warn(`${chat} ${date} 的日记生成失败，素材保留待下次重试`)
     return undefined
   }
 
-  /** 跑一轮总结；返回 undefined 表示这轮没拿到可用结果。 */
+  /** 跑一轮生成；返回 undefined 表示这轮没拿到可用结果。 */
   private async runOnce(
     prompt: string,
     timeoutMs: number,
@@ -393,7 +393,7 @@ export class DiarySummarizer {
     try {
       await this.deps.ctx.session.prompt({ sessionID, text: prompt })
     } catch (error) {
-      this.deps.logger.error("投递日记总结请求失败", error)
+      this.deps.logger.error("投递日记生成请求失败", error)
       return undefined
     }
     const raw = await this.awaitText(sessionID, timeoutMs)

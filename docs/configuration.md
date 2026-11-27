@@ -222,7 +222,7 @@
 | `diary.backfillMax`    | 数值       | `1000`   | 重启 | 回补时最多取多少条历史消息；≥ 0                                         |
 | `diary.maxLineChars`   | 数值       | `200`    | 重启 | 单条素材的最大字符数；≥ 0                                               |
 | `diary.maxLinesPerDay` | 数值       | `2000`   | 重启 | 单个聊天单天的素材条数上限；≥ 0                                         |
-| `diary.timeoutMs`      | 数值       | `120000` | 重启 | 等待模型生成总结的超时时间；≥ 0                                         |
+| `diary.timeoutMs`      | 数值       | `120000` | 重启 | 等待模型生成日记的超时时间；≥ 0                                         |
 
 ### 状态面板
 
@@ -690,15 +690,15 @@ OpenCode 的附件只接受 `file:` 与 `data:`。远端图片会先下载到受
 | `diary.path`           | 空       | 日记成品与原始素材的存放目录；空表示工作目录 `diary/`，相对路径按工作目录解析 |
 | `diary.enabled`        | `true`   | 是否启用日记功能                                                              |
 | `diary.retentionDays`  | `30`     | 原始素材保留天数，只清素材，不动日记成品                                      |
-| `diary.summaryTime`    | `23:30`  | 每天几点生成自动总结（本地时间 `HH:mm`）                                      |
+| `diary.summaryTime`    | `23:30`  | 每天几点生成日记（本地时间 `HH:mm`）                                          |
 | `diary.tickSeconds`    | `3600`   | 调度心跳间隔（秒）                                                            |
-| `diary.summaryTargets` | `[]`     | 只给这些聊天生成总结；留空表示放行名单内全部                                  |
-| `diary.push`           | `owner`  | 总结推给谁：`owner` / `group` / `none`                                        |
+| `diary.summaryTargets` | `[]`     | 只给这些聊天生成日记；留空表示放行名单内全部                                  |
+| `diary.push`           | `owner`  | 日记推给谁：`owner` / `group` / `none`                                        |
 | `diary.backfill`       | `false`  | 是否用 NapCat 历史消息回补素材                                                |
 | `diary.backfillMax`    | `1000`   | 回补时最多取多少条历史消息                                                    |
 | `diary.maxLineChars`   | `200`    | 单条素材最多多少字                                                            |
 | `diary.maxLinesPerDay` | `2000`   | 每天最多累积多少条素材                                                        |
-| `diary.timeoutMs`      | `120000` | 等待模型生成总结的超时（毫秒）                                                |
+| `diary.timeoutMs`      | `120000` | 等待模型生成日记的超时（毫秒）                                                |
 
 - `diary.path` 为空时用工作目录下的 `diary/`；填相对路径也按工作目录解析。
 - `diary.summaryTime` 必须是 `HH:mm`，写错会告警并回退到 `23:30`。
@@ -706,7 +706,7 @@ OpenCode 的附件只接受 `file:` 与 `data:`。远端图片会先下载到受
 - `diary.summaryTargets` 里的目标写法是 `group:123` / `private:456`；
   填了就只处理这些目标（还要通过准入判定），留空则处理放行名单里的全部目标。
 - 日记成品不设条数上限，也不会自动清理；`diary.retentionDays` 只作用于 `diary/raw/` 下的素材。
-- 自动总结依赖调度器，OpenCode 的 location 空闲超时会卸载插件、定时器随之消失；
+- 自动生成依赖调度器，OpenCode 的 location 空闲超时会卸载插件、定时器随之消失；
   需要它长期运行就按「保活」一节关掉 `experimental.location_idle_timeout`。
 
 功能说明见 [diary.md](diary.md)。

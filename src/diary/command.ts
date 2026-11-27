@@ -39,7 +39,7 @@ export const DIARY_USAGE = [
   "write [日期] <内容>  写一篇日记（默认今天）",
   "list [天数]        列出最近几篇日记（默认 7 篇）",
   "show <日期>        看某天的日记，日期用 YYYY-MM-DD",
-  "auto [日期]        立刻生成或重生成某天的自动总结",
+  "auto [日期]        立刻生成或重生成某天的日记",
 ].join("\n")
 
 /**
@@ -93,7 +93,7 @@ export interface DiaryRunnerDeps {
   store: DiaryStore
   /** 素材读取。 */
   collector: DiaryCollector
-  /** 自动总结。 */
+  /** 自动生成。 */
   summarizer: DiarySummarizer
 }
 
@@ -114,7 +114,7 @@ export function formatDiaryList(
   return [head, ...entries.map((entry) => `${entry.date} ${entry.title}`)].join("\n")
 }
 
-/** 创建日记命令执行器；同一时间只跑一个自动总结任务。 */
+/** 创建日记命令执行器；同一时间只跑一个自动生成任务。 */
 export function createDiaryRunner(deps: DiaryRunnerDeps): DiaryCommandRunner {
   const { config, logger, client, limiter, outbound, sensitive, store, collector, summarizer } =
     deps
@@ -202,20 +202,20 @@ export function createDiaryRunner(deps: DiaryRunnerDeps): DiaryCommandRunner {
       return
     }
     if (!(await collector.has(targetKey(target), date))) {
-      await report(target, `${label} ${date} 没有聊天素材，跳过总结。`)
+      await report(target, `${label} ${date} 没有聊天素材，跳过生成。`)
       return
     }
     if (running) {
-      await report(target, "已经有日记总结任务在跑了，请等它结束。")
+      await report(target, "已经有日记生成任务在跑了，请等它结束。")
       return
     }
     running = true
-    // 总结可能要跑很久，放到后台执行，结果用 QQ 消息回。
+    // 生成可能要跑很久，放到后台执行，结果用 QQ 消息回。
     void (async () => {
       await report(target, `开始生成 ${label} ${date} 的日记…`)
       const title = await summarizer.summarize(targetKey(target), date)
       if (!title) {
-        await report(target, `${label} ${date} 的日记总结失败，素材保留待下次重试。`)
+        await report(target, `${label} ${date} 的日记生成失败，素材保留待下次重试。`)
         return
       }
       await report(target, `${label} ${date} 的日记已生成：${title}`)
@@ -224,10 +224,10 @@ export function createDiaryRunner(deps: DiaryRunnerDeps): DiaryCommandRunner {
       })
     })()
       .catch((error: unknown) => {
-        logger.error("日记总结任务失败", error)
+        logger.error("日记生成任务失败", error)
         return report(
           target,
-          `${label} 日记总结失败：${error instanceof Error ? error.message : String(error)}`,
+          `${label} 日记生成失败：${error instanceof Error ? error.message : String(error)}`,
         )
       })
       .finally(() => {
@@ -272,7 +272,7 @@ const DIARY_USAGE_LINES = [
   "/diary write [日期] <内容> — 写一篇日记（默认今天）",
   "/diary list [天数] — 列出最近几篇日记（默认 7 篇）",
   "/diary show <日期> — 看某天的日记，日期用 YYYY-MM-DD",
-  "/diary auto [日期] — 立刻生成或重生成某天的自动总结",
+  "/diary auto [日期] — 立刻生成或重生成某天的日记",
 ]
 
 /**
@@ -284,7 +284,7 @@ const DIARY_USAGE_LINES = [
 export function diaryCommand(runner: DiaryCommandRunner): CommandDefinition {
   return {
     name: DIARY_COMMAND,
-    description: "写、看、列出聊天日记：write 手写，show 看某天，list 列最近几篇，auto 自动总结。",
+    description: "写、看、列出聊天日记：write 手写，show 看某天，list 列最近几篇，auto 自动生成。",
     usage: DIARY_USAGE_LINES,
     run: async (context, args) => {
       // 日记只属于 owner：QQ 侧只认 owner 自己的私聊。

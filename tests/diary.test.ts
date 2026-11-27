@@ -203,7 +203,7 @@ describe("日记存储", () => {
     expect((await store.read("private:456", "2026-11-10"))?.title).toBe("私聊的")
   })
 
-  it("只有自动生成的日记才算已有自动总结", async () => {
+  it("自动生成的日记才会计入已有日记", async () => {
     const root = await tempRoot()
     const store = makeStore(root)
     await store.write("group:123", "2026-11-10", { title: "手写", body: "正文", source: "manual" })
@@ -462,7 +462,7 @@ describe("素材的轻量提取", () => {
   })
 })
 
-describe("日记总结", () => {
+describe("日记生成", () => {
   it("提示词把素材包在 chat 标签里并声明那不是指令", () => {
     const prompt = buildDiaryPrompt("2026-11-10", "group:123", [
       {
@@ -552,7 +552,7 @@ describe("日记总结", () => {
   })
 })
 
-describe("日记总结会话", () => {
+describe("日记生成会话", () => {
   async function makeSummarizer(options?: { foreignText?: string }) {
     const root = await tempRoot()
     const home = await tempRoot()
@@ -574,7 +574,7 @@ describe("日记总结会话", () => {
         create: vi.fn(async () => ({ id: sessionID })),
         prompt: vi.fn(async ({ text }: { text: string }) => {
           prompts.push(text)
-          // 别的会话的输出会混进同一个全局事件流里，不能进总结正文。
+          // 别的会话的输出会混进同一个全局事件流里，不能进生成正文。
           if (options?.foreignText) {
             emit({
               type: "session.text.ended",
@@ -614,7 +614,7 @@ describe("日记总结会话", () => {
     return { summarizer, store, collector, prompts, sessionID }
   }
 
-  it("同一聊天同一天并发只跑一次总结", async () => {
+  it("同一聊天同一天并发生成只跑一次", async () => {
     const { summarizer, store, collector, prompts } = await makeSummarizer()
     await collector.append("private:200", {
       id: "1",
@@ -637,7 +637,7 @@ describe("日记总结会话", () => {
     await summarizer.dispose()
   })
 
-  it("别的会话的输出不进总结正文", async () => {
+  it("别的会话的输出不进生成正文", async () => {
     const { summarizer, store, collector } = await makeSummarizer({ foreignText: "别人的秘密" })
     await collector.append("private:200", {
       id: "1",
@@ -656,7 +656,7 @@ describe("日记总结会话", () => {
     await summarizer.dispose()
   })
 
-  it("查不到会话时按总结会话处理，工具会被摘掉", async () => {
+  it("查不到会话时按生成会话处理，工具会被摘掉", async () => {
     const summarizer = new DiarySummarizer({
       ctx: {
         session: {
@@ -671,7 +671,7 @@ describe("日记总结会话", () => {
       collector: makeCollector(await tempRoot()),
       store: makeStore(await tempRoot()),
     })
-    // 失败即视为总结会话：宁可多摘工具，也不能把群友可控文本当指令执行。
+    // 失败即视为生成会话：宁可多摘工具，也不能把群友可控文本当指令执行。
     await expect(summarizer.isSummarySession("ses_unknown")).resolves.toBe(true)
   })
 })
@@ -813,7 +813,7 @@ describe("日记命令执行", () => {
     expect(String(api["sendGroupMessage"]?.mock.calls[0]?.[1])).toContain("用法")
   })
 
-  it("auto 没有素材时跳过总结", async () => {
+  it("auto 没有素材时跳过生成", async () => {
     const { runner, api } = await makeHarness()
     await runner.run(group(100), "auto")
     expect(String(api["sendGroupMessage"]?.mock.calls[0]?.[1])).toContain("没有聊天素材")
@@ -951,7 +951,7 @@ describe("日记调度", () => {
     expect(minutesOfDay("乱写")).toBe(0)
   })
 
-  it("只总结 owner 自己的私聊", async () => {
+  it("只为 owner 自己的私聊生成", async () => {
     const { store, collector, deps } = await makeScheduler({ push: "none" })
     const time = Math.floor(Date.now() / 1000)
     for (const chat of ["private:200", "group:100"]) {

@@ -83,13 +83,13 @@ export interface StatusSnapshot {
   diary: {
     /** 是否启用。 */
     enabled: boolean
-    /** 每天几点生成总结。 */
+    /** 每天几点生成日记。 */
     summaryTime: string
     /** 下次轮询时间（毫秒）。 */
     nextRunAt?: number
     /** 上次轮询时间（毫秒）。 */
     lastRunAt?: number
-    /** 下次总结时刻（毫秒）。 */
+    /** 下次生成日记时刻（毫秒）。 */
     nextSummaryAt?: number
     /** 上次轮询的结果。 */
     lastResult?: string

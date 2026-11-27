@@ -174,7 +174,7 @@
     <Card.Root>
       <Card.Header>
         <Card.Title>日记调度</Card.Title>
-        <Card.Description>每日总结的生成时间与结果</Card.Description>
+        <Card.Description>日记的生成时间与结果</Card.Description>
       </Card.Header>
       <Card.Content class="space-y-2 text-sm">
         <div class="flex gap-2">
@@ -184,11 +184,11 @@
           </Badge>
         </div>
         <div class="flex gap-2">
-          <span class="text-muted-foreground w-24">总结时间</span>
+          <span class="text-muted-foreground w-24">生成时间</span>
           <span class="font-mono">{status.diary.summaryTime}</span>
         </div>
         <div class="flex gap-2">
-          <span class="text-muted-foreground w-24">下次总结</span>
+          <span class="text-muted-foreground w-24">下次生成</span>
           <span>{formatDate(status.diary.nextSummaryAt)}</span>
         </div>
         <div class="flex gap-2">

@@ -33,7 +33,7 @@ NapCat（OneBot 11，本机或远端）        ← 不可信边界
 | 工具结果与模型输出                   | 模型供应商 API               | 模型调用工具 / 生成回复            | 输出侧还要过凭证拦截                           |
 | 远端媒体 URL                         | NapCat → 目标站点            | `qq_send_image` / `qq_send_record` | 插件只预检地址，下载由 NapCat 完成             |
 | 入站图片 URL                         | 目标站点（第三方图床 / CDN） | 收到图片消息                       | 由插件下载，只允许公网地址                     |
-| 日记素材（聊天文本）                 | 模型供应商 API               | 生成自动总结时                     | 素材是群友可控文本，进提示词前先净化           |
+| 日记素材（聊天文本）                 | 模型供应商 API               | 自动生成日记时                     | 素材是群友可控文本，进提示词前先净化           |
 
 不会离机的：`napcat.token`、模型密钥、日志文件、工作目录里的其它文件（除非模型显式
 通过发送工具发出去，而发送工具只认白名单目录）。
@@ -71,7 +71,7 @@ NapCat（OneBot 11，本机或远端）        ← 不可信边界
 | 15  | QQ 会话里不创建子代理：子会话无法继承按聊天的工具限制，配置档放行也拒绝                                                                                                            | `src/tools/policy-guard.ts`                                                          | `tests/policy-guard.test.ts`                                                   |
 | 16  | 无人值守轮次（主动说话）不得使用 `admin` 档：上下文完全来自聊天内容，按最低权限角色执行                                                                                            | `src/session/manager.ts`、`src/tools/policy.ts`                                      | `tests/manager.test.ts`、`tests/policy.test.ts`                                |
 | 17  | 日记只对 owner 开放：admin / member / proactive 角色都拿不到 `qq_diary_*`；`qq_diary_*` 还要求当前会话就是 owner 私聊                                                              | `src/tools/policy.ts`、`src/diary/scope.ts`、`src/tools/qq.ts`                       | `tests/policy.test.ts`、`tests/tools.test.ts`                                  |
-| 18  | 日记素材是群友可控文本：`<chat>` 开闭标签先进结构标签净化，总结会话不挂任何工具；识别总结会话失败时按「有工具」处理                                                                | `src/model-view.ts`、`src/diary/summary.ts`、`src/index.ts`                          | `tests/diary.test.ts`、`tests/model-view.test.ts`                              |
+| 18  | 日记素材是群友可控文本：`<chat>` 开闭标签先进结构标签净化，生成会话不挂任何工具；识别生成会话失败时按「有工具」处理                                                                | `src/model-view.ts`、`src/diary/summary.ts`、`src/index.ts`                          | `tests/diary.test.ts`、`tests/model-view.test.ts`                              |
 | 19  | 日记只读写 owner 私聊这一个聊天，不跨聊天；采集与调度也只覆盖它                                                                                                                    | `src/diary/scope.ts`、`src/tools/qq.ts`、`src/diary/scheduler.ts`                    | `tests/diary.test.ts`、`tests/tools.test.ts`                                   |
 | 20  | 日记与素材只落在 `diary.path` 下：日期必须合法，realpath 越界（含软链接）拒绝读写，目录 `0o700`、文件 `0o600`                                                                      | `src/diary/store.ts`、`src/diary/collector.ts`、`src/diary/paths.ts`                 | `tests/diary.test.ts`                                                          |
 | 21  | 发文件只允许白名单目录里的普通文件，软链接越界一律拒绝                                                                                                                             | `src/media-path.ts`、`src/tools/qq.ts`                                               | `tests/media-path.test.ts`、`tests/tools.test.ts`                              |

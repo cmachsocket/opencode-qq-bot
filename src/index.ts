@@ -540,7 +540,7 @@ export default Plugin.define({
           store: diaryStore,
           timeoutMs: config.diary.timeoutMs,
         })
-        cleanup.add("注销日记总结", () => diarySummarizer.dispose(), CleanupOrder.labeler)
+        cleanup.add("注销日记生成", () => diarySummarizer.dispose(), CleanupOrder.labeler)
         const diaryScheduler = new DiaryScheduler({
           config,
           logger,
@@ -656,7 +656,7 @@ export default Plugin.define({
               for (const name of Object.keys(event.tools)) delete event.tools[name]
               return
             }
-            // 日记总结会话的输入是群友可控的聊天记录，同样不带任何工具；
+            // 日记生成会话的输入是群友可控的聊天记录，同样不带任何工具；
             // 但它仍是一轮正常对话，先注入角色设定，日记才有人格。
             if (await diarySummarizer.isSummarySession(event.sessionID)) {
               // 人格取日记范围那条私聊（owner 私聊）上的覆盖，没有覆盖就用默认档。
@@ -664,7 +664,7 @@ export default Plugin.define({
               const override = scope ? await overrides.for(scope) : undefined
               const soul = await souls.at(override?.soulPath, override?.soulName)
               // 只注入角色设定正文：`soul.prompt` 还带着「必须调用 qq_send_message」
-              // 的 QQ 守则，而总结会话没有任何工具，带上会让模型无所适从。
+              // 的 QQ 守则，而生成会话没有任何工具，带上会让模型无所适从。
               const persona = soul.text.trim()
               if (persona) event.system.push({ type: "text", text: persona })
               for (const name of Object.keys(event.tools)) delete event.tools[name]

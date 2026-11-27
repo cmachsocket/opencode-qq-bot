@@ -28,7 +28,7 @@ export interface DiarySchedulerDeps {
   store: DiaryStore
   /** 素材读取。 */
   collector: DiaryCollector
-  /** 自动总结。 */
+  /** 自动生成。 */
   summarizer: DiarySummarizer
 }
 
@@ -77,7 +77,7 @@ export class DiaryScheduler {
     return this.lastTick
   }
 
-  /** 下次总结时刻（毫秒）：按配置里的时刻算，今天过了就顺延到明天。 */
+  /** 下次生成时刻（毫秒）：按配置里的时刻算，今天过了就顺延到明天。 */
   nextSummaryAt(now: Date = new Date()): number {
     const minutes = minutesOfDay(this.deps.config.diary.summaryTime)
     const target = new Date(now)
@@ -114,7 +114,7 @@ export class DiaryScheduler {
   /**
    * 跑一轮调度。
    *
-   * 已经过了总结时刻、该聊天今天还没有自动日记时才动手；
+   * 已经过了生成时刻、该聊天今天还没有自动日记时才动手；
    * 当天没有素材就跳过，不调用模型也不推送。
    */
   async tick(now: Date = new Date()): Promise<void> {
@@ -127,7 +127,7 @@ export class DiaryScheduler {
       const target = minutesOfDay(this.deps.config.diary.summaryTime)
       const current = now.getHours() * 60 + now.getMinutes()
       if (current < target) {
-        this.lastOutcome = `未到总结时刻（${this.deps.config.diary.summaryTime}）`
+        this.lastOutcome = `未到生成时刻（${this.deps.config.diary.summaryTime}）`
         return
       }
       const date = dateKey(now)
@@ -137,7 +137,7 @@ export class DiaryScheduler {
         done += 1
       }
       this.lastOutcome =
-        done > 0 ? `已检查 ${done} 个聊天（${date}）` : `没有可总结的聊天（${date}）`
+        done > 0 ? `已检查 ${done} 个聊天（${date}）` : `没有可生成日记的聊天（${date}）`
     })
   }
 
@@ -145,7 +145,7 @@ export class DiaryScheduler {
   private targets(): ChatTarget[] {
     const scope = diaryScopeChat(this.deps.config)
     if (!scope) {
-      this.deps.logger.warn("没有配置 ownerQQ，日记不做总结也不推送")
+      this.deps.logger.warn("没有配置 ownerQQ，日记不生成也不推送")
       return []
     }
     if (!isTargetAllowed(this.deps.config.access, scope, this.deps.config.ownerQQ)) return []

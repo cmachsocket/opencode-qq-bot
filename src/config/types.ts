@@ -169,7 +169,7 @@ export interface DiaryConfig {
   maxLineChars: number
   /** 单个聊天单天最多保留多少条素材。 */
   maxLinesPerDay: number
-  /** 等待模型总结的超时时间（毫秒）。 */
+  /** 等待模型生成日记的超时时间（毫秒）。 */
   timeoutMs: number
 }
 

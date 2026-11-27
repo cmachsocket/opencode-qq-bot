@@ -359,7 +359,7 @@ export type FieldType =
 | 会话表     | `SessionManager.snapshot()`               | 合并 `ChatOverrides.for()` 的唤醒方式      |
 | 限流用量   | `SendRateLimiter` 内部计数                | 新增 `snapshot()`，给出每目标分钟/小时用量 |
 | 追踪时间线 | `Tracer.spans()`                          | 无                                         |
-| 日记调度   | `DiaryScheduler`                          | 暴露下次总结时刻、下次轮询时间与上次结果   |
+| 日记调度   | `DiaryScheduler`                          | 暴露下次生成时刻、下次轮询时间与上次结果   |
 | 工具策略   | `ToolPolicy.current()`、`profileOf()`     | 无                                         |
 | 日志尾部   | 日志器内存环形缓冲                        | 新增缓冲与读取接口                         |
 | 运行时     | 版本、启动时间、home 与日志目录、实例租约 | 聚合 `RuntimeStatus`                       |
