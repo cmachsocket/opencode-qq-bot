@@ -101,8 +101,13 @@ describe("sanitizeSenderName", () => {
 })
 
 describe("formatTimestamp", () => {
-  it("输出本地时区的绝对时间", () => {
-    expect(formatTimestamp(1_700_000_000)).toMatch(/^\d{2}-\d{2}-\d{2} \d{2}:\d{2}$/)
+  it("默认按东八区输出绝对时间", () => {
+    expect(formatTimestamp(1_700_000_000)).toBe("23-11-15 06:13")
+  })
+
+  it("按指定时区换算", () => {
+    expect(formatTimestamp(1_700_000_000, "UTC")).toBe("23-11-14 22:13")
+    expect(formatTimestamp(1_700_000_000, "America/New_York")).toBe("23-11-14 17:13")
   })
 
   it("时间无效时返回空串", () => {
@@ -116,6 +121,13 @@ describe("formatModelMessage", () => {
     const time = 1_700_000_000
     expect(formatModelMessage({ sender: "小明", userId: "123", text: "你好", time })).toBe(
       `[${formatTimestamp(time)}] 小明: 你好`,
+    )
+  })
+
+  it("按指定时区标注时间", () => {
+    const time = 1_700_000_000
+    expect(formatModelMessage({ sender: "小明", userId: "123", text: "你好", time }, "UTC")).toBe(
+      "[23-11-14 22:13] 小明: 你好",
     )
   })
 

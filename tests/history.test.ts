@@ -48,6 +48,19 @@ function createProvider(api: OneBotApi, roleOf?: (userId: string) => Role) {
 }
 
 describe("createHistoryProvider", () => {
+  it("按配置的时区标注历史时间", async () => {
+    const api = createApi(() => ({ messages: [message(1, 1_700_000_000, "在场")] }))
+    const history = createHistoryProvider({
+      api,
+      logger,
+      media: {} as MediaStore,
+      timeZone: "UTC",
+    })
+    expect((await history.fetch(group(100), { count: 20 })).text).toContain(
+      "[23-11-14 22:13] 小明: 在场",
+    )
+  })
+
   it("历史里的 owner / admin 消息也带角色标记", async () => {
     const api = createApi(() => ({ messages: [message(1, 100, "在场")] }))
     const history = createProvider(api, (userId) => (userId === "42" ? "owner" : "member"))

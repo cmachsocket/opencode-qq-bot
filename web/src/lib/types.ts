@@ -10,6 +10,7 @@ export type FieldType =
   | "numberList"
   | "stringList"
   | "clock"
+  | "timezone"
   | "modelRef"
   | "path"
 

@@ -22,6 +22,16 @@ const BOOLEAN_SPELLINGS = ["1", "0", "true", "false", "yes", "no", "on", "off"] 
 /** 合法的时刻格式：`HH:mm`。 */
 const CLOCK = /^([01]?\d|2[0-3]):([0-5]\d)$/
 
+/** 判断 IANA 时区名是否被运行时接受。 */
+function isTimeZone(value: string): boolean {
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone: value })
+    return true
+  } catch {
+    return false
+  }
+}
+
 /** 配置告警回调。 */
 export type ConfigWarning = (message: string) => void
 
@@ -303,6 +313,23 @@ function leafSchema(field: ConfigField, warn: ConfigWarning): z.ZodTypeAny {
           }
           return trimmed
         })
+    case "timezone":
+      return z
+        .unknown()
+        .optional()
+        .transform((value) => {
+          if (!present(value)) return fallback
+          if (typeof value !== "string") {
+            warn(`${path} 必须是字符串：${String(value)}`)
+            return fallback
+          }
+          const trimmed = value.trim()
+          if (!isTimeZone(trimmed)) {
+            warn(`${path} 不是合法的 IANA 时区：${trimmed}`)
+            return fallback
+          }
+          return trimmed
+        })
     case "modelRef":
       return z
         .unknown()
@@ -516,6 +543,11 @@ export function createStrictFieldSchema(field: ConfigField): z.ZodType {
         .pipe(z.array(z.string().min(1)))
     case "clock":
       return z.string().trim().regex(CLOCK, "必须是 HH:mm 格式的时刻")
+    case "timezone":
+      return z
+        .string()
+        .trim()
+        .refine(isTimeZone, { message: "必须是合法的 IANA 时区，例如 Asia/Shanghai" })
     case "modelRef":
       return z
         .string()

@@ -16,6 +16,7 @@ export const FIELD_CONTROLS: Record<FieldType, string> = {
   numberList: "tags",
   stringList: "tags",
   clock: "clock",
+  timezone: "text",
   modelRef: "model",
   path: "path",
 }

@@ -224,6 +224,8 @@ export interface QQBotConfig {
   warnLength: number
   /** 重启后是否复用上一次的会话。 */
   reuseSession: boolean
+  /** 消息时间与当前时间使用的 IANA 时区。 */
+  timezone: string
   proactive: ProactiveConfig
   wake: WakeConfig
   collect: CollectConfig

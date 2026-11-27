@@ -16,7 +16,11 @@ describe("buildSystemPrompt", () => {
 
 describe("currentTimeText", () => {
   it("formats the time as YYYY-MM-DD HH:mm:ss", () => {
-    const text = currentTimeText(new Date(2026, 0, 2, 3, 4, 5))
+    const text = currentTimeText("Asia/Shanghai", new Date("2026-01-01T19:04:05Z"))
     expect(text).toBe("2026-01-02 03:04:05")
+  })
+
+  it("按指定时区换算", () => {
+    expect(currentTimeText("UTC", new Date("2026-01-02T03:04:05Z"))).toBe("2026-01-02 03:04:05")
   })
 })

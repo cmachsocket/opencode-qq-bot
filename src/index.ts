@@ -409,6 +409,7 @@ export default Plugin.define({
           logger,
           media,
           names: nameCache,
+          timeZone: config.timezone,
           roleOf: (userId) => roleOf(config, userId),
         })
         // 出站限流：模型驱动的发送与插件自己发的消息共用一个限流器。
@@ -674,7 +675,10 @@ export default Plugin.define({
           const override = await overrides.for(target)
           const soul = await souls.at(override.soulPath, override.soulName)
           event.system.push({ type: "text", text: soul.prompt })
-          event.system.push({ type: "text", text: `当前时间：${currentTimeText()}` })
+          event.system.push({
+            type: "text",
+            text: `当前时间：${currentTimeText(config.timezone)}`,
+          })
           const active = manager.activeTurn(event.sessionID)
           const turn = active?.turn
           const role = active?.role ?? manager.currentRole(event.sessionID)
@@ -885,13 +889,16 @@ export default Plugin.define({
               ...(decision.reason ? { reason: decision.reason } : {}),
             })
             await manager.enqueue(target, {
-              text: formatModelMessage({
-                sender: userName,
-                userId: String(event.user_id),
-                text: rendered.text,
-                time: event.time,
-                role: senderRole,
-              }),
+              text: formatModelMessage(
+                {
+                  sender: userName,
+                  userId: String(event.user_id),
+                  text: rendered.text,
+                  time: event.time,
+                  role: senderRole,
+                },
+                config.timezone,
+              ),
               files: rendered.files,
               atMe: decision.required,
               ...(decision.reason ? { wake: decision.reason } : {}),

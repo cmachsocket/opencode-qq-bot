@@ -5,6 +5,8 @@
  * JSON Schema、面板表单）都由它生成，不再各写一份。
  */
 
+import { DEFAULT_TIME_ZONE } from "../time-format"
+
 /** 配置项的值类型，决定前端渲染成哪种控件。 */
 export type FieldType =
   | "boolean"
@@ -15,6 +17,7 @@ export type FieldType =
   | "numberList"
   | "stringList"
   | "clock"
+  | "timezone"
   | "modelRef"
   | "path"
 
@@ -139,6 +142,14 @@ export const CONFIG_FIELDS: readonly ConfigField[] = [
     description: "完全没有绑定时，按会话标记找回上一次的会话",
     default: true,
     hot: true,
+  },
+  {
+    path: "timezone",
+    group: "general",
+    type: "timezone",
+    label: "时区",
+    description: "消息时间与当前时间按该 IANA 时区显示，默认东八区",
+    default: DEFAULT_TIME_ZONE,
   },
   {
     path: "toolProfilesPath",

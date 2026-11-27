@@ -61,6 +61,8 @@ export function createHistoryProvider(deps: {
   logger: Logger
   media: MediaStore
   names?: Map<string, { name: string; expires: number }>
+  /** 时间标注使用的 IANA 时区；留空用默认时区。 */
+  timeZone?: string
   /** 发送者角色，用来给 owner 的历史消息加同样的标记。 */
   roleOf?: (userId: string) => Role
 }): HistoryProvider {
@@ -85,13 +87,16 @@ export function createHistoryProvider(deps: {
         if (!text && rendered.files.length === 0) continue
         const userId = String(entry.sender?.user_id ?? entry.user_id ?? "")
         lines.push(
-          formatModelMessage({
-            sender: senderName(entry),
-            userId,
-            text: rendered.text,
-            time: entry.time ?? 0,
-            ...(deps.roleOf ? { role: deps.roleOf(userId) } : {}),
-          }),
+          formatModelMessage(
+            {
+              sender: senderName(entry),
+              userId,
+              text: rendered.text,
+              time: entry.time ?? 0,
+              ...(deps.roleOf ? { role: deps.roleOf(userId) } : {}),
+            },
+            deps.timeZone,
+          ),
         )
         for (const file of rendered.files) {
           files.push({ ...file, name: `qq-history-${files.length + 1}-${file.name}` })

@@ -130,6 +130,16 @@ describe("resolveConfig", () => {
     expect(config.admins).toEqual([300, 301])
   })
 
+  it("非法时区告警并回退到默认时区", () => {
+    const warnings: string[] = []
+    const config = resolveConfig({ ...BASE, timezone: "Mars/Olympus" }, undefined, (message) =>
+      warnings.push(message),
+    )
+    expect(config.timezone).toBe(DEFAULT_CONFIG.timezone)
+    expect(warnings.join("\n")).toContain("timezone")
+    expect(resolveConfig({ ...BASE, timezone: "UTC" }).timezone).toBe("UTC")
+  })
+
   it("不回退被写坏的 owner", () => {
     const warnings: string[] = []
     const config = resolveConfig({ ...BASE, ownerQQ: "abc" }, undefined, (message) =>
@@ -255,6 +265,7 @@ describe("严格校验", () => {
     expect(schemaFor("access.allow.groups").safeParse("1,2").success).toBe(true)
     expect(schemaFor("log.level").safeParse("debug").success).toBe(true)
     expect(schemaFor("diary.summaryTime").safeParse("23:30").success).toBe(true)
+    expect(schemaFor("timezone").safeParse("Asia/Shanghai").success).toBe(true)
   })
 
   it("拒绝非法取值", () => {
@@ -263,5 +274,6 @@ describe("严格校验", () => {
     expect(schemaFor("log.level").safeParse("verbose").success).toBe(false)
     expect(schemaFor("diary.summaryTime").safeParse("25:00").success).toBe(false)
     expect(schemaFor("model").safeParse("openai").success).toBe(false)
+    expect(schemaFor("timezone").safeParse("Mars/Olympus").success).toBe(false)
   })
 })

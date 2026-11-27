@@ -94,20 +94,9 @@ export function sanitizeSenderName(value: string): string {
   )
 }
 
-const TIMESTAMP_FORMAT = new Intl.DateTimeFormat("sv-SE", {
-  year: "2-digit",
-  month: "2-digit",
-  day: "2-digit",
-  hour: "2-digit",
-  minute: "2-digit",
-  hour12: false,
-})
+import { DEFAULT_TIME_ZONE, formatTimestamp } from "./time-format"
 
-/** 绝对时间标注：本地时区的 `YY-MM-DD HH:MM`；时间无效时返回空串。 */
-export function formatTimestamp(seconds: number): string {
-  if (!Number.isFinite(seconds) || seconds <= 0) return ""
-  return TIMESTAMP_FORMAT.format(new Date(seconds * 1000))
-}
+export { formatTimestamp }
 
 import type { Role } from "./tools/policy"
 
@@ -126,11 +115,11 @@ export interface ModelMessage {
 }
 
 /** 拼成一行模型视图消息：`[绝对时间] 名字(owner): 正文`；普通成员没有角色标记。 */
-export function formatModelMessage(message: ModelMessage): string {
+export function formatModelMessage(message: ModelMessage, timeZone = DEFAULT_TIME_ZONE): string {
   // QQ 号来自 QQ 服务，但仍是外部输入，按显示名净化一遍。
   const userId = sanitizeSenderName(message.userId)
   const name = sanitizeSenderName(message.sender) || userId || "未知用户"
-  const stamp = formatTimestamp(message.time)
+  const stamp = formatTimestamp(message.time, timeZone)
   const prefix = stamp ? `[${stamp}] ` : ""
   // 只给 owner / admin 加角色标记，让模型知道这句话是谁说的。
   const role = message.role === "owner" ? "(owner)" : message.role === "admin" ? "(admin)" : ""
