@@ -2,7 +2,7 @@
 
 本文件记录 opencode-qq-bot 的重要变更。
 
-## [Unreleased]
+## [0.10.1] - 2026-11-28
 
 ### Added
 
